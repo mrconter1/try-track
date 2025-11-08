@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import time
 
 class LineDetector:
     def __init__(self, canny_low=30, canny_high=100, hough_threshold=150, line_merge_dist=30, line_merge_angle=5):
@@ -12,11 +13,17 @@ class LineDetector:
     
     def detect_lines(self, frame):
         """Main pipeline: detect grid lines"""
+        start_time = time.time()
+        
         gray = self._preprocess(frame)
         edges = self._detect_edges(gray)
         lines = self._detect_hough_lines(edges)
         lines = self._merge_lines(lines)
         labeled_frame = self._draw_lines(frame.copy(), lines)
+        
+        elapsed_ms = (time.time() - start_time) * 1000
+        print(f"[LINE_DETECTOR] Frame processed in {elapsed_ms:.2f}ms | Lines detected: {len(lines)}")
+        
         return labeled_frame, lines
     
     def _preprocess(self, frame):
