@@ -9,6 +9,13 @@ class ContourDetector:
         self.epsilon = epsilon
         self.side_ratio_tolerance = side_ratio_tolerance
         self.angle_tolerance = angle_tolerance
+        self.prev_frame_tiles = {}  # Store tiles from previous frame
+        self.frame_counter = 0
+        
+        # Global unique tile tracking
+        self.unique_tiles = {}  # tile_id -> {seen_count, hashes, positions[], rotations[], last_row, last_col}
+        self.next_tile_id = 0
+        
         print("[CONTOUR_DETECTOR] Initialized with min_area={}, max_area={}, epsilon={}, side_ratio_tolerance={}, angle_tolerance={}°".format(
             min_area, max_area, epsilon, side_ratio_tolerance, angle_tolerance))
     
@@ -272,9 +279,10 @@ class ContourDetector:
         return frame
     
     def extract_and_correct_tiles(self, frame, grid_tiles, tile_size=150):
-        """Extract and perspective-correct each tile, compute hashes for all rotations"""
+        """Extract and perspective-correct each tile, compute hashes for all rotations, store images"""
         corrected_tiles = {}
         tile_hashes = {}
+        self.current_frame_images = {}  # Store current frame images for matching
         
         for (row, col), quad in grid_tiles.items():
             # Get the 4 corner points
@@ -310,6 +318,7 @@ class ContourDetector:
                 corrected = cv2.warpPerspective(frame, M, (tile_size, tile_size))
                 
                 corrected_tiles[(row, col)] = corrected
+                self.current_frame_images[(row, col)] = corrected  # Store for unique tile database
                 
                 # Normalize tile for better hash consistency
                 normalized = self._normalize_tile(corrected)
@@ -368,4 +377,100 @@ class ContourDetector:
         
         # Return as hex string
         return format(hash_bytes, f'0{hash_size * hash_size // 4}x')
+    
+    def _hamming_distance(self, hash1, hash2):
+        """Compute Hamming distance between two hex hash strings"""
+        if not hash1 or not hash2:
+            return float('inf')
+        
+        try:
+            # Convert hex to integers
+            val1 = int(hash1, 16)
+            val2 = int(hash2, 16)
+            # XOR to find differing bits
+            xor = val1 ^ val2
+            # Count 1s in binary representation (Hamming distance)
+            return bin(xor).count('1')
+        except:
+            return float('inf')
+    
+    def match_tiles_to_previous(self, current_tiles_hashes):
+        """Match tiles from current frame to unique tile database - rotation doesn't matter"""
+        matches = {}  # Maps current tile pos to unique_tile_id
+        
+        # If no previous frame, just store current and return empty matches
+        if not self.prev_frame_tiles:
+            print(f"  → First frame, storing {len(current_tiles_hashes)} tiles for next frame")
+            self.prev_frame_tiles = current_tiles_hashes
+            return matches
+        
+        print(f"  → Matching current {len(current_tiles_hashes)} tiles to {len(self.unique_tiles)} unique tiles...")
+        
+        # For each tile in current frame
+        for curr_pos, curr_hashes in current_tiles_hashes.items():
+            best_tile_id = None
+            best_distance = float('inf')
+            best_curr_rotation = None
+            
+            # Try to match against all known unique tiles
+            # Check if ANY rotation of current tile matches ANY rotation of any known tile
+            for tile_id, tile_data in self.unique_tiles.items():
+                known_hashes = tile_data['hashes']
+                
+                # Find best rotation match for this tile
+                for curr_rot in [0, 90, 180, 270]:
+                    for known_rot in [0, 90, 180, 270]:
+                        curr_hash = curr_hashes.get(curr_rot, "")
+                        known_hash = known_hashes.get(known_rot, "")
+                        
+                        distance = self._hamming_distance(curr_hash, known_hash)
+                        
+                        # Keep track of best match (lowest distance across all tiles and rotations)
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_tile_id = tile_id
+                            best_curr_rotation = curr_rot
+            
+            # If good match found to unique tile, count as same sighting
+            if best_distance < 20 and best_tile_id is not None:
+                matches[curr_pos] = best_tile_id
+                self.unique_tiles[best_tile_id]['seen_count'] += 1
+                self.unique_tiles[best_tile_id]['last_row'] = curr_pos[0]
+                self.unique_tiles[best_tile_id]['last_col'] = curr_pos[1]
+                self.unique_tiles[best_tile_id]['last_rotation'] = best_curr_rotation
+            else:
+                # No good match - this is a new tile
+                matches[curr_pos] = None
+        
+        # Add new unique tiles (those with None matches)
+        for curr_pos, tile_id in list(matches.items()):
+            if tile_id is None:
+                # Create new unique tile
+                new_id = self.next_tile_id
+                self.next_tile_id += 1
+                
+                # Get the corrected image for this tile if available
+                tile_image = self.current_frame_images.get(curr_pos, None)
+                
+                self.unique_tiles[new_id] = {
+                    'seen_count': 1,
+                    'hashes': current_tiles_hashes[curr_pos],  # Store all 4 rotation hashes
+                    'image': tile_image,
+                    'first_frame': self.frame_counter,
+                    'last_row': curr_pos[0],
+                    'last_col': curr_pos[1],
+                    'last_rotation': 0,
+                    'positions': [curr_pos]
+                }
+                matches[curr_pos] = new_id
+                print(f"  → New unique tile #{new_id} at {curr_pos}")
+        
+        # Store current frame for next iteration
+        self.prev_frame_tiles = current_tiles_hashes
+        self.frame_counter += 1
+        
+        matched_count = len([m for m in matches.values() if m is not None])
+        new_count = len([m for m in matches.values() if m is None])
+        print(f"  ✓ Matched {matched_count} tiles | New tiles: {new_count} | Total unique: {len(self.unique_tiles)}")
+        return matches
 

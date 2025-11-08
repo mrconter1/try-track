@@ -97,13 +97,16 @@ class VideoFrameViewer:
             detected_tiles = {}
             corrected_tiles = {}
             tile_hashes = {}
+            tile_matches = {}
             if self.show_tiles:
                 frame, detected_tiles = self.contour_detector.detect_tiles(frame)
                 # Extract and perspective-correct each tile, compute hashes
                 corrected_tiles, tile_hashes = self.contour_detector.extract_and_correct_tiles(frame, detected_tiles, tile_size=120)
+                # Match tiles to unique database
+                tile_matches = self.contour_detector.match_tiles_to_previous(tile_hashes)
             
-            # Update tile list panel with corrected images and hashes
-            self._update_tile_list(corrected_tiles, tile_hashes)
+            # Update tile list panel with unique tiles
+            self._update_unique_tile_list(tile_matches)
             
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = frame.shape[:2]
@@ -166,8 +169,86 @@ class VideoFrameViewer:
         print(f"\n[GUI] Tile detection: {'ENABLED' if self.show_tiles else 'DISABLED'}")
         self.display_frame()
     
-    def _update_tile_list(self, corrected_tiles, tile_hashes=None):
-        """Update the tile list panel with extracted and corrected tile images and hashes"""
+    def _update_unique_tile_list(self, tile_matches):
+        """Update the tile list panel with unique tiles in grid format with images"""
+        # Clear previous tiles
+        for widget in self.tile_scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        unique_tiles = self.contour_detector.unique_tiles
+        
+        if not unique_tiles:
+            ttk.Label(self.tile_scrollable_frame, text="No tiles discovered yet", foreground="gray").pack(fill=tk.X, pady=10)
+            return
+        
+        # Create grid layout (4 columns)
+        grid_frame = ttk.Frame(self.tile_scrollable_frame)
+        grid_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        tiles_per_row = 2
+        col = 0
+        row = 0
+        
+        # Display each unique tile as a grid item with image and info
+        for tile_id in sorted(unique_tiles.keys()):
+            tile_data = unique_tiles[tile_id]
+            
+            # Create cell frame
+            cell_frame = ttk.Frame(grid_frame, relief=tk.SUNKEN, padding=3)
+            cell_frame.grid(row=row, column=col, padx=2, pady=2, sticky="nsew")
+            
+            # Get tile image
+            tile_image = tile_data.get('image')
+            if tile_image is not None:
+                try:
+                    # Convert BGR to RGB and resize for thumbnail
+                    tile_rgb = cv2.cvtColor(tile_image, cv2.COLOR_BGR2RGB)
+                    tile_rgb_small = cv2.resize(tile_rgb, (90, 90))
+                    pil_image = Image.fromarray(tile_rgb_small)
+                    photo = ImageTk.PhotoImage(pil_image)
+                    
+                    # Display image
+                    img_label = tk.Label(cell_frame, image=photo, bg="white")
+                    img_label.image = photo
+                    img_label.pack()
+                except Exception as e:
+                    ttk.Label(cell_frame, text="Image error", foreground="red").pack()
+            
+            # Tile info below image
+            seen_count = tile_data['seen_count']
+            info_text = f"T#{tile_id}\n{seen_count}x"
+            
+            info_label = ttk.Label(
+                cell_frame,
+                text=info_text,
+                font=("Arial", 8, "bold"),
+                foreground="darkgreen",
+                justify=tk.CENTER
+            )
+            info_label.pack(fill=tk.X)
+            
+            # Move to next column/row
+            col += 1
+            if col >= tiles_per_row:
+                col = 0
+                row += 1
+        
+        # Configure grid weights
+        for i in range(tiles_per_row):
+            grid_frame.grid_columnconfigure(i, weight=1)
+        
+        # Show summary
+        ttk.Separator(self.tile_scrollable_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+        total_seen = sum(t['seen_count'] for t in unique_tiles.values())
+        ttk.Label(
+            self.tile_scrollable_frame, 
+            text=f"Unique Tiles: {len(unique_tiles)} | Sightings: {total_seen}",
+            font=("Arial", 8, "bold"),
+            foreground="blue"
+        ).pack(fill=tk.X, pady=2)
+    
+    def _update_tile_list(self, corrected_tiles, tile_hashes=None, tile_matches=None):
+        """Update the tile list panel with extracted and corrected tile images, hashes, and matches"""
         # Clear previous tiles
         for widget in self.tile_scrollable_frame.winfo_children():
             widget.destroy()
@@ -178,11 +259,13 @@ class VideoFrameViewer:
         
         if tile_hashes is None:
             tile_hashes = {}
+        if tile_matches is None:
+            tile_matches = {}
         
         # Sort tiles by position (row, col)
         sorted_tiles = sorted(corrected_tiles.items())
         
-        # Display each corrected tile image with hashes
+        # Display each corrected tile image with hashes and matches
         for idx, ((row, col), tile_image) in enumerate(sorted_tiles):
             tile_frame = ttk.Frame(self.tile_scrollable_frame, relief=tk.SUNKEN, padding=5)
             tile_frame.pack(fill=tk.X, pady=3)
@@ -191,7 +274,7 @@ class VideoFrameViewer:
             tile_label = ttk.Label(tile_frame, text=f"Tile {idx}: ({row},{col})", font=("Arial", 8, "bold"))
             tile_label.pack(anchor=tk.W)
             
-            # Create horizontal layout: image on left, hashes on right
+            # Create horizontal layout: image on left, hashes and matches on right
             content_frame = ttk.Frame(tile_frame)
             content_frame.pack(fill=tk.BOTH, expand=True)
             
@@ -214,21 +297,41 @@ class VideoFrameViewer:
             except Exception as e:
                 ttk.Label(img_frame, text=f"Error: {str(e)}", foreground="red").pack()
             
-            # Right side: hashes for all 4 rotations
-            hash_frame = ttk.Frame(content_frame)
-            hash_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+            # Right side: hashes for all 4 rotations and matches
+            info_frame = ttk.Frame(content_frame)
+            info_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
             
+            # Show hashes
             if (row, col) in tile_hashes:
                 hashes = tile_hashes[(row, col)]
-                ttk.Label(hash_frame, text="Hashes:", font=("Arial", 7, "bold")).pack(anchor=tk.W)
+                ttk.Label(info_frame, text="Hashes:", font=("Arial", 7, "bold")).pack(anchor=tk.W)
                 for rotation in [0, 90, 180, 270]:
                     hash_val = hashes.get(rotation, "N/A")
-                    ttk.Label(hash_frame, text=f"{rotation}°: {hash_val[:12]}...", 
+                    ttk.Label(info_frame, text=f"{rotation}°: {hash_val[:12]}...", 
                              font=("Arial", 6), foreground="navy").pack(anchor=tk.W)
+            
+            # Show match info if available
+            if (row, col) in tile_matches:
+                match_info = tile_matches[(row, col)]
+                ttk.Separator(info_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=3)
+                ttk.Label(info_frame, text="Match:", font=("Arial", 7, "bold")).pack(anchor=tk.W)
+                
+                prev_row, prev_col = match_info['prev_pos']
+                prev_rot = match_info['prev_rotation']
+                curr_rot = match_info['curr_rotation']
+                distance = match_info['distance']
+                
+                ttk.Label(info_frame, text=f"Prev: ({prev_row},{prev_col})", 
+                         font=("Arial", 6), foreground="green").pack(anchor=tk.W)
+                ttk.Label(info_frame, text=f"Rotation: {prev_rot}°→{curr_rot}°", 
+                         font=("Arial", 6), foreground="green").pack(anchor=tk.W)
+                ttk.Label(info_frame, text=f"Distance: {distance} bits", 
+                         font=("Arial", 6), foreground="green").pack(anchor=tk.W)
         
         # Show total count
         ttk.Separator(self.tile_scrollable_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
-        ttk.Label(self.tile_scrollable_frame, text=f"Total: {len(corrected_tiles)} tiles", 
+        matches_count = len(tile_matches)
+        ttk.Label(self.tile_scrollable_frame, text=f"Total: {len(corrected_tiles)} tiles | Matched: {matches_count}", 
                  font=("Arial", 8), foreground="blue").pack(fill=tk.X, pady=2)
 
 if __name__ == "__main__":
