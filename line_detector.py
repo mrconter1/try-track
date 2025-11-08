@@ -9,63 +9,29 @@ class LineDetector:
         self.hough_threshold = hough_threshold
         self.line_merge_dist = line_merge_dist  # Merge lines within this rho distance
         self.line_merge_angle = line_merge_angle  # Merge lines within this angle (degrees)
-        print("[LINE_DETECTOR] Initialized with canny=({},{}), hough_threshold={}, merge_dist={}, merge_angle={}°".format(
-            canny_low, canny_high, hough_threshold, line_merge_dist, line_merge_angle))
     
     def detect_lines(self, frame):
         """Main pipeline: detect grid lines"""
-        print("\n" + "="*70)
-        print("[STEP 1] PREPROCESSING - Grayscale and blur")
-        print("="*70)
         gray = self._preprocess(frame)
-        
-        print("\n" + "="*70)
-        print("[STEP 2] EDGE DETECTION - Canny edges")
-        print("="*70)
         edges = self._detect_edges(gray)
-        
-        print("\n" + "="*70)
-        print("[STEP 3] LINE DETECTION - Standard Hough Transform")
-        print("="*70)
         lines = self._detect_hough_lines(edges)
-        
-        print("\n" + "="*70)
-        print("[STEP 4] MERGE NEARBY LINES - Cluster similar lines")
-        print("="*70)
         lines = self._merge_lines(lines)
-        
-        print("\n" + "="*70)
-        print("[STEP 5] DRAW LINES - Visualize detected lines")
-        print("="*70)
         labeled_frame = self._draw_lines(frame.copy(), lines)
-        
         return labeled_frame, lines
     
     def _preprocess(self, frame):
         """Step 1: Convert to grayscale and blur"""
-        print("  → Converting to grayscale...")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        print("  → Applying Gaussian blur...")
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        print(f"  ✓ Image shape: {blurred.shape}")
         return blurred
     
     def _detect_edges(self, gray):
         """Step 2: Detect edges using Canny"""
-        print(f"  → Applying Canny edge detection ({self.canny_low}, {self.canny_high})...")
         edges = cv2.Canny(gray, self.canny_low, self.canny_high)
-        
-        edge_pixels = np.count_nonzero(edges)
-        print(f"  ✓ Edge pixels: {edge_pixels}")
         return edges
     
     def _detect_hough_lines(self, edges):
         """Step 3: Detect lines using Standard Hough Transform (infinite lines)"""
-        print(f"  → Running Standard Hough Line Transform (infinite lines)...")
-        print(f"     threshold={self.hough_threshold}")
-        
         # Use standard Hough transform (returns infinite lines as (rho, theta))
         lines = cv2.HoughLines(
             edges,
@@ -80,7 +46,6 @@ class LineDetector:
             # Convert to list of (rho, theta) tuples
             lines = [(line[0][0], line[0][1]) for line in lines]
         
-        print(f"  ✓ Detected {len(lines)} infinite lines")
         return lines
     
     def _merge_lines(self, lines):
@@ -88,7 +53,6 @@ class LineDetector:
         if not lines:
             return []
         
-        print(f"  → Starting with {len(lines)} lines")
         merged = []
         used = set()
         
@@ -125,16 +89,12 @@ class LineDetector:
             avg_theta = np.mean([line[1] for line in similar])
             merged.append((avg_rho, avg_theta))
         
-        print(f"  ✓ After merging: {len(merged)} lines (removed {len(lines) - len(merged)} duplicates)")
         return merged
     
     def _draw_lines(self, frame, lines):
-        """Step 4: Draw infinite lines across entire frame"""
+        """Draw infinite lines across entire frame"""
         if not lines:
-            print("  ✗ No lines to draw")
             return frame
-        
-        print(f"  → Drawing {len(lines)} lines across entire frame...")
         
         h, w = frame.shape[:2]
         
@@ -164,9 +124,6 @@ class LineDetector:
             # Find intersection with frame boundaries
             x1, y1, x2, y2 = self._line_to_frame_edges(rho, theta, w, h)
             cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-        
-        print(f"  ✓ Drew {len(horizontal_lines)} horizontal lines (GREEN)")
-        print(f"  ✓ Drew {len(vertical_lines)} vertical lines (BLUE)")
         
         return frame
     
