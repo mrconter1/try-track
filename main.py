@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
 import cv2
+from contour_detector import ContourDetector
 
 class VideoFrameViewer:
     def __init__(self, root, video_path):
@@ -15,6 +16,8 @@ class VideoFrameViewer:
         self.current_frame = 0
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.slider_updating = False
+        self.contour_detector = ContourDetector()
+        self.show_tiles = True
         
         # Main container with sidebar and video area
         main_container = ttk.Frame(root)
@@ -30,6 +33,7 @@ class VideoFrameViewer:
         ttk.Button(sidebar, text="Next ▶", command=self.next_frame).pack(fill=tk.X, pady=5)
         ttk.Button(sidebar, text="⏮ First", command=self.first_frame).pack(fill=tk.X, pady=5)
         ttk.Button(sidebar, text="⏭ Last", command=self.last_frame).pack(fill=tk.X, pady=5)
+        ttk.Button(sidebar, text="🔲 Toggle Tiles", command=self.toggle_tiles).pack(fill=tk.X, pady=5)
         
         # Frame info
         self.info_label = ttk.Label(sidebar, text="", font=("Arial", 9), wraplength=180, justify=tk.LEFT)
@@ -61,6 +65,10 @@ class VideoFrameViewer:
         ret, frame = self.cap.read()
         
         if ret:
+            # Apply tile detection if enabled
+            if self.show_tiles:
+                frame, _ = self.contour_detector.detect_tiles(frame)
+            
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = frame.shape[:2]
             label_width = self.image_label.winfo_width()
@@ -79,7 +87,8 @@ class VideoFrameViewer:
             self.image_label.image = photo
             
             time_seconds = self.current_frame / self.fps
-            self.info_label.config(text=f"Frame {self.current_frame + 1} / {self.total_frames} | Time: {time_seconds:.2f}s")
+            tiles_status = "ON" if self.show_tiles else "OFF"
+            self.info_label.config(text=f"Frame {self.current_frame + 1} / {self.total_frames}\nTime: {time_seconds:.2f}s\nTiles: {tiles_status}")
             self.slider_updating = True
             self.slider.set(self.current_frame)
             self.slider_updating = False
@@ -115,6 +124,11 @@ class VideoFrameViewer:
         if self.is_fullscreen:
             self.is_fullscreen = False
             self.root.state('normal')
+    
+    def toggle_tiles(self):
+        self.show_tiles = not self.show_tiles
+        print(f"\n[GUI] Tile detection: {'ENABLED' if self.show_tiles else 'DISABLED'}")
+        self.display_frame()
 
 if __name__ == "__main__":
     root = tk.Tk()
