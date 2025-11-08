@@ -64,7 +64,7 @@ class ContourDetector:
     def _detect_edges(self, gray):
         """Step 2: Detect edges using Canny"""
         print("  → Applying Canny edge detection...")
-        edges = cv2.Canny(gray, 50, 150)
+        edges = cv2.Canny(gray, 10, 50)
         
         edge_pixels = np.count_nonzero(edges)
         print(f"  ✓ Edge pixels: {edge_pixels}")
