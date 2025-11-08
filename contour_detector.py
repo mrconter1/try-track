@@ -2,13 +2,14 @@ import cv2
 import numpy as np
 
 class ContourDetector:
-    def __init__(self, min_area=1000, max_area=50000, epsilon=0.05):
+    def __init__(self, min_area=1000, max_area=50000, epsilon=0.05, side_ratio_tolerance=0.15):
         """Initialize contour detector for enclosed squares"""
         self.min_area = min_area
         self.max_area = max_area
         self.epsilon = epsilon
-        print("[CONTOUR_DETECTOR] Initialized with min_area={}, max_area={}, epsilon={}".format(
-            min_area, max_area, epsilon))
+        self.side_ratio_tolerance = side_ratio_tolerance
+        print("[CONTOUR_DETECTOR] Initialized with min_area={}, max_area={}, epsilon={}, side_ratio_tolerance={}".format(
+            min_area, max_area, epsilon, side_ratio_tolerance))
     
     def detect_tiles(self, frame):
         """Main pipeline: detect enclosed skewed squares"""
@@ -90,7 +91,7 @@ class ContourDetector:
         return contours
     
     def _filter_quadrilaterals(self, contours):
-        """Step 5: Filter contours to keep only 4-sided shapes"""
+        """Step 5: Filter contours to keep only 4-sided shapes that are squares"""
         print(f"  → Filtering {len(contours)} contours...")
         quadrilaterals = []
         
@@ -107,16 +108,46 @@ class ContourDetector:
             
             # Check if it's a quadrilateral (4 vertices)
             if len(approx) == 4:
-                # Calculate aspect ratio to filter out very elongated shapes
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = float(w) / h if h != 0 else 0
-                
-                # Keep shapes that are roughly square-ish (0.5 to 2.0 aspect ratio)
-                if 0.5 < aspect_ratio < 2.0:
+                # Check if it's actually a square
+                if self._is_square(approx):
                     quadrilaterals.append(approx)
         
-        print(f"  ✓ Kept {len(quadrilaterals)} quadrilaterals with good aspect ratio")
+        print(f"  ✓ Kept {len(quadrilaterals)} valid squares")
         return quadrilaterals
+    
+    def _is_square(self, quad):
+        """Check if quadrilateral is approximately a square"""
+        # Get the 4 vertices
+        pts = quad.reshape(4, 2)
+        
+        # Calculate all 4 side lengths
+        side_lengths = []
+        for i in range(4):
+            p1 = pts[i]
+            p2 = pts[(i + 1) % 4]
+            dist = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+            side_lengths.append(dist)
+        
+        # Check if all sides are approximately equal
+        avg_side = np.mean(side_lengths)
+        if avg_side == 0:
+            return False
+        
+        # Calculate ratio of each side to average
+        side_ratios = [s / avg_side for s in side_lengths]
+        
+        # All sides should be within tolerance of 1.0 (equal length)
+        for ratio in side_ratios:
+            if abs(ratio - 1.0) > self.side_ratio_tolerance:
+                return False
+        
+        # Also check aspect ratio as backup
+        x, y, w, h = cv2.boundingRect(quad)
+        aspect_ratio = float(w) / h if h != 0 else 0
+        if not (0.5 < aspect_ratio < 2.0):
+            return False
+        
+        return True
     
     def _organize_grid(self, quadrilaterals):
         """Step 6: Organize tiles into grid structure by position"""
