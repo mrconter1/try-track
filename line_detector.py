@@ -3,13 +3,14 @@ import numpy as np
 import time
 
 class LineDetector:
-    def __init__(self, canny_low=30, canny_high=100, hough_threshold=150, line_merge_dist=30, line_merge_angle=5):
+    def __init__(self, canny_low=30, canny_high=100, hough_threshold=150, line_merge_dist=30, line_merge_angle=5, scale=0.5):
         """Initialize line detector for grid lines"""
         self.canny_low = canny_low
         self.canny_high = canny_high
         self.hough_threshold = hough_threshold
         self.line_merge_dist = line_merge_dist  # Merge lines within this rho distance
         self.line_merge_angle = line_merge_angle  # Merge lines within this angle (degrees)
+        self.scale = scale  # Downscaling factor before line detection
     
     def detect_lines(self, frame):
         """Main pipeline: detect grid lines"""
@@ -19,6 +20,9 @@ class LineDetector:
         edges = self._detect_edges(gray)
         lines = self._detect_hough_lines(edges)
         lines = self._merge_lines(lines)
+        # Scale rho values back to original frame size
+        if self.scale < 1.0:
+            lines = [(rho / self.scale, theta) for rho, theta in lines]
         labeled_frame = self._draw_lines(frame.copy(), lines)
         
         elapsed_ms = (time.time() - start_time) * 1000
@@ -27,9 +31,13 @@ class LineDetector:
         return labeled_frame, lines
     
     def _preprocess(self, frame):
-        """Step 1: Convert to grayscale and blur"""
+        """Step 1: Convert to grayscale, blur, and downscale"""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        if self.scale < 1.0:
+            h, w = blurred.shape[:2]
+            downscaled = cv2.resize(blurred, (int(w * self.scale), int(h * self.scale)))
+            return downscaled
         return blurred
     
     def _detect_edges(self, gray):
