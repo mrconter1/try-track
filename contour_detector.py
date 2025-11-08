@@ -2,14 +2,15 @@ import cv2
 import numpy as np
 
 class ContourDetector:
-    def __init__(self, min_area=1000, max_area=50000, epsilon=0.05, side_ratio_tolerance=0.15):
+    def __init__(self, min_area=1000, max_area=50000, epsilon=0.05, side_ratio_tolerance=0.08, angle_tolerance=10):
         """Initialize contour detector for enclosed squares"""
         self.min_area = min_area
         self.max_area = max_area
         self.epsilon = epsilon
         self.side_ratio_tolerance = side_ratio_tolerance
-        print("[CONTOUR_DETECTOR] Initialized with min_area={}, max_area={}, epsilon={}, side_ratio_tolerance={}".format(
-            min_area, max_area, epsilon, side_ratio_tolerance))
+        self.angle_tolerance = angle_tolerance
+        print("[CONTOUR_DETECTOR] Initialized with min_area={}, max_area={}, epsilon={}, side_ratio_tolerance={}, angle_tolerance={}°".format(
+            min_area, max_area, epsilon, side_ratio_tolerance, angle_tolerance))
     
     def detect_tiles(self, frame):
         """Main pipeline: detect enclosed skewed squares"""
@@ -118,9 +119,9 @@ class ContourDetector:
     def _is_square(self, quad):
         """Check if quadrilateral is approximately a square"""
         # Get the 4 vertices
-        pts = quad.reshape(4, 2)
+        pts = quad.reshape(4, 2).astype(float)
         
-        # Calculate all 4 side lengths
+        # ===== CHECK 1: All 4 sides should be equal length =====
         side_lengths = []
         for i in range(4):
             p1 = pts[i]
@@ -128,20 +129,64 @@ class ContourDetector:
             dist = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
             side_lengths.append(dist)
         
-        # Check if all sides are approximately equal
         avg_side = np.mean(side_lengths)
         if avg_side == 0:
             return False
         
-        # Calculate ratio of each side to average
-        side_ratios = [s / avg_side for s in side_lengths]
-        
-        # All sides should be within tolerance of 1.0 (equal length)
-        for ratio in side_ratios:
-            if abs(ratio - 1.0) > self.side_ratio_tolerance:
+        # All sides should be within tolerance of average
+        for side in side_lengths:
+            if abs(side - avg_side) / avg_side > self.side_ratio_tolerance:
                 return False
         
-        # Also check aspect ratio as backup
+        # ===== CHECK 2: Both diagonals should be equal length =====
+        diag1 = np.sqrt((pts[0][0] - pts[2][0])**2 + (pts[0][1] - pts[2][1])**2)
+        diag2 = np.sqrt((pts[1][0] - pts[3][0])**2 + (pts[1][1] - pts[3][1])**2)
+        
+        avg_diag = (diag1 + diag2) / 2
+        if avg_diag == 0:
+            return False
+        
+        # Diagonals should be approximately equal
+        if abs(diag1 - diag2) / avg_diag > self.side_ratio_tolerance:
+            return False
+        
+        # ===== CHECK 3: Diagonals should relate to sides correctly =====
+        # In a square: diagonal = side * sqrt(2) ≈ side * 1.414
+        expected_diag = avg_side * np.sqrt(2)
+        if expected_diag == 0:
+            return False
+        
+        diag_ratio = avg_diag / expected_diag
+        if abs(diag_ratio - 1.0) > self.side_ratio_tolerance:
+            return False
+        
+        # ===== CHECK 4: All 4 angles should be ~90 degrees =====
+        angles = []
+        for i in range(4):
+            # Get three consecutive points to form angle
+            p1 = pts[(i - 1) % 4]
+            p2 = pts[i]
+            p3 = pts[(i + 1) % 4]
+            
+            # Vectors from p2 to p1 and p2 to p3
+            v1 = p1 - p2
+            v2 = p3 - p2
+            
+            # Calculate angle using dot product
+            dot_product = np.dot(v1, v2)
+            cross_product = np.abs(v1[0] * v2[1] - v1[1] * v2[0])
+            
+            angle_rad = np.arctan2(cross_product, dot_product)
+            angle_deg = np.degrees(angle_rad)
+            
+            angles.append(angle_deg)
+        
+        # All angles should be close to 90 degrees
+        for angle in angles:
+            if abs(angle - 90) > self.angle_tolerance:
+                return False
+        
+        # ===== CHECK 5: Aspect ratio should be reasonable =====
         x, y, w, h = cv2.boundingRect(quad)
         aspect_ratio = float(w) / h if h != 0 else 0
         if not (0.5 < aspect_ratio < 2.0):
