@@ -61,6 +61,36 @@ class LineViewerApp:
         self.image_label.pack(fill=tk.BOTH, expand=True)
         self.image_label.bind("<Button-1>", self.on_frame_click)
         
+        # Right sidebar for labels statistics
+        right_sidebar = ttk.Frame(main_container, width=200)
+        right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+        right_sidebar.pack_propagate(False)
+        
+        ttk.Label(right_sidebar, text="Labels:", font=("Arial", 10, "bold")).pack(fill=tk.X, pady=5)
+        
+        # Scrollable frame for label list
+        label_list_frame = ttk.Frame(right_sidebar)
+        label_list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.label_canvas = tk.Canvas(label_list_frame, bg="white", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(label_list_frame, orient=tk.VERTICAL, command=self.label_canvas.yview)
+        self.label_scrollable_frame = ttk.Frame(self.label_canvas, padding=5)
+        
+        self.label_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.label_canvas.configure(scrollregion=self.label_canvas.bbox("all"))
+        )
+        
+        self.label_canvas.create_window((0, 0), window=self.label_scrollable_frame, anchor="nw")
+        self.label_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        self.label_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Summary label
+        self.summary_label = ttk.Label(right_sidebar, text="", font=("Arial", 9, "bold"), foreground="blue")
+        self.summary_label.pack(fill=tk.X, pady=10)
+        
         # Bind arrow keys and letter input
         self.root.bind('<Left>', lambda e: self.prev_frame())
         self.root.bind('<Right>', lambda e: self.next_frame())
@@ -106,6 +136,9 @@ class LineViewerApp:
             
             self.image_label.config(image=photo)
             self.image_label.image = photo
+            
+            # Update label statistics
+            self._update_label_statistics()
             
             time_seconds = self.current_frame / self.fps
             lines_status = "ON" if self.show_lines else "OFF"
@@ -293,6 +326,58 @@ class LineViewerApp:
             self.waiting_for_input = False
             self.pending_square = None
             self.display_frame()
+    
+    def _update_label_statistics(self):
+        """Update the right panel with label statistics for current and all frames"""
+        # Clear previous labels
+        for widget in self.label_scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        # Count labels on current frame
+        frame_labels = {}
+        for (frame, square_idx), label in self.square_ids.items():
+            if frame == self.current_frame:
+                if label not in frame_labels:
+                    frame_labels[label] = 0
+                frame_labels[label] += 1
+        
+        # Count labels across all frames
+        all_labels = {}
+        for (frame, square_idx), label in self.square_ids.items():
+            if label not in all_labels:
+                all_labels[label] = 0
+            all_labels[label] += 1
+        
+        # Display current frame section
+        ttk.Label(self.label_scrollable_frame, text="Current Frame:", font=("Arial", 9, "bold"), foreground="blue").pack(fill=tk.X, pady=(5, 3))
+        
+        if not frame_labels:
+            ttk.Label(self.label_scrollable_frame, text="No labels", foreground="gray").pack(fill=tk.X, pady=5)
+        else:
+            for label in sorted(frame_labels.keys()):
+                count = frame_labels[label]
+                label_frame = ttk.Frame(self.label_scrollable_frame, relief=tk.SUNKEN, padding=5)
+                label_frame.pack(fill=tk.X, pady=2)
+                ttk.Label(label_frame, text=f"{label}: {count}", font=("Arial", 10, "bold"), foreground="darkgreen").pack(anchor=tk.W)
+        
+        frame_total = sum(frame_labels.values())
+        
+        # Display all frames section
+        ttk.Separator(self.label_scrollable_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+        ttk.Label(self.label_scrollable_frame, text="All Frames:", font=("Arial", 9, "bold"), foreground="blue").pack(fill=tk.X, pady=(5, 3))
+        
+        if not all_labels:
+            ttk.Label(self.label_scrollable_frame, text="No labels", foreground="gray").pack(fill=tk.X, pady=5)
+        else:
+            for label in sorted(all_labels.keys()):
+                count = all_labels[label]
+                label_frame = ttk.Frame(self.label_scrollable_frame, relief=tk.SUNKEN, padding=5)
+                label_frame.pack(fill=tk.X, pady=2)
+                ttk.Label(label_frame, text=f"{label}: {count}", font=("Arial", 10, "bold"), foreground="darkblue").pack(anchor=tk.W)
+        
+        # Summary
+        all_total = sum(all_labels.values())
+        self.summary_label.config(text=f"Frame: {frame_total} | Total: {all_total}")
 
 if __name__ == "__main__":
     root = tk.Tk()
