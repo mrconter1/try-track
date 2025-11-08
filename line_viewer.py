@@ -24,6 +24,8 @@ class LineViewerApp:
         self.square_ids = {}  # Maps (frame_number, square_index) to assigned ID
         self.frame_scale = 1.0  # Scale factor for display frame
         self.original_frame_size = None
+        self.waiting_for_input = False  # True when waiting for a letter after clicking a square
+        self.pending_square = None  # Which square is waiting for input
         
         # Main container with sidebar and video
         main_container = ttk.Frame(root)
@@ -59,11 +61,12 @@ class LineViewerApp:
         self.image_label.pack(fill=tk.BOTH, expand=True)
         self.image_label.bind("<Button-1>", self.on_frame_click)
         
-        # Bind arrow keys
+        # Bind arrow keys and letter input
         self.root.bind('<Left>', lambda e: self.prev_frame())
         self.root.bind('<Right>', lambda e: self.next_frame())
         self.root.bind('<F11>', self.toggle_fullscreen)
         self.root.bind('<Escape>', self.exit_fullscreen)
+        self.root.bind('<KeyPress>', self.on_key_press)
         
         self.root.after(100, self.display_frame)
     
@@ -220,23 +223,31 @@ class LineViewerApp:
         
         for square_idx, square in enumerate(self.grid_squares):
             square_key = (self.current_frame, square_idx)
+            p1, p2, p3, p4 = square
+            center_x = int((p1[0] + p2[0] + p3[0] + p4[0]) / 4)
+            center_y = int((p1[1] + p2[1] + p3[1] + p4[1]) / 4)
+            
+            # Scale for display
+            center_x = int(center_x * self.frame_scale)
+            center_y = int(center_y * self.frame_scale)
+            
+            # Draw ID if assigned
             if square_key in self.square_ids:
-                p1, p2, p3, p4 = square
-                center_x = int((p1[0] + p2[0] + p3[0] + p4[0]) / 4)
-                center_y = int((p1[1] + p2[1] + p3[1] + p4[1]) / 4)
-                
-                # Scale for display
-                center_x = int(center_x * self.frame_scale)
-                center_y = int(center_y * self.frame_scale)
-                
                 square_id = self.square_ids[square_key]
                 cv2.putText(frame_array, str(square_id), (center_x - 10, center_y + 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            
+            # Highlight if waiting for input on this square
+            if self.waiting_for_input and self.pending_square == square_idx:
+                # Draw a red circle around the square center
+                cv2.circle(frame_array, (center_x, center_y), 30, (0, 0, 255), 3)
+                cv2.putText(frame_array, "TYPE LETTER", (center_x - 60, center_y - 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         
         return frame_array
     
     def on_frame_click(self, event):
-        """Handle mouse click on frame to assign ID to square"""
+        """Handle mouse click on frame to prepare for ID assignment"""
         if not self.grid_squares:
             messagebox.showwarning("No Squares", "No grid squares detected on this frame")
             return
@@ -258,17 +269,29 @@ class LineViewerApp:
                 break
         
         if clicked_square is None:
-            messagebox.showinfo("No Hit", "Click was not inside any grid square")
             return
         
-        # Ask for ID
-        square_key = (self.current_frame, clicked_square)
-        current_id = self.square_ids.get(square_key, "")
-        new_id = simpledialog.askstring("Assign ID", f"Enter ID for square {clicked_square}:", initialvalue=str(current_id))
+        # Set state to wait for letter input
+        self.waiting_for_input = True
+        self.pending_square = clicked_square
+        print(f"[GUI] Waiting for letter input for square {clicked_square} on frame {self.current_frame}")
+        self.display_frame()
+    
+    def on_key_press(self, event):
+        """Handle key press to assign letter to waiting square"""
+        if not self.waiting_for_input:
+            return
         
-        if new_id is not None and new_id.strip():
-            self.square_ids[square_key] = new_id.strip()
-            print(f"[GUI] Assigned ID '{new_id.strip()}' to square {clicked_square} on frame {self.current_frame}")
+        # Only accept single letters (a-z, A-Z)
+        if event.char.isalpha() and len(event.char) == 1:
+            square_key = (self.current_frame, self.pending_square)
+            letter = event.char.upper()
+            self.square_ids[square_key] = letter
+            print(f"[GUI] Assigned letter '{letter}' to square {self.pending_square} on frame {self.current_frame}")
+            
+            # Clear waiting state
+            self.waiting_for_input = False
+            self.pending_square = None
             self.display_frame()
 
 if __name__ == "__main__":
