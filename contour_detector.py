@@ -272,8 +272,9 @@ class ContourDetector:
         return frame
     
     def extract_and_correct_tiles(self, frame, grid_tiles, tile_size=150):
-        """Extract and perspective-correct each tile"""
+        """Extract and perspective-correct each tile, compute hashes for all rotations"""
         corrected_tiles = {}
+        tile_hashes = {}
         
         for (row, col), quad in grid_tiles.items():
             # Get the 4 corner points
@@ -309,8 +310,62 @@ class ContourDetector:
                 corrected = cv2.warpPerspective(frame, M, (tile_size, tile_size))
                 
                 corrected_tiles[(row, col)] = corrected
+                
+                # Normalize tile for better hash consistency
+                normalized = self._normalize_tile(corrected)
+                
+                # Compute hashes for all 4 rotations
+                hashes = {}
+                for rotation in [0, 90, 180, 270]:
+                    rotated = self._rotate_image(normalized, rotation)
+                    hashes[rotation] = self._compute_dhash(rotated)
+                
+                tile_hashes[(row, col)] = hashes
+                
             except cv2.error as e:
                 print(f"  ✗ Error perspective correcting tile ({row},{col}): {e}")
         
-        return corrected_tiles
+        return corrected_tiles, tile_hashes
+    
+    def _normalize_tile(self, tile_image):
+        """Normalize tile image for consistent hashing across different lighting"""
+        # Convert to grayscale if needed
+        if len(tile_image.shape) == 3:
+            gray = cv2.cvtColor(tile_image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = tile_image
+        
+        # Histogram equalization for lighting invariance
+        normalized = cv2.equalizeHist(gray)
+        return normalized
+    
+    def _rotate_image(self, image, angle):
+        """Rotate image by angle (0, 90, 180, 270)"""
+        if angle == 0:
+            return image
+        elif angle == 90:
+            return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif angle == 180:
+            return cv2.rotate(image, cv2.ROTATE_180)
+        elif angle == 270:
+            return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        return image
+    
+    def _compute_dhash(self, image, hash_size=8):
+        """Compute difference hash (dHash) of an image"""
+        # Resize image to hash_size x (hash_size+1)
+        resized = cv2.resize(image, (hash_size + 1, hash_size))
+        
+        # Compute differences between adjacent pixels
+        diff = resized[:, 1:] > resized[:, :-1]
+        
+        # Convert boolean array to hex string
+        hash_bytes = 0
+        for i, row in enumerate(diff):
+            for j, val in enumerate(row):
+                if val:
+                    hash_bytes += (1 << (i * hash_size + j))
+        
+        # Return as hex string
+        return format(hash_bytes, f'0{hash_size * hash_size // 4}x')
 

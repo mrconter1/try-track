@@ -53,7 +53,7 @@ class VideoFrameViewer:
         self.image_label.pack(fill=tk.BOTH, expand=True)
         
         # Right side for tile list
-        tile_panel = ttk.Frame(main_container, width=200)
+        tile_panel = ttk.Frame(main_container, width=450)
         tile_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
         tile_panel.pack_propagate(False)
         
@@ -96,13 +96,14 @@ class VideoFrameViewer:
             # Apply tile detection if enabled
             detected_tiles = {}
             corrected_tiles = {}
+            tile_hashes = {}
             if self.show_tiles:
                 frame, detected_tiles = self.contour_detector.detect_tiles(frame)
-                # Extract and perspective-correct each tile
-                corrected_tiles = self.contour_detector.extract_and_correct_tiles(frame, detected_tiles, tile_size=120)
+                # Extract and perspective-correct each tile, compute hashes
+                corrected_tiles, tile_hashes = self.contour_detector.extract_and_correct_tiles(frame, detected_tiles, tile_size=120)
             
-            # Update tile list panel with corrected images
-            self._update_tile_list(corrected_tiles)
+            # Update tile list panel with corrected images and hashes
+            self._update_tile_list(corrected_tiles, tile_hashes)
             
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = frame.shape[:2]
@@ -165,8 +166,8 @@ class VideoFrameViewer:
         print(f"\n[GUI] Tile detection: {'ENABLED' if self.show_tiles else 'DISABLED'}")
         self.display_frame()
     
-    def _update_tile_list(self, corrected_tiles):
-        """Update the tile list panel with extracted and corrected tile images"""
+    def _update_tile_list(self, corrected_tiles, tile_hashes=None):
+        """Update the tile list panel with extracted and corrected tile images and hashes"""
         # Clear previous tiles
         for widget in self.tile_scrollable_frame.winfo_children():
             widget.destroy()
@@ -175,19 +176,29 @@ class VideoFrameViewer:
             ttk.Label(self.tile_scrollable_frame, text="No tiles detected", foreground="gray").pack(fill=tk.X, pady=5)
             return
         
+        if tile_hashes is None:
+            tile_hashes = {}
+        
         # Sort tiles by position (row, col)
         sorted_tiles = sorted(corrected_tiles.items())
         
-        # Display each corrected tile image
+        # Display each corrected tile image with hashes
         for idx, ((row, col), tile_image) in enumerate(sorted_tiles):
             tile_frame = ttk.Frame(self.tile_scrollable_frame, relief=tk.SUNKEN, padding=5)
             tile_frame.pack(fill=tk.X, pady=3)
             
-            # Tile ID and position label
+            # Top: Tile ID and position label
             tile_label = ttk.Label(tile_frame, text=f"Tile {idx}: ({row},{col})", font=("Arial", 8, "bold"))
             tile_label.pack(anchor=tk.W)
             
-            # Convert corrected tile to PhotoImage and display
+            # Create horizontal layout: image on left, hashes on right
+            content_frame = ttk.Frame(tile_frame)
+            content_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Left side: tile image
+            img_frame = ttk.Frame(content_frame)
+            img_frame.pack(side=tk.LEFT, padx=5)
+            
             try:
                 # Convert BGR to RGB
                 tile_rgb = cv2.cvtColor(tile_image, cv2.COLOR_BGR2RGB)
@@ -197,11 +208,23 @@ class VideoFrameViewer:
                 photo = ImageTk.PhotoImage(pil_image)
                 
                 # Display thumbnail
-                img_label = tk.Label(tile_frame, image=photo, bg="white")
+                img_label = tk.Label(img_frame, image=photo, bg="white")
                 img_label.image = photo  # Keep a reference
-                img_label.pack(fill=tk.BOTH, expand=True)
+                img_label.pack()
             except Exception as e:
-                ttk.Label(tile_frame, text=f"Error: {str(e)}", foreground="red").pack()
+                ttk.Label(img_frame, text=f"Error: {str(e)}", foreground="red").pack()
+            
+            # Right side: hashes for all 4 rotations
+            hash_frame = ttk.Frame(content_frame)
+            hash_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+            
+            if (row, col) in tile_hashes:
+                hashes = tile_hashes[(row, col)]
+                ttk.Label(hash_frame, text="Hashes:", font=("Arial", 7, "bold")).pack(anchor=tk.W)
+                for rotation in [0, 90, 180, 270]:
+                    hash_val = hashes.get(rotation, "N/A")
+                    ttk.Label(hash_frame, text=f"{rotation}°: {hash_val[:12]}...", 
+                             font=("Arial", 6), foreground="navy").pack(anchor=tk.W)
         
         # Show total count
         ttk.Separator(self.tile_scrollable_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
