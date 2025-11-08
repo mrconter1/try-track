@@ -280,7 +280,7 @@ class LineViewerApp:
         return frame_array
     
     def on_frame_click(self, event):
-        """Handle mouse click on frame to prepare for ID assignment"""
+        """Handle mouse click on frame to assign ID or unlabel square"""
         if not self.grid_squares:
             messagebox.showwarning("No Squares", "No grid squares detected on this frame")
             return
@@ -304,11 +304,20 @@ class LineViewerApp:
         if clicked_square is None:
             return
         
-        # Set state to wait for letter input
-        self.waiting_for_input = True
-        self.pending_square = clicked_square
-        print(f"[GUI] Waiting for letter input for square {clicked_square} on frame {self.current_frame}")
-        self.display_frame()
+        # Check if square already has a label
+        square_key = (self.current_frame, clicked_square)
+        if square_key in self.square_ids:
+            # Remove label
+            removed_label = self.square_ids[square_key]
+            del self.square_ids[square_key]
+            print(f"[GUI] Removed label '{removed_label}' from square {clicked_square} on frame {self.current_frame}")
+            self.display_frame()
+        else:
+            # Set state to wait for letter input
+            self.waiting_for_input = True
+            self.pending_square = clicked_square
+            print(f"[GUI] Waiting for letter input for square {clicked_square} on frame {self.current_frame}")
+            self.display_frame()
     
     def on_key_press(self, event):
         """Handle key press to assign letter to waiting square"""
