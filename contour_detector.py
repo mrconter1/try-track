@@ -270,4 +270,47 @@ class ContourDetector:
         
         print(f"  ✓ Drew {len(grid_tiles)} labeled tiles")
         return frame
+    
+    def extract_and_correct_tiles(self, frame, grid_tiles, tile_size=150):
+        """Extract and perspective-correct each tile"""
+        corrected_tiles = {}
+        
+        for (row, col), quad in grid_tiles.items():
+            # Get the 4 corner points
+            pts = quad.reshape(4, 2).astype(np.float32)
+            
+            # Reorder points to ensure consistent ordering: top-left, top-right, bottom-right, bottom-left
+            # Calculate center
+            center = pts.mean(axis=0)
+            
+            # Sort points by angle from center for consistent ordering
+            angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+            sorted_indices = np.argsort(angles)
+            pts_sorted = pts[sorted_indices]
+            
+            # Reorder to: top-left, top-right, bottom-right, bottom-left
+            # Find the top point (minimum y)
+            top_idx = np.argmin(pts_sorted[:, 1])
+            pts_ordered = np.roll(pts_sorted, -top_idx, axis=0)
+            
+            # Define destination points (perfect square)
+            dst_pts = np.array([
+                [0, 0],
+                [tile_size, 0],
+                [tile_size, tile_size],
+                [0, tile_size]
+            ], dtype=np.float32)
+            
+            try:
+                # Get perspective transformation matrix
+                M = cv2.getPerspectiveTransform(pts_ordered, dst_pts)
+                
+                # Apply perspective warp to extract and straighten the tile
+                corrected = cv2.warpPerspective(frame, M, (tile_size, tile_size))
+                
+                corrected_tiles[(row, col)] = corrected
+            except cv2.error as e:
+                print(f"  ✗ Error perspective correcting tile ({row},{col}): {e}")
+        
+        return corrected_tiles
 
