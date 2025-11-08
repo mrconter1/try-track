@@ -105,29 +105,8 @@ class LineDetector:
         
         h, w = frame.shape[:2]
         
-        # Classify lines as horizontal or vertical
-        horizontal_lines = []
-        vertical_lines = []
-        
+        # Draw all lines in BLUE (extended to frame edges)
         for rho, theta in lines:
-            # Line equation: x*cos(theta) + y*sin(theta) = rho
-            # Calculate angle in degrees
-            angle_deg = theta * 180 / np.pi
-            
-            # Classify based on angle (perpendicular to line direction)
-            if angle_deg < 45 or angle_deg > 135:
-                horizontal_lines.append((rho, theta))
-            else:
-                vertical_lines.append((rho, theta))
-        
-        # Draw horizontal lines in GREEN (extended to frame edges)
-        for rho, theta in horizontal_lines:
-            # Find intersection with frame boundaries
-            x1, y1, x2, y2 = self._line_to_frame_edges(rho, theta, w, h)
-            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        
-        # Draw vertical lines in BLUE (extended to frame edges)
-        for rho, theta in vertical_lines:
             # Find intersection with frame boundaries
             x1, y1, x2, y2 = self._line_to_frame_edges(rho, theta, w, h)
             cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
