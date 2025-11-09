@@ -350,11 +350,16 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
             # Create info text
             info_text = f"Y: {img_y} ({label_y})\nX: {img_x} ({label_x})\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
             
-            # Create or update text box
+            # Create or update text box - position near mouse using annotate
             if hover_data['text_box'] is None:
-                hover_data['text_box'] = ax.text(0.02, 0.98, '', transform=ax.transAxes,
-                                                  fontsize=9, verticalalignment='top',
-                                                  bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                hover_data['text_box'] = ax.annotate('', xy=(event.xdata, event.ydata),
+                                                      xytext=(10, 10), textcoords='offset points',
+                                                      fontsize=9,
+                                                      bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9),
+                                                      ha='left', va='bottom')
+            else:
+                # Update text box position to follow mouse
+                hover_data['text_box'].xy = (event.xdata, event.ydata)
             
             hover_data['text_box'].set_text(info_text)
             hover_data['text_box'].set_visible(True)
