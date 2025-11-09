@@ -20,6 +20,8 @@ def get_block_descriptor(block, mode='mean', blob_threshold=None, blob_min_size=
         return int(np.min(flat))
     elif mode == 'max':
         return int(np.max(flat))
+    elif mode == 'std_dev':
+        return int(np.std(flat))
     elif mode == 'dhash':
         return compute_dhash_byte(block)
     elif mode == 'phash':
@@ -396,7 +398,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
     parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
-    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash', 'phash', 'blob_count', 'lbp'], help='Block descriptor mode (default: mean)')
+    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'std_dev', 'dhash', 'phash', 'blob_count', 'lbp'], help='Block descriptor mode (default: mean)')
     parser.add_argument('--blob-threshold', type=int, default=None, help='Threshold for blob detection (0-255, default: Otsu adaptive)')
     parser.add_argument('--blob-min-size', type=int, default=1, help='Minimum blob size in pixels (default: 1, filters noise)')
     args = parser.parse_args()
