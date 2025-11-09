@@ -8,7 +8,7 @@ import argparse
 from datetime import datetime
 from scipy.fftpack import dct
 
-def get_block_descriptor(block, mode='mean'):
+def get_block_descriptor(block, mode='mean', blob_threshold=None, blob_min_size=1):
     """Compute block descriptor based on mode"""
     flat = block.flatten()
     
@@ -24,6 +24,8 @@ def get_block_descriptor(block, mode='mean'):
         return compute_dhash_byte(block)
     elif mode == 'phash':
         return compute_phash_byte(block)
+    elif mode == 'blob_count':
+        return compute_blob_count(block, blob_threshold, blob_min_size)
     else:
         raise ValueError(f"Unknown descriptor mode: {mode}")
 
@@ -91,7 +93,36 @@ def compute_phash_byte(block):
     
     return byte_val
 
-def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean'):
+def compute_blob_count(block, blob_threshold=None, blob_min_size=1):
+    """
+    Count number of blobs/connected components in a block.
+    If blob_threshold is None, uses Otsu's adaptive threshold.
+    If blob_threshold is a number (0-255), uses that fixed threshold.
+    Filters out blobs smaller than blob_min_size pixels.
+    Returns blob count (0-255).
+    """
+    if blob_threshold is None:
+        # Use Otsu's automatic threshold
+        _, binary = cv2.threshold(block, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        # Use fixed threshold
+        _, binary = cv2.threshold(block, blob_threshold, 255, cv2.THRESH_BINARY)
+    
+    # Find connected components with labels
+    num_labels, labels = cv2.connectedComponents(binary, connectivity=8)
+    
+    # Count blobs, filtering by minimum size
+    blob_count = 0
+    for label_id in range(1, num_labels):  # Skip label 0 (background)
+        # Count pixels with this label
+        blob_size = np.sum(labels == label_id)
+        if blob_size >= blob_min_size:
+            blob_count += 1
+    
+    # Cap at 255 for byte value
+    return min(blob_count, 255)
+
+def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean', blob_threshold=None, blob_min_size=1):
     """Generate block signature for a tile image"""
     img = cv2.imread(image_path)
     if img is None:
@@ -113,7 +144,7 @@ def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean
             x_end = (col + 1) * block_size
             
             block = resized[y_start:y_end, x_start:x_end]
-            descriptor = get_block_descriptor(block, descriptor_mode)
+            descriptor = get_block_descriptor(block, descriptor_mode, blob_threshold, blob_min_size)
             signature.append(descriptor)
     
     signature_bytes = bytes(signature)
@@ -146,7 +177,7 @@ def compute_distance(hash1, hash2, mode='manhattan'):
     else:
         raise ValueError(f"Unknown distance mode: {mode}")
 
-def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean'):
+def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', blob_threshold=None, blob_min_size=1):
     export_folder = os.path.join(os.getcwd(), "export")
     
     # Read original metadata
@@ -154,7 +185,9 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean'):
     with open(metadata_path, 'r') as f:
         old_metadata = json.load(f)
     
-    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {descriptor_mode} descriptor, {distance_mode} distance)...")
+    threshold_str = f", threshold={blob_threshold}" if blob_threshold is not None else ""
+    min_size_str = f", min_size={blob_min_size}" if blob_min_size > 1 else ""
+    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {descriptor_mode} descriptor{threshold_str}{min_size_str}, {distance_mode} distance)...")
     
     # Generate hashes for all images
     image_hashes = {}
@@ -169,7 +202,7 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean'):
                 print(f"Image not found: {image_file}")
                 continue
             
-            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode)
+            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode, blob_threshold, blob_min_size)
             if hash_str is None:
                 continue
             
@@ -244,8 +277,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
     parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
-    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash', 'phash'], help='Block descriptor mode (default: mean)')
+    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash', 'phash', 'blob_count'], help='Block descriptor mode (default: mean)')
+    parser.add_argument('--blob-threshold', type=int, default=None, help='Threshold for blob detection (0-255, default: Otsu adaptive)')
+    parser.add_argument('--blob-min-size', type=int, default=1, help='Minimum blob size in pixels (default: 1, filters noise)')
     args = parser.parse_args()
     
-    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor)
+    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor, blob_threshold=args.blob_threshold, blob_min_size=args.blob_min_size)
 
