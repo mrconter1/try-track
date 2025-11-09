@@ -140,6 +140,11 @@ def main():
             ax.text(j, i, label, ha="center", va="center", color=text_color, fontsize=6, fontweight='bold')
     
     plt.tight_layout()
+    
+    # Maximize window
+    manager = plt.get_current_fig_manager()
+    manager.window.showMaximized()
+    
     plt.show()
 
 if __name__ == "__main__":
