@@ -26,6 +26,8 @@ def get_block_descriptor(block, mode='mean', blob_threshold=None, blob_min_size=
         return compute_phash_byte(block)
     elif mode == 'blob_count':
         return compute_blob_count(block, blob_threshold, blob_min_size)
+    elif mode == 'lbp':
+        return compute_lbp_byte(block)
     else:
         raise ValueError(f"Unknown descriptor mode: {mode}")
 
@@ -121,6 +123,48 @@ def compute_blob_count(block, blob_threshold=None, blob_min_size=1):
     
     # Cap at 255 for byte value
     return min(blob_count, 255)
+
+def compute_lbp_byte(block):
+    """
+    Compute Local Binary Pattern (LBP) descriptor for a block.
+    LBP captures local texture by comparing each pixel to its 8 neighbors.
+    Returns a single byte (0-255) representing the dominant LBP pattern.
+    """
+    h, w = block.shape
+    lbp_values = []
+    
+    # Compute LBP for interior pixels (excluding border)
+    for y in range(1, h - 1):
+        for x in range(1, w - 1):
+            center = block[y, x]
+            
+            # Get 8 neighbors in order (clockwise from top)
+            neighbors = [
+                block[y-1, x-1],  # top-left
+                block[y-1, x],    # top
+                block[y-1, x+1],  # top-right
+                block[y, x+1],    # right
+                block[y+1, x+1],  # bottom-right
+                block[y+1, x],    # bottom
+                block[y+1, x-1],  # bottom-left
+                block[y, x-1],    # left
+            ]
+            
+            # Create 8-bit pattern: 1 if neighbor >= center, else 0
+            lbp_bits = [1 if neighbor >= center else 0 for neighbor in neighbors]
+            
+            # Convert to byte value (0-255)
+            lbp_byte = 0
+            for i, bit in enumerate(lbp_bits):
+                lbp_byte += bit * (2 ** i)
+            
+            lbp_values.append(lbp_byte)
+    
+    # Return the median LBP value as representative
+    if lbp_values:
+        return int(np.median(lbp_values))
+    else:
+        return 0
 
 def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean', blob_threshold=None, blob_min_size=1):
     """Generate block signature for a tile image"""
@@ -277,7 +321,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
     parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
-    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash', 'phash', 'blob_count'], help='Block descriptor mode (default: mean)')
+    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash', 'phash', 'blob_count', 'lbp'], help='Block descriptor mode (default: mean)')
     parser.add_argument('--blob-threshold', type=int, default=None, help='Threshold for blob detection (0-255, default: Otsu adaptive)')
     parser.add_argument('--blob-min-size', type=int, default=1, help='Minimum blob size in pixels (default: 1, filters noise)')
     args = parser.parse_args()
