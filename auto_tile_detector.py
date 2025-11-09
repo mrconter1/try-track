@@ -386,6 +386,165 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
     
     manager = plt.get_current_fig_manager()
     manager.window.showMaximized()
+    
+    # Create sorted similarity ranking window
+    fig2, ax2 = plt.subplots(figsize=(16, 12))
+    
+    # Create sorted ranking matrix - for each column, sort rows by distance
+    sorted_rankings = np.zeros((num_tiles, num_tiles))
+    for col in range(num_tiles):
+        # Get column and sort indices
+        col_distances = normalized_matrix[:, col]
+        sorted_indices = np.argsort(col_distances)  # Ascending order (best matches first)
+        sorted_rankings[:, col] = sorted_indices
+    
+    # Create a new normalized matrix showing ranks colored by similarity
+    rank_colored = np.zeros((num_tiles, num_tiles))
+    for col in range(num_tiles):
+        col_distances = normalized_matrix[:, col]
+        sorted_indices = np.argsort(col_distances)
+        for rank, idx in enumerate(sorted_indices):
+            rank_colored[rank, col] = col_distances[idx]
+    
+    im2 = ax2.imshow(rank_colored, cmap='RdYlGn_r', aspect='auto')
+    
+    ax2.set_xlabel('Tile', fontsize=10)
+    ax2.set_ylabel('Similarity Rank (0=most similar)', fontsize=10)
+    ax2.set_title('Sorted Similarity Rankings per Tile', fontsize=12, fontweight='bold')
+    
+    # Set column labels (tile names)
+    ax2.set_xticks(range(num_tiles))
+    ax2.set_xticklabels(tile_names, fontsize=7)
+    plt.setp(ax2.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    
+    # Set row labels (rank positions)
+    ax2.set_yticks(range(num_tiles))
+    ax2.set_yticklabels(range(num_tiles), fontsize=8)
+    
+    cbar2 = plt.colorbar(im2, ax=ax2)
+    cbar2.set_label('Normalized Distance', rotation=270, labelpad=20)
+    
+    # Add grid
+    ax2.set_xticks(np.arange(num_tiles)-.5, minor=True)
+    ax2.set_yticks(np.arange(num_tiles)-.5, minor=True)
+    ax2.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Store data for hover interaction on second window
+    hover_data2 = {
+        'tile_names': tile_names,
+        'distance_matrix': distance_matrix,
+        'normalized_matrix': normalized_matrix,
+        'rank_colored': rank_colored,
+        'sorted_rankings': sorted_rankings,
+        'tile_images': tile_images,
+        'text_box': None,
+        'rect': None,
+        'image_display': None
+    }
+    
+    # Define hover event handler for sorted rankings window
+    def on_hover2(event):
+        if event.inaxes != ax2:
+            if hover_data2['text_box']:
+                hover_data2['text_box'].set_visible(False)
+            if hover_data2['rect']:
+                hover_data2['rect'].set_visible(False)
+            if hover_data2['image_display']:
+                hover_data2['image_display'].set_visible(False)
+            fig2.canvas.draw_idle()
+            return
+        
+        x, y = int(event.xdata + 0.5), int(event.ydata + 0.5)
+        
+        if 0 <= x < num_tiles and 0 <= y < num_tiles:
+            tile_x = tile_names[x]  # Column tile
+            ranked_idx = int(hover_data2['sorted_rankings'][y, x])  # Ranked tile index
+            tile_y = tile_names[ranked_idx]
+            
+            raw_dist = distance_matrix[ranked_idx, x]
+            norm_dist = normalized_matrix[ranked_idx, x]
+            
+            info_text = f"Query: {tile_x}\nRank {y}: {tile_y}\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
+            
+            # Create or update text box
+            if hover_data2['text_box'] is None:
+                hover_data2['text_box'] = ax2.annotate('', xy=(event.xdata, event.ydata),
+                                                       xytext=(10, 10), textcoords='offset points',
+                                                       fontsize=9,
+                                                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9),
+                                                       ha='left', va='bottom')
+            else:
+                hover_data2['text_box'].xy = (event.xdata, event.ydata)
+            
+            hover_data2['text_box'].set_text(info_text)
+            hover_data2['text_box'].set_visible(True)
+            
+            # Load and display tile images
+            try:
+                if tile_x in hover_data2['tile_images'] and tile_y in hover_data2['tile_images']:
+                    img_x = hover_data2['tile_images'][tile_x]
+                    img_y = hover_data2['tile_images'][tile_y]
+                    
+                    if img_x is not None and img_y is not None:
+                        # Resize to thumbnails (80x80)
+                        thumb_size = 80
+                        img_x_thumb = cv2.resize(img_x, (thumb_size, thumb_size))
+                        img_y_thumb = cv2.resize(img_y, (thumb_size, thumb_size))
+                        
+                        # Convert to RGB
+                        img_x_rgb = cv2.cvtColor(img_x_thumb, cv2.COLOR_BGR2RGB)
+                        img_y_rgb = cv2.cvtColor(img_y_thumb, cv2.COLOR_BGR2RGB)
+                        
+                        # Combine side by side
+                        combined = np.hstack([img_x_rgb, img_y_rgb])
+                        
+                        # Create or update image display
+                        if hover_data2['image_display'] is None:
+                            from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+                            imagebox = OffsetImage(combined, zoom=0.8)
+                            hover_data2['image_display'] = AnnotationBbox(imagebox, 
+                                                                           xy=(event.xdata, event.ydata),
+                                                                           xybox=(10, -50),
+                                                                           boxcoords='offset points',
+                                                                           pad=0.5,
+                                                                           frameon=True)
+                            ax2.add_artist(hover_data2['image_display'])
+                        else:
+                            hover_data2['image_display'].offsetbox.set_data(combined)
+                            hover_data2['image_display'].xy = (event.xdata, event.ydata)
+                        
+                        hover_data2['image_display'].set_visible(True)
+            except Exception as e:
+                print(f"Error loading images for display: {e}")
+            
+            # Draw rectangle around cell
+            if hover_data2['rect'] is None:
+                from matplotlib.patches import Rectangle
+                hover_data2['rect'] = Rectangle((x-0.5, y-0.5), 1, 1, 
+                                               fill=False, edgecolor='black', linewidth=2)
+                ax2.add_patch(hover_data2['rect'])
+            else:
+                hover_data2['rect'].set_xy((x-0.5, y-0.5))
+            
+            hover_data2['rect'].set_visible(True)
+            fig2.canvas.draw_idle()
+        else:
+            if hover_data2['text_box']:
+                hover_data2['text_box'].set_visible(False)
+            if hover_data2['rect']:
+                hover_data2['rect'].set_visible(False)
+            if hover_data2['image_display']:
+                hover_data2['image_display'].set_visible(False)
+            fig2.canvas.draw_idle()
+    
+    # Connect hover event to second window
+    fig2.canvas.mpl_connect('motion_notify_event', on_hover2)
+    
+    manager2 = plt.get_current_fig_manager()
+    manager2.window.showMaximized()
+    
     plt.show()
 
 if __name__ == "__main__":
