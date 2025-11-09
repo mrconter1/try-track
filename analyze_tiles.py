@@ -168,7 +168,7 @@ def compute_lbp_byte(block):
     else:
         return 0
 
-def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean', blob_threshold=None, blob_min_size=1, use_blur=False, use_equalize=False, use_contrast_stretch=False):
+def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean', blob_threshold=None, blob_min_size=1, use_blur=False, use_equalize=False, use_contrast_stretch=False, use_clahe=False):
     """Generate block signature for a tile image"""
     img = cv2.imread(image_path)
     if img is None:
@@ -193,6 +193,12 @@ def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean
         # Apply contrast stretching (normalize to full 0-255 range)
         p2, p98 = np.percentile(processed, (2, 98))
         processed = np.clip((processed - p2) / (p98 - p2) * 255, 0, 255).astype(np.uint8)
+    
+    if use_clahe:
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # Better than simple histogram equalization - preserves local contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        processed = clahe.apply(processed)
     
     block_size = 256 // blocks_per_side
     signature = []
@@ -246,7 +252,7 @@ def compute_distance(hash1, hash2, mode='manhattan'):
     else:
         raise ValueError(f"Unknown distance mode: {mode}")
 
-def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', blob_threshold=None, blob_min_size=1, use_blur=False, use_equalize=False, use_contrast_stretch=False):
+def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', blob_threshold=None, blob_min_size=1, use_blur=False, use_equalize=False, use_contrast_stretch=False, use_clahe=False):
     export_folder = os.path.join(os.getcwd(), "export")
     
     # Read original metadata
@@ -263,6 +269,8 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
         preproc_str.append("equalize")
     if use_contrast_stretch:
         preproc_str.append("contrast-stretch")
+    if use_clahe:
+        preproc_str.append("clahe")
     preproc_info = f", preproc=[{', '.join(preproc_str)}]" if preproc_str else ""
     print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {descriptor_mode} descriptor{threshold_str}{min_size_str}{preproc_info}, {distance_mode} distance)...")
     
@@ -279,7 +287,7 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
                 print(f"Image not found: {image_file}")
                 continue
             
-            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode, blob_threshold, blob_min_size, use_blur, use_equalize, use_contrast_stretch)
+            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode, blob_threshold, blob_min_size, use_blur, use_equalize, use_contrast_stretch, use_clahe)
             if hash_str is None:
                 continue
             
@@ -484,7 +492,8 @@ if __name__ == "__main__":
     parser.add_argument('--blur', action='store_true', help='Apply Gaussian blur for noise reduction')
     parser.add_argument('--equalize', action='store_true', help='Apply histogram equalization')
     parser.add_argument('--contrast-stretch', action='store_true', help='Apply contrast stretching')
+    parser.add_argument('--clahe', action='store_true', help='Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) - better for lighting variations')
     args = parser.parse_args()
     
-    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor, blob_threshold=args.blob_threshold, blob_min_size=args.blob_min_size, use_blur=args.blur, use_equalize=args.equalize, use_contrast_stretch=args.contrast_stretch)
+    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor, blob_threshold=args.blob_threshold, blob_min_size=args.blob_min_size, use_blur=args.blur, use_equalize=args.equalize, use_contrast_stretch=args.contrast_stretch, use_clahe=args.clahe)
 
