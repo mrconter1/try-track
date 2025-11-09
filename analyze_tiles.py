@@ -4,10 +4,11 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import binascii
+import argparse
 from datetime import datetime
 
-def generate_tile_signature(image_path):
-    """Generate 8x8 block signature for a tile image"""
+def generate_tile_signature(image_path, blocks_per_side=8):
+    """Generate block signature for a tile image"""
     img = cv2.imread(image_path)
     if img is None:
         print(f"Failed to read {image_path}")
@@ -17,11 +18,11 @@ def generate_tile_signature(image_path):
     resized = cv2.resize(gray, (256, 256))
     # Skip histogram equalization for now - might be causing false positives
     
-    block_size = 32
+    block_size = 256 // blocks_per_side
     signature = []
     
-    for row in range(8):
-        for col in range(8):
+    for row in range(blocks_per_side):
+        for col in range(blocks_per_side):
             y_start = row * block_size
             y_end = (row + 1) * block_size
             x_start = col * block_size
@@ -46,7 +47,7 @@ def manhattan_distance(hash1, hash2):
     bytes2 = hex_to_bytes(hash2)
     return sum(abs(b1 - b2) for b1, b2 in zip(bytes1, bytes2))
 
-def main():
+def main(blocks_per_side=8):
     export_folder = os.path.join(os.getcwd(), "export")
     
     # Read original metadata
@@ -54,7 +55,7 @@ def main():
     with open(metadata_path, 'r') as f:
         old_metadata = json.load(f)
     
-    print("Generating tile signatures...")
+    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks)...")
     
     # Generate hashes for all images
     image_hashes = {}
@@ -69,7 +70,7 @@ def main():
                 print(f"Image not found: {image_file}")
                 continue
             
-            hash_str = generate_tile_signature(image_path)
+            hash_str = generate_tile_signature(image_path, blocks_per_side)
             if hash_str is None:
                 continue
             
@@ -148,5 +149,9 @@ def main():
     plt.show()
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Analyze tile image similarity with configurable block size')
+    parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
+    args = parser.parse_args()
+    
+    main(blocks_per_side=args.blocks)
 
