@@ -325,7 +325,9 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
         'distance_matrix': distance_matrix,
         'normalized_matrix': normalized_matrix,
         'text_box': None,
-        'rect': None
+        'rect': None,
+        'image_display': None,
+        'export_folder': export_folder
     }
     
     # Set ticks and labels
@@ -362,6 +364,8 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
                 hover_data['text_box'].set_visible(False)
             if hover_data['rect']:
                 hover_data['rect'].set_visible(False)
+            if hover_data['image_display']:
+                hover_data['image_display'].set_visible(False)
             fig.canvas.draw_idle()
             return
         
@@ -397,6 +401,49 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
             hover_data['text_box'].set_text(info_text)
             hover_data['text_box'].set_visible(True)
             
+            # Load and display tile images
+            try:
+                img_y_path = os.path.join(hover_data['export_folder'], img_y)
+                img_x_path = os.path.join(hover_data['export_folder'], img_x)
+                
+                if os.path.exists(img_y_path) and os.path.exists(img_x_path):
+                    # Load images
+                    img_y_cv = cv2.imread(img_y_path)
+                    img_x_cv = cv2.imread(img_x_path)
+                    
+                    if img_y_cv is not None and img_x_cv is not None:
+                        # Resize to thumbnails (80x80)
+                        thumb_size = 80
+                        img_y_thumb = cv2.resize(img_y_cv, (thumb_size, thumb_size))
+                        img_x_thumb = cv2.resize(img_x_cv, (thumb_size, thumb_size))
+                        
+                        # Convert to RGB
+                        img_y_rgb = cv2.cvtColor(img_y_thumb, cv2.COLOR_BGR2RGB)
+                        img_x_rgb = cv2.cvtColor(img_x_thumb, cv2.COLOR_BGR2RGB)
+                        
+                        # Combine side by side with labels
+                        combined = np.hstack([img_y_rgb, img_x_rgb])
+                        
+                        # Create or update image display
+                        if hover_data['image_display'] is None:
+                            from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+                            imagebox = OffsetImage(combined, zoom=0.8)
+                            hover_data['image_display'] = AnnotationBbox(imagebox, 
+                                                                          xy=(event.xdata, event.ydata),
+                                                                          xybox=(10, -50),
+                                                                          boxcoords='offset points',
+                                                                          pad=0.5,
+                                                                          frameon=True)
+                            ax.add_artist(hover_data['image_display'])
+                        else:
+                            # Update image display
+                            hover_data['image_display'].offsetbox.set_data(combined)
+                            hover_data['image_display'].xy = (event.xdata, event.ydata)
+                        
+                        hover_data['image_display'].set_visible(True)
+            except Exception as e:
+                print(f"Error loading images for display: {e}")
+            
             # Draw rectangle around cell
             if hover_data['rect'] is None:
                 from matplotlib.patches import Rectangle
@@ -414,6 +461,8 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
                 hover_data['text_box'].set_visible(False)
             if hover_data['rect']:
                 hover_data['rect'].set_visible(False)
+            if hover_data['image_display']:
+                hover_data['image_display'].set_visible(False)
             fig.canvas.draw_idle()
     
     # Connect hover event
