@@ -285,6 +285,16 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
     
     im = ax.imshow(normalized_matrix, cmap='RdYlGn_r', aspect='auto')
     
+    # Store data for hover interaction
+    hover_data = {
+        'image_files': image_files,
+        'image_labels': image_labels,
+        'distance_matrix': distance_matrix,
+        'normalized_matrix': normalized_matrix,
+        'text_box': None,
+        'rect': None
+    }
+    
     # Set ticks and labels
     ax.set_xticks(range(num_images))
     ax.set_yticks(range(num_images))
@@ -310,6 +320,66 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
     ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
     
     plt.tight_layout()
+    
+    # Define hover event handler
+    def on_hover(event):
+        if event.inaxes != ax:
+            # Mouse not over axes
+            if hover_data['text_box']:
+                hover_data['text_box'].set_visible(False)
+            if hover_data['rect']:
+                hover_data['rect'].set_visible(False)
+            fig.canvas.draw_idle()
+            return
+        
+        # Get current cursor position
+        x, y = int(event.xdata + 0.5), int(event.ydata + 0.5)
+        
+        # Check if within bounds
+        if 0 <= x < num_images and 0 <= y < num_images:
+            # Get image information
+            img_y = image_files[y]
+            img_x = image_files[x]
+            label_y = image_labels[img_y]
+            label_x = image_labels[img_x]
+            
+            # Get distance values
+            raw_dist = distance_matrix[y, x]
+            norm_dist = normalized_matrix[y, x]
+            
+            # Create info text
+            info_text = f"Y: {img_y} ({label_y})\nX: {img_x} ({label_x})\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
+            
+            # Create or update text box
+            if hover_data['text_box'] is None:
+                hover_data['text_box'] = ax.text(0.02, 0.98, '', transform=ax.transAxes,
+                                                  fontsize=9, verticalalignment='top',
+                                                  bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            
+            hover_data['text_box'].set_text(info_text)
+            hover_data['text_box'].set_visible(True)
+            
+            # Draw rectangle around cell
+            if hover_data['rect'] is None:
+                from matplotlib.patches import Rectangle
+                hover_data['rect'] = Rectangle((x-0.5, y-0.5), 1, 1, 
+                                               fill=False, edgecolor='black', linewidth=2)
+                ax.add_patch(hover_data['rect'])
+            else:
+                hover_data['rect'].set_xy((x-0.5, y-0.5))
+            
+            hover_data['rect'].set_visible(True)
+            fig.canvas.draw_idle()
+        else:
+            # Outside grid
+            if hover_data['text_box']:
+                hover_data['text_box'].set_visible(False)
+            if hover_data['rect']:
+                hover_data['rect'].set_visible(False)
+            fig.canvas.draw_idle()
+    
+    # Connect hover event
+    fig.canvas.mpl_connect('motion_notify_event', on_hover)
     
     # Maximize window
     manager = plt.get_current_fig_manager()
