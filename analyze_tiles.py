@@ -47,7 +47,22 @@ def manhattan_distance(hash1, hash2):
     bytes2 = hex_to_bytes(hash2)
     return sum(abs(b1 - b2) for b1, b2 in zip(bytes1, bytes2))
 
-def main(blocks_per_side=8):
+def euclidean_distance(hash1, hash2):
+    """Compute Euclidean distance between two hashes"""
+    bytes1 = hex_to_bytes(hash1)
+    bytes2 = hex_to_bytes(hash2)
+    return np.sqrt(sum((b1 - b2)**2 for b1, b2 in zip(bytes1, bytes2)))
+
+def compute_distance(hash1, hash2, mode='manhattan'):
+    """Compute distance using specified mode"""
+    if mode == 'manhattan':
+        return manhattan_distance(hash1, hash2)
+    elif mode == 'euclidean':
+        return euclidean_distance(hash1, hash2)
+    else:
+        raise ValueError(f"Unknown distance mode: {mode}")
+
+def main(blocks_per_side=8, distance_mode='manhattan'):
     export_folder = os.path.join(os.getcwd(), "export")
     
     # Read original metadata
@@ -55,7 +70,7 @@ def main(blocks_per_side=8):
     with open(metadata_path, 'r') as f:
         old_metadata = json.load(f)
     
-    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks)...")
+    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {distance_mode} distance)...")
     
     # Generate hashes for all images
     image_hashes = {}
@@ -94,7 +109,7 @@ def main(blocks_per_side=8):
             if i == j:
                 distance_matrix[i][j] = 0
             else:
-                distance_matrix[i][j] = manhattan_distance(image_hashes[image_files[i]], image_hashes[image_files[j]])
+                distance_matrix[i][j] = compute_distance(image_hashes[image_files[i]], image_hashes[image_files[j]], distance_mode)
     
     # Normalize to 0-1
     min_dist = np.min(distance_matrix[distance_matrix > 0])
@@ -142,9 +157,10 @@ def main(blocks_per_side=8):
     plt.show()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Analyze tile image similarity with configurable block size')
+    parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
+    parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
     args = parser.parse_args()
     
-    main(blocks_per_side=args.blocks)
+    main(blocks_per_side=args.blocks, distance_mode=args.distance)
 
