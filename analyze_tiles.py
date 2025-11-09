@@ -214,12 +214,20 @@ def euclidean_distance(hash1, hash2):
     bytes2 = hex_to_bytes(hash2)
     return np.sqrt(sum((b1 - b2)**2 for b1, b2 in zip(bytes1, bytes2)))
 
+def chebyshev_distance(hash1, hash2):
+    """Compute Chebyshev distance between two hashes (max absolute difference)"""
+    bytes1 = hex_to_bytes(hash1)
+    bytes2 = hex_to_bytes(hash2)
+    return max(abs(b1 - b2) for b1, b2 in zip(bytes1, bytes2))
+
 def compute_distance(hash1, hash2, mode='manhattan'):
     """Compute distance using specified mode"""
     if mode == 'manhattan':
         return manhattan_distance(hash1, hash2)
     elif mode == 'euclidean':
         return euclidean_distance(hash1, hash2)
+    elif mode == 'chebyshev':
+        return chebyshev_distance(hash1, hash2)
     else:
         raise ValueError(f"Unknown distance mode: {mode}")
 
@@ -397,7 +405,7 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
-    parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
+    parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean', 'chebyshev'], help='Distance metric (default: manhattan)')
     parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'std_dev', 'dhash', 'phash', 'blob_count', 'lbp'], help='Block descriptor mode (default: mean)')
     parser.add_argument('--blob-threshold', type=int, default=None, help='Threshold for blob detection (0-255, default: Otsu adaptive)')
     parser.add_argument('--blob-min-size', type=int, default=1, help='Minimum blob size in pixels (default: 1, filters noise)')
