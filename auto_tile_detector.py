@@ -178,7 +178,7 @@ def extract_and_warp_square(frame, square):
     
     return warped
 
-def main(video_path, start_frame, num_frames, blocks, use_clahe):
+def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=None):
     print(f"Loading video: {video_path}")
     cap = cv2.VideoCapture(video_path)
     
@@ -193,6 +193,8 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
     tile_stddev = {}  # Store std dev for each tile
     
     print(f"Processing frames {start_frame} to {start_frame + num_frames}")
+    if tile_max_std is not None:
+        print(f"Max std dev threshold: {tile_max_std}")
     
     for frame_idx in range(start_frame, start_frame + num_frames):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -217,14 +219,18 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
                 hash_str = generate_tile_hash(warped, blocks, use_clahe)
                 
                 if hash_str:
+                    # Calculate std dev of tile
+                    gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+                    std_dev = float(np.std(gray_warped))
+                    
+                    # Check if tile passes std dev threshold
+                    if tile_max_std is not None and std_dev > tile_max_std:
+                        continue  # Skip this tile
+                    
                     tile_name = f"F{frame_idx}_S{square_idx}"
                     tile_hashes.append(hash_str)
                     tile_names.append(tile_name)
                     tile_images[tile_name] = warped  # Store for hover display
-                    
-                    # Calculate std dev of tile
-                    gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-                    std_dev = float(np.std(gray_warped))
                     tile_stddev[tile_name] = std_dev
             except Exception as e:
                 print(f"Error processing square: {e}")
@@ -611,8 +617,9 @@ if __name__ == "__main__":
     parser.add_argument('--blocks', type=int, default=16, help='Blocks per side for dhash (default: 16)')
     parser.add_argument('--clahe', action='store_true', default=True, help='Apply CLAHE preprocessing (default: True)')
     parser.add_argument('--no-clahe', dest='clahe', action='store_false', help='Disable CLAHE preprocessing')
+    parser.add_argument('--tile-max-std', type=float, default=None, help='Maximum std dev allowed for tile (filters out blurry/uniform tiles)')
     
     args = parser.parse_args()
     
-    main(args.video, args.start_frame, args.num_frames, args.blocks, args.clahe)
+    main(args.video, args.start_frame, args.num_frames, args.blocks, args.clahe, args.tile_max_std)
 
