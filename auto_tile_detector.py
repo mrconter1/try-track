@@ -448,15 +448,24 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
         for rank, idx in enumerate(sorted_indices[:top_matches]):
             rank_colored[rank, col] = col_distances[idx]
     
+    # Sort columns by sum of distances (lowest to highest)
+    column_sums = rank_colored.sum(axis=0)
+    sorted_col_indices = np.argsort(column_sums)
+    
+    # Reorder matrices and tile names
+    rank_colored = rank_colored[:, sorted_col_indices]
+    sorted_rankings = sorted_rankings[:, sorted_col_indices]
+    sorted_tile_names = [tile_names[i] for i in sorted_col_indices]
+    
     im2 = ax2.imshow(rank_colored, cmap='RdYlGn_r', aspect='auto')
     
-    ax2.set_xlabel('Tile', fontsize=10)
+    ax2.set_xlabel('Tile (sorted by total distance)', fontsize=10)
     ax2.set_ylabel('Similarity Rank (0=most similar)', fontsize=10)
     ax2.set_title(f'Sorted Similarity Rankings per Tile (Top {top_matches})', fontsize=12, fontweight='bold')
     
-    # Set column labels (tile names)
+    # Set column labels (tile names - now sorted by total distance)
     ax2.set_xticks(range(num_tiles))
-    ax2.set_xticklabels(tile_names, fontsize=7)
+    ax2.set_xticklabels(sorted_tile_names, fontsize=7)
     plt.setp(ax2.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
     
     # Set row labels (rank positions)
@@ -476,6 +485,8 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
     # Store data for hover interaction on second window
     hover_data2 = {
         'tile_names': tile_names,
+        'sorted_tile_names': sorted_tile_names,
+        'sorted_col_indices': sorted_col_indices,
         'distance_matrix': distance_matrix,
         'normalized_matrix': normalized_matrix,
         'rank_colored': rank_colored,
@@ -502,12 +513,15 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
         x, y = int(event.xdata + 0.5), int(event.ydata + 0.5)
         
         if 0 <= x < num_tiles and 0 <= y < top_matches:
-            tile_x = tile_names[x]  # Column tile
+            tile_x = hover_data2['sorted_tile_names'][x]  # Column tile (from sorted names)
             ranked_idx = int(hover_data2['sorted_rankings'][y, x])  # Ranked tile index
-            tile_y = tile_names[ranked_idx]
+            tile_y = hover_data2['tile_names'][ranked_idx]
             
-            raw_dist = distance_matrix[ranked_idx, x]
-            norm_dist = normalized_matrix[ranked_idx, x]
+            # Get original column index from sorted position
+            original_col_idx = hover_data2['sorted_col_indices'][x]
+            
+            raw_dist = distance_matrix[ranked_idx, original_col_idx]
+            norm_dist = normalized_matrix[ranked_idx, original_col_idx]
             
             stddev_x = hover_data2['tile_stddev'].get(tile_x, 0)
             stddev_y = hover_data2['tile_stddev'].get(tile_y, 0)
