@@ -133,13 +133,6 @@ def main(blocks_per_side=8):
     ax.set_yticks(np.arange(num_images)-.5, minor=True)
     ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
     
-    # Add label text to each cell
-    for i in range(num_images):
-        for j in range(num_images):
-            label = image_labels[image_files[j]]
-            text_color = 'white' if normalized_matrix[i, j] > 0.5 else 'black'
-            ax.text(j, i, label, ha="center", va="center", color=text_color, fontsize=6, fontweight='bold')
-    
     plt.tight_layout()
     
     # Maximize window
