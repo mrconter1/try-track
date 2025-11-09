@@ -190,6 +190,7 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
     tile_hashes = []
     tile_names = []
     tile_images = {}  # Store warped images for hover display
+    tile_stddev = {}  # Store std dev for each tile
     
     print(f"Processing frames {start_frame} to {start_frame + num_frames}")
     
@@ -220,6 +221,11 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
                     tile_hashes.append(hash_str)
                     tile_names.append(tile_name)
                     tile_images[tile_name] = warped  # Store for hover display
+                    
+                    # Calculate std dev of tile
+                    gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+                    std_dev = float(np.std(gray_warped))
+                    tile_stddev[tile_name] = std_dev
             except Exception as e:
                 print(f"Error processing square: {e}")
                 continue
@@ -282,6 +288,7 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
         'distance_matrix': distance_matrix,
         'normalized_matrix': normalized_matrix,
         'tile_images': tile_images,
+        'tile_stddev': tile_stddev,
         'text_box': None,
         'rect': None,
         'image_display': None
@@ -308,7 +315,10 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
             raw_dist = distance_matrix[y, x]
             norm_dist = normalized_matrix[y, x]
             
-            info_text = f"Y: {tile_y}\nX: {tile_x}\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
+            stddev_y = hover_data['tile_stddev'].get(tile_y, 0)
+            stddev_x = hover_data['tile_stddev'].get(tile_x, 0)
+            
+            info_text = f"Y: {tile_y} (σ={stddev_y:.1f})\nX: {tile_x} (σ={stddev_x:.1f})\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
             
             # Create or update text box
             if hover_data['text_box'] is None:
@@ -339,8 +349,29 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
                         img_y_rgb = cv2.cvtColor(img_y_thumb, cv2.COLOR_BGR2RGB)
                         img_x_rgb = cv2.cvtColor(img_x_thumb, cv2.COLOR_BGR2RGB)
                         
-                        # Combine side by side
+                        # Combine side by side with labels
                         combined = np.hstack([img_y_rgb, img_x_rgb])
+                        
+                        # Add std dev text labels under images
+                        from PIL import Image as PILImage, ImageDraw, ImageFont
+                        pil_img = PILImage.fromarray(combined)
+                        draw = ImageDraw.Draw(pil_img)
+                        
+                        # Add text labels below each thumbnail
+                        label_y = f"σ={stddev_y:.1f}"
+                        label_x = f"σ={stddev_x:.1f}"
+                        
+                        # Try to use default font, fallback if not available
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 12)
+                        except:
+                            font = ImageFont.load_default()
+                        
+                        # Draw labels
+                        draw.text((10, thumb_size + 5), label_y, fill=(0, 255, 0), font=font)
+                        draw.text((thumb_size + 10, thumb_size + 5), label_x, fill=(0, 255, 0), font=font)
+                        
+                        combined = np.array(pil_img)
                         
                         # Create or update image display
                         if hover_data['image_display'] is None:
@@ -439,6 +470,7 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
         'rank_colored': rank_colored,
         'sorted_rankings': sorted_rankings,
         'tile_images': tile_images,
+        'tile_stddev': tile_stddev,
         'text_box': None,
         'rect': None,
         'image_display': None
@@ -466,7 +498,10 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
             raw_dist = distance_matrix[ranked_idx, x]
             norm_dist = normalized_matrix[ranked_idx, x]
             
-            info_text = f"Query: {tile_x}\nRank {y}: {tile_y}\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
+            stddev_x = hover_data2['tile_stddev'].get(tile_x, 0)
+            stddev_y = hover_data2['tile_stddev'].get(tile_y, 0)
+            
+            info_text = f"Query: {tile_x} (σ={stddev_x:.1f})\nRank {y}: {tile_y} (σ={stddev_y:.1f})\nDist: {raw_dist:.0f}\nNorm: {norm_dist:.3f}"
             
             # Create or update text box
             if hover_data2['text_box'] is None:
@@ -497,8 +532,29 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe):
                         img_x_rgb = cv2.cvtColor(img_x_thumb, cv2.COLOR_BGR2RGB)
                         img_y_rgb = cv2.cvtColor(img_y_thumb, cv2.COLOR_BGR2RGB)
                         
-                        # Combine side by side
+                        # Combine side by side with labels
                         combined = np.hstack([img_x_rgb, img_y_rgb])
+                        
+                        # Add std dev text labels under images
+                        from PIL import Image as PILImage, ImageDraw, ImageFont
+                        pil_img = PILImage.fromarray(combined)
+                        draw = ImageDraw.Draw(pil_img)
+                        
+                        # Add text labels below each thumbnail
+                        label_x = f"σ={stddev_x:.1f}"
+                        label_y = f"σ={stddev_y:.1f}"
+                        
+                        # Try to use default font, fallback if not available
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 12)
+                        except:
+                            font = ImageFont.load_default()
+                        
+                        # Draw labels
+                        draw.text((10, 80 + 5), label_x, fill=(0, 255, 0), font=font)
+                        draw.text((80 + 10, 80 + 5), label_y, fill=(0, 255, 0), font=font)
+                        
+                        combined = np.array(pil_img)
                         
                         # Create or update image display
                         if hover_data2['image_display'] is None:
