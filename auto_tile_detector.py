@@ -178,7 +178,7 @@ def extract_and_warp_square(frame, square):
     
     return warped
 
-def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=None):
+def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=None, top_matches=25):
     print(f"Loading video: {video_path}")
     cap = cv2.VideoCapture(video_path)
     
@@ -425,29 +425,34 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
     manager.window.showMaximized()
     
     # Create sorted similarity ranking window
-    fig2, ax2 = plt.subplots(figsize=(16, 12))
+    # Calculate figure size to keep cells square
+    # Aspect ratio: width/height should match num_tiles/top_matches for square cells
+    cell_size_inch = 0.15  # Size of each cell in inches
+    fig_width = max(14, num_tiles * cell_size_inch)
+    fig_height = max(8, top_matches * cell_size_inch)
+    fig2, ax2 = plt.subplots(figsize=(fig_width, fig_height))
     
-    # Create sorted ranking matrix - for each column, sort rows by distance
-    sorted_rankings = np.zeros((num_tiles, num_tiles))
+    # Create sorted ranking matrix - for each column, sort rows by distance (limited to top_matches)
+    sorted_rankings = np.zeros((top_matches, num_tiles))
     for col in range(num_tiles):
         # Get column and sort indices
         col_distances = normalized_matrix[:, col]
         sorted_indices = np.argsort(col_distances)  # Ascending order (best matches first)
-        sorted_rankings[:, col] = sorted_indices
+        sorted_rankings[:, col] = sorted_indices[:top_matches]
     
-    # Create a new normalized matrix showing ranks colored by similarity
-    rank_colored = np.zeros((num_tiles, num_tiles))
+    # Create a new normalized matrix showing ranks colored by similarity (limited to top_matches)
+    rank_colored = np.zeros((top_matches, num_tiles))
     for col in range(num_tiles):
         col_distances = normalized_matrix[:, col]
         sorted_indices = np.argsort(col_distances)
-        for rank, idx in enumerate(sorted_indices):
+        for rank, idx in enumerate(sorted_indices[:top_matches]):
             rank_colored[rank, col] = col_distances[idx]
     
     im2 = ax2.imshow(rank_colored, cmap='RdYlGn_r', aspect='auto')
     
     ax2.set_xlabel('Tile', fontsize=10)
     ax2.set_ylabel('Similarity Rank (0=most similar)', fontsize=10)
-    ax2.set_title('Sorted Similarity Rankings per Tile', fontsize=12, fontweight='bold')
+    ax2.set_title(f'Sorted Similarity Rankings per Tile (Top {top_matches})', fontsize=12, fontweight='bold')
     
     # Set column labels (tile names)
     ax2.set_xticks(range(num_tiles))
@@ -455,15 +460,15 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
     plt.setp(ax2.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
     
     # Set row labels (rank positions)
-    ax2.set_yticks(range(num_tiles))
-    ax2.set_yticklabels(range(num_tiles), fontsize=8)
+    ax2.set_yticks(range(top_matches))
+    ax2.set_yticklabels(range(top_matches), fontsize=8)
     
     cbar2 = plt.colorbar(im2, ax=ax2)
     cbar2.set_label('Normalized Distance', rotation=270, labelpad=20)
     
     # Add grid
     ax2.set_xticks(np.arange(num_tiles)-.5, minor=True)
-    ax2.set_yticks(np.arange(num_tiles)-.5, minor=True)
+    ax2.set_yticks(np.arange(top_matches)-.5, minor=True)
     ax2.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
     
     plt.tight_layout()
@@ -496,7 +501,7 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
         
         x, y = int(event.xdata + 0.5), int(event.ydata + 0.5)
         
-        if 0 <= x < num_tiles and 0 <= y < num_tiles:
+        if 0 <= x < num_tiles and 0 <= y < top_matches:
             tile_x = tile_names[x]  # Column tile
             ranked_idx = int(hover_data2['sorted_rankings'][y, x])  # Ranked tile index
             tile_y = tile_names[ranked_idx]
@@ -618,8 +623,9 @@ if __name__ == "__main__":
     parser.add_argument('--clahe', action='store_true', default=True, help='Apply CLAHE preprocessing (default: True)')
     parser.add_argument('--no-clahe', dest='clahe', action='store_false', help='Disable CLAHE preprocessing')
     parser.add_argument('--tile-max-std', type=float, default=None, help='Maximum std dev allowed for tile (filters out blurry/uniform tiles)')
+    parser.add_argument('--top-matches', type=int, default=25, help='Number of top matches to show in sorted rankings window (default: 25)')
     
     args = parser.parse_args()
     
-    main(args.video, args.start_frame, args.num_frames, args.blocks, args.clahe, args.tile_max_std)
+    main(args.video, args.start_frame, args.num_frames, args.blocks, args.clahe, args.tile_max_std, args.top_matches)
 
