@@ -168,7 +168,7 @@ def compute_lbp_byte(block):
     else:
         return 0
 
-def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean', blob_threshold=None, blob_min_size=1):
+def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean', blob_threshold=None, blob_min_size=1, use_blur=False, use_equalize=False, use_contrast_stretch=False):
     """Generate block signature for a tile image"""
     img = cv2.imread(image_path)
     if img is None:
@@ -177,7 +177,22 @@ def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean
     
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (256, 256))
-    # Skip histogram equalization for now - might be causing false positives
+    
+    # Apply preprocessing options
+    processed = resized.copy()
+    
+    if use_blur:
+        # Apply Gaussian blur to reduce noise/grain
+        processed = cv2.GaussianBlur(processed, (5, 5), 1.0)
+    
+    if use_equalize:
+        # Apply histogram equalization for better contrast
+        processed = cv2.equalizeHist(processed)
+    
+    if use_contrast_stretch:
+        # Apply contrast stretching (normalize to full 0-255 range)
+        p2, p98 = np.percentile(processed, (2, 98))
+        processed = np.clip((processed - p2) / (p98 - p2) * 255, 0, 255).astype(np.uint8)
     
     block_size = 256 // blocks_per_side
     signature = []
@@ -189,7 +204,7 @@ def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean
             x_start = col * block_size
             x_end = (col + 1) * block_size
             
-            block = resized[y_start:y_end, x_start:x_end]
+            block = processed[y_start:y_end, x_start:x_end]
             descriptor = get_block_descriptor(block, descriptor_mode, blob_threshold, blob_min_size)
             signature.append(descriptor)
     
@@ -231,7 +246,7 @@ def compute_distance(hash1, hash2, mode='manhattan'):
     else:
         raise ValueError(f"Unknown distance mode: {mode}")
 
-def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', blob_threshold=None, blob_min_size=1):
+def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', blob_threshold=None, blob_min_size=1, use_blur=False, use_equalize=False, use_contrast_stretch=False):
     export_folder = os.path.join(os.getcwd(), "export")
     
     # Read original metadata
@@ -241,7 +256,15 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
     
     threshold_str = f", threshold={blob_threshold}" if blob_threshold is not None else ""
     min_size_str = f", min_size={blob_min_size}" if blob_min_size > 1 else ""
-    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {descriptor_mode} descriptor{threshold_str}{min_size_str}, {distance_mode} distance)...")
+    preproc_str = []
+    if use_blur:
+        preproc_str.append("blur")
+    if use_equalize:
+        preproc_str.append("equalize")
+    if use_contrast_stretch:
+        preproc_str.append("contrast-stretch")
+    preproc_info = f", preproc=[{', '.join(preproc_str)}]" if preproc_str else ""
+    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {descriptor_mode} descriptor{threshold_str}{min_size_str}{preproc_info}, {distance_mode} distance)...")
     
     # Generate hashes for all images
     image_hashes = {}
@@ -256,7 +279,7 @@ def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean', b
                 print(f"Image not found: {image_file}")
                 continue
             
-            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode, blob_threshold, blob_min_size)
+            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode, blob_threshold, blob_min_size, use_blur, use_equalize, use_contrast_stretch)
             if hash_str is None:
                 continue
             
@@ -409,7 +432,10 @@ if __name__ == "__main__":
     parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'std_dev', 'dhash', 'phash', 'blob_count', 'lbp'], help='Block descriptor mode (default: mean)')
     parser.add_argument('--blob-threshold', type=int, default=None, help='Threshold for blob detection (0-255, default: Otsu adaptive)')
     parser.add_argument('--blob-min-size', type=int, default=1, help='Minimum blob size in pixels (default: 1, filters noise)')
+    parser.add_argument('--blur', action='store_true', help='Apply Gaussian blur for noise reduction')
+    parser.add_argument('--equalize', action='store_true', help='Apply histogram equalization')
+    parser.add_argument('--contrast-stretch', action='store_true', help='Apply contrast stretching')
     args = parser.parse_args()
     
-    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor, blob_threshold=args.blob_threshold, blob_min_size=args.blob_min_size)
+    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor, blob_threshold=args.blob_threshold, blob_min_size=args.blob_min_size, use_blur=args.blur, use_equalize=args.equalize, use_contrast_stretch=args.contrast_stretch)
 
