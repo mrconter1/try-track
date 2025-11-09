@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import binascii
 import argparse
 from datetime import datetime
+from scipy.fftpack import dct
 
 def get_block_descriptor(block, mode='mean'):
     """Compute block descriptor based on mode"""
@@ -21,6 +22,8 @@ def get_block_descriptor(block, mode='mean'):
         return int(np.max(flat))
     elif mode == 'dhash':
         return compute_dhash_byte(block)
+    elif mode == 'phash':
+        return compute_phash_byte(block)
     else:
         raise ValueError(f"Unknown descriptor mode: {mode}")
 
@@ -50,6 +53,36 @@ def compute_dhash_byte(block):
     bits.append(1 if q2 > q3 else 0)       # Bit 5: top-right > bottom-left
     bits.append(1 if (q1 + q4) > (q2 + q3) else 0)  # Bit 6: diagonal1 > diagonal2
     bits.append(1 if block.mean() > 128 else 0)      # Bit 7: bright or dark
+    
+    # Convert 8 bits to byte value (0-255)
+    byte_val = 0
+    for i, bit in enumerate(bits):
+        byte_val += bit * (2 ** i)
+    
+    return byte_val
+
+def compute_phash_byte(block):
+    """
+    Compute perceptual hash (pHash) using DCT for a block.
+    Returns a single byte (0-255) representing frequency content.
+    """
+    # Normalize block to float
+    block_float = block.astype(np.float32)
+    
+    # Compute 2D DCT
+    dct_2d = dct(dct(block_float.T, norm='ortho').T, norm='ortho')
+    
+    # Extract low-frequency region (top-left 4x4)
+    low_freq = dct_2d[:4, :4]
+    
+    # Compute bits from low-frequency coefficients
+    # Flatten and compare each to average
+    low_freq_flat = low_freq.flatten()
+    avg_coeff = np.mean(low_freq_flat)
+    
+    bits = []
+    for coeff in low_freq_flat[:8]:  # Use first 8 coefficients
+        bits.append(1 if coeff > avg_coeff else 0)
     
     # Convert 8 bits to byte value (0-255)
     byte_val = 0
@@ -211,7 +244,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
     parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
-    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash'], help='Block descriptor mode (default: mean)')
+    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash', 'phash'], help='Block descriptor mode (default: mean)')
     args = parser.parse_args()
     
     main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor)
