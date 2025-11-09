@@ -7,7 +7,22 @@ import binascii
 import argparse
 from datetime import datetime
 
-def generate_tile_signature(image_path, blocks_per_side=8):
+def get_block_descriptor(block, mode='mean'):
+    """Compute block descriptor based on mode"""
+    flat = block.flatten()
+    
+    if mode == 'mean':
+        return int(np.mean(flat))
+    elif mode == 'median':
+        return int(np.median(flat))
+    elif mode == 'min':
+        return int(np.min(flat))
+    elif mode == 'max':
+        return int(np.max(flat))
+    else:
+        raise ValueError(f"Unknown descriptor mode: {mode}")
+
+def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean'):
     """Generate block signature for a tile image"""
     img = cv2.imread(image_path)
     if img is None:
@@ -29,8 +44,8 @@ def generate_tile_signature(image_path, blocks_per_side=8):
             x_end = (col + 1) * block_size
             
             block = resized[y_start:y_end, x_start:x_end]
-            avg_intensity = int(block.mean())
-            signature.append(avg_intensity)
+            descriptor = get_block_descriptor(block, descriptor_mode)
+            signature.append(descriptor)
     
     signature_bytes = bytes(signature)
     hash_str = binascii.hexlify(signature_bytes).decode('ascii')
@@ -62,7 +77,7 @@ def compute_distance(hash1, hash2, mode='manhattan'):
     else:
         raise ValueError(f"Unknown distance mode: {mode}")
 
-def main(blocks_per_side=8, distance_mode='manhattan'):
+def main(blocks_per_side=8, distance_mode='manhattan', descriptor_mode='mean'):
     export_folder = os.path.join(os.getcwd(), "export")
     
     # Read original metadata
@@ -70,7 +85,7 @@ def main(blocks_per_side=8, distance_mode='manhattan'):
     with open(metadata_path, 'r') as f:
         old_metadata = json.load(f)
     
-    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {distance_mode} distance)...")
+    print(f"Generating tile signatures ({blocks_per_side}x{blocks_per_side} blocks, {descriptor_mode} descriptor, {distance_mode} distance)...")
     
     # Generate hashes for all images
     image_hashes = {}
@@ -85,7 +100,7 @@ def main(blocks_per_side=8, distance_mode='manhattan'):
                 print(f"Image not found: {image_file}")
                 continue
             
-            hash_str = generate_tile_signature(image_path, blocks_per_side)
+            hash_str = generate_tile_signature(image_path, blocks_per_side, descriptor_mode)
             if hash_str is None:
                 continue
             
@@ -160,7 +175,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
     parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
+    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max'], help='Block descriptor mode (default: mean)')
     args = parser.parse_args()
     
-    main(blocks_per_side=args.blocks, distance_mode=args.distance)
+    main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor)
 
