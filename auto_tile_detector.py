@@ -426,10 +426,10 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
     
     # Create sorted similarity ranking window
     # Calculate figure size to keep cells square
-    # Aspect ratio: width/height should match num_tiles/top_matches for square cells
-    cell_size_inch = 0.15  # Size of each cell in inches
-    fig_width = max(14, num_tiles * cell_size_inch)
-    fig_height = max(8, top_matches * cell_size_inch)
+    # Cell size in inches
+    cell_size_inch = 0.25
+    fig_width = max(10, num_tiles * cell_size_inch)
+    fig_height = max(6, top_matches * cell_size_inch)
     fig2, ax2 = plt.subplots(figsize=(fig_width, fig_height))
     
     # Create sorted ranking matrix - for each column, sort rows by distance (limited to top_matches)
@@ -457,7 +457,7 @@ def main(video_path, start_frame, num_frames, blocks, use_clahe, tile_max_std=No
     sorted_rankings = sorted_rankings[:, sorted_col_indices]
     sorted_tile_names = [tile_names[i] for i in sorted_col_indices]
     
-    im2 = ax2.imshow(rank_colored, cmap='RdYlGn_r', aspect='auto')
+    im2 = ax2.imshow(rank_colored, cmap='RdYlGn_r', aspect='equal')
     
     ax2.set_xlabel('Tile (sorted by total distance)', fontsize=10)
     ax2.set_ylabel('Similarity Rank (0=most similar)', fontsize=10)
