@@ -19,8 +19,44 @@ def get_block_descriptor(block, mode='mean'):
         return int(np.min(flat))
     elif mode == 'max':
         return int(np.max(flat))
+    elif mode == 'dhash':
+        return compute_dhash_byte(block)
     else:
         raise ValueError(f"Unknown descriptor mode: {mode}")
+
+def compute_dhash_byte(block):
+    """
+    Compute perceptual dHash for a block.
+    Returns a single byte (0-255) representing difference patterns.
+    """
+    h, w = block.shape
+    
+    # Split block into quadrants
+    h_mid = h // 2
+    w_mid = w // 2
+    
+    q1 = block[:h_mid, :w_mid].mean()  # top-left
+    q2 = block[:h_mid, w_mid:].mean()  # top-right
+    q3 = block[h_mid:, :w_mid].mean()  # bottom-left
+    q4 = block[h_mid:, w_mid:].mean()  # bottom-right
+    
+    # Compute 8 bits from different comparisons
+    bits = []
+    bits.append(1 if q1 > q2 else 0)       # Bit 0: left > right (top half)
+    bits.append(1 if q3 > q4 else 0)       # Bit 1: left > right (bottom half)
+    bits.append(1 if q1 > q3 else 0)       # Bit 2: top > bottom (left half)
+    bits.append(1 if q2 > q4 else 0)       # Bit 3: top > bottom (right half)
+    bits.append(1 if q1 > q4 else 0)       # Bit 4: top-left > bottom-right
+    bits.append(1 if q2 > q3 else 0)       # Bit 5: top-right > bottom-left
+    bits.append(1 if (q1 + q4) > (q2 + q3) else 0)  # Bit 6: diagonal1 > diagonal2
+    bits.append(1 if block.mean() > 128 else 0)      # Bit 7: bright or dark
+    
+    # Convert 8 bits to byte value (0-255)
+    byte_val = 0
+    for i, bit in enumerate(bits):
+        byte_val += bit * (2 ** i)
+    
+    return byte_val
 
 def generate_tile_signature(image_path, blocks_per_side=8, descriptor_mode='mean'):
     """Generate block signature for a tile image"""
@@ -175,7 +211,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze tile image similarity')
     parser.add_argument('--blocks', type=int, default=8, help='Blocks per side (default: 8, so 8x8=64 blocks)')
     parser.add_argument('--distance', type=str, default='manhattan', choices=['manhattan', 'euclidean'], help='Distance metric (default: manhattan)')
-    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max'], help='Block descriptor mode (default: mean)')
+    parser.add_argument('--descriptor', type=str, default='mean', choices=['mean', 'median', 'min', 'max', 'dhash'], help='Block descriptor mode (default: mean)')
     args = parser.parse_args()
     
     main(blocks_per_side=args.blocks, distance_mode=args.distance, descriptor_mode=args.descriptor)
