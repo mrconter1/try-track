@@ -1,8 +1,13 @@
 import tkinter as tk
-from tkinter import ttk, simpledialog, messagebox
+from tkinter import ttk, simpledialog, messagebox, filedialog
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
+import json
+import os
+import shutil
+import hashlib
+from datetime import datetime
 from line_detector import LineDetector
 
 class LineViewerApp:
@@ -42,6 +47,7 @@ class LineViewerApp:
         ttk.Button(sidebar, text="⏮ First", command=self.first_frame).pack(fill=tk.X, pady=5)
         ttk.Button(sidebar, text="⏭ Last", command=self.last_frame).pack(fill=tk.X, pady=5)
         ttk.Button(sidebar, text="🔲 Toggle Lines", command=self.toggle_lines).pack(fill=tk.X, pady=5)
+        ttk.Button(sidebar, text="💾 Export Data", command=self.export_data).pack(fill=tk.X, pady=5)
         
         # Frame info
         self.info_label = ttk.Label(sidebar, text="", font=("Arial", 9), wraplength=180, justify=tk.LEFT)
@@ -387,6 +393,110 @@ class LineViewerApp:
         # Summary
         all_total = sum(all_labels.values())
         self.summary_label.config(text=f"Frame: {frame_total} | Total: {all_total}")
+    
+    def export_data(self):
+        """Export labeled squares as images and metadata to a folder"""
+        if not self.square_ids:
+            messagebox.showwarning("No Labels", "No labels have been assigned yet")
+            return
+        
+        # Export folder in project root
+        export_folder = os.path.join(os.getcwd(), "export")
+        
+        # Clean export folder if it exists
+        if os.path.exists(export_folder):
+            shutil.rmtree(export_folder)
+        
+        os.makedirs(export_folder, exist_ok=True)
+        
+        # Organize labels by letter
+        labels_by_letter = {}
+        for (frame_num, square_idx), label in self.square_ids.items():
+            if label not in labels_by_letter:
+                labels_by_letter[label] = []
+            labels_by_letter[label].append((frame_num, square_idx))
+        
+        # Extract and save images with incrementing numbers
+        metadata = {}
+        
+        image_counter = 0
+        for label in sorted(labels_by_letter.keys()):
+            metadata[label] = []
+            for frame_num, square_idx in labels_by_letter[label]:
+                # Extract and warp the square
+                warped_image = self._extract_and_warp_square(frame_num, square_idx)
+                if warped_image is not None:
+                    image_counter += 1
+                    
+                    # Save image with incrementing number
+                    image_filename = f"{image_counter}.png"
+                    image_path = os.path.join(export_folder, image_filename)
+                    cv2.imwrite(image_path, warped_image)
+                    
+                    # Add to metadata
+                    metadata[label].append(image_filename)
+        
+        # Save metadata JSON
+        metadata_path = os.path.join(export_folder, "metadata.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        messagebox.showinfo("Export Complete", f"Data exported to:\n{export_folder}")
+        print(f"[EXPORT] Data saved to {export_folder}")
+    
+    def _extract_and_warp_square(self, frame_num, square_idx):
+        """Extract square from frame and warp to square perspective"""
+        try:
+            # Load frame
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            ret, frame = self.cap.read()
+            
+            if not ret:
+                print(f"[EXPORT] Could not read frame {frame_num}")
+                return None
+            
+            # Get the square from grid_squares stored during that frame
+            # We need to regenerate lines for this frame
+            frame_for_detection, lines = self.line_detector.detect_lines(frame)
+            grid_squares = self._extract_grid_squares(lines, frame.shape[:2])
+            
+            if square_idx >= len(grid_squares):
+                print(f"[EXPORT] Square index {square_idx} not found in frame {frame_num}")
+                return None
+            
+            square = grid_squares[square_idx]
+            p1, p2, p3, p4 = square
+            
+            # Define destination points (warped to square perspective)
+            # Calculate appropriate size based on diagonal distances
+            side_length = max(
+                int(np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)),
+                int(np.sqrt((p2[0] - p3[0])**2 + (p2[1] - p3[1])**2)),
+                int(np.sqrt((p3[0] - p4[0])**2 + (p3[1] - p4[1])**2)),
+                int(np.sqrt((p4[0] - p1[0])**2 + (p4[1] - p1[1])**2))
+            )
+            side_length = max(side_length, 50)  # Minimum size
+            
+            # Source points (original quadrilateral)
+            src_points = np.float32([p1, p2, p3, p4])
+            
+            # Destination points (perfect square)
+            dst_points = np.float32([
+                [0, 0],
+                [side_length, 0],
+                [side_length, side_length],
+                [0, side_length]
+            ])
+            
+            # Get perspective transformation matrix and apply it
+            matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+            warped = cv2.warpPerspective(frame, matrix, (side_length, side_length))
+            
+            return warped
+        
+        except Exception as e:
+            print(f"[EXPORT] Error extracting square: {e}")
+            return None
 
 if __name__ == "__main__":
     root = tk.Tk()
