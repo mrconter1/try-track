@@ -113,7 +113,7 @@ def main(blocks_per_side=8):
     ax.set_xticks(range(num_images))
     ax.set_yticks(range(num_images))
     
-    tick_labels = [name.replace('.png', '') for name in image_files]
+    tick_labels = [f"{name.replace('.png', '')} ({image_labels[name]})" for name in image_files]
     ax.set_xticklabels(tick_labels, fontsize=8)
     ax.set_yticklabels(tick_labels, fontsize=8)
     
