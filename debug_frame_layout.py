@@ -3,7 +3,7 @@ import numpy as np
 import argparse
 import matplotlib.pyplot as plt
 from line_detector import LineDetector
-from auto_tile_detector import extract_grid_squares, extract_and_warp_square
+from auto_tile_detector import extract_grid_squares, extract_and_warp_square, generate_tile_hash
 
 def debug_frame_layout(video_path, frame_number=0):
     """
@@ -43,22 +43,53 @@ def debug_frame_layout(video_path, frame_number=0):
         # (Code for this part remains the same as before)
         return
 
-    # --- 3. Determine Grid Dimensions ---
+    # --- 3. Calculate Tile Signatures ---
+    print("\nCalculating tile signatures...")
+    tile_signatures = {}
+    for (row, col), square_polygon in grid_map.items():
+        try:
+            warped = extract_and_warp_square(frame, square_polygon)
+            
+            # Generate signatures for all 4 rotations
+            signatures = {}
+            for rotation in [0, 90, 180, 270]:
+                if rotation == 0:
+                    rotated = warped
+                elif rotation == 90:
+                    rotated = cv2.rotate(warped, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                elif rotation == 180:
+                    rotated = cv2.rotate(warped, cv2.ROTATE_180)
+                else:  # 270
+                    rotated = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
+                
+                hash_sig = generate_tile_hash(rotated, blocks_per_side=16, use_clahe=True)
+                if hash_sig:
+                    signatures[rotation] = hash_sig
+            
+            tile_signatures[(row, col)] = signatures
+            
+            # Print signature info
+            print(f"  Tile ({row},{col}): ", end="")
+            for rot in [0, 90, 180, 270]:
+                if rot in signatures:
+                    sig = signatures[rot]
+                    # Show first 8 values of the hash
+                    print(f"{rot}°={sig[:8]} ", end="")
+            print()
+        except Exception as e:
+            print(f"  Error calculating signature for ({row},{col}): {e}")
+
+    # --- 4. Determine Grid Dimensions ---
     all_rows = [r for r, c in grid_map.keys()]
     all_cols = [c for r, c in grid_map.keys()]
     num_rows = max(all_rows) + 1 if all_rows else 0
     num_cols = max(all_cols) + 1 if all_cols else 0
-    print(f"Organized tiles into a {num_rows}x{num_cols} logical grid.")
+    print(f"\nOrganized tiles into a {num_rows}x{num_cols} logical grid.")
 
-    # --- 4. Create Visualizations ---
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 7))
+    # --- 5. Create Visualizations (2 panels only) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
     
-    # Panel 1: Original Frame
-    ax1.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    ax1.set_title(f'Frame {frame_number}: Original')
-    ax1.axis('off')
-
-    # Panel 2: Frame with Lines and Grid Coordinates
+    # Panel 1: Frame with Lines and Grid Coordinates
     frame_with_coords = frame_with_lines.copy()
     for (row, col), square_polygon in grid_map.items():
         # Calculate center for label positioning
@@ -70,12 +101,12 @@ def debug_frame_layout(video_path, frame_number=0):
         cv2.putText(frame_with_coords, label, (cx - 25, cy),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                    
-    ax2.imshow(cv2.cvtColor(frame_with_coords, cv2.COLOR_BGR2RGB))
-    ax2.set_title('Lines & Grid Coordinates')
-    ax2.axis('off')
+    ax1.imshow(cv2.cvtColor(frame_with_coords, cv2.COLOR_BGR2RGB))
+    ax1.set_title('Lines & Grid Coordinates')
+    ax1.axis('off')
     
-    # Panel 3: 2D Grid of Warped Images
-    tile_display_size = 100
+    # Panel 2: 2D Grid of Warped Images with Signatures
+    tile_display_size = 120
     composite_height = max(1, num_rows) * tile_display_size
     composite_width = max(1, num_cols) * tile_display_size
     composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
@@ -85,10 +116,24 @@ def debug_frame_layout(video_path, frame_number=0):
             warped = extract_and_warp_square(frame, square_polygon)
             warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
             
-            # Add coordinate label to the warped image
+            # Add coordinate label
             label = f"({row},{col})"
-            cv2.putText(warped_resized, label, (5, 25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(warped_resized, label, (5, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # Add signature info if available (each rotation on its own row)
+            if (row, col) in tile_signatures:
+                sigs = tile_signatures[(row, col)]
+                y_offset = 40
+                for rot in [0, 90, 180, 270]:
+                    if rot in sigs:
+                        sig = sigs[rot]
+                        # Use full 8-char hex string
+                        sig_val = sig[:8] if isinstance(sig, str) else f"{sig[0]:.1f}"
+                        sig_line = f"{rot} deg = {sig_val}"
+                        cv2.putText(warped_resized, sig_line, (3, y_offset), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 200, 0), 1)
+                        y_offset += 12
             
             y_start = row * tile_display_size
             x_start = col * tile_display_size
@@ -96,14 +141,14 @@ def debug_frame_layout(video_path, frame_number=0):
         except Exception as e:
             print(f"  Error warping tile at ({row},{col}): {e}")
 
-    ax3.imshow(composite_image)
-    ax3.set_title(f'Warped Tiles in {num_rows}x{num_cols} Grid')
-    ax3.set_xticks(np.arange(-.5, num_cols, 1), minor=True)
-    ax3.set_yticks(np.arange(-.5, num_rows, 1), minor=True)
-    ax3.grid(which="minor", color="gray", linestyle='-', linewidth=0.5)
-    ax3.tick_params(which="minor", size=0)
-    ax3.set_xticks(np.arange(0, num_cols, 1))
-    ax3.set_yticks(np.arange(0, num_rows, 1))
+    ax2.imshow(composite_image)
+    ax2.set_title(f'Warped Tiles in {num_rows}x{num_cols} Grid (with signatures)')
+    ax2.set_xticks(np.arange(-.5, num_cols, 1), minor=True)
+    ax2.set_yticks(np.arange(-.5, num_rows, 1), minor=True)
+    ax2.grid(which="minor", color="gray", linestyle='-', linewidth=0.5)
+    ax2.tick_params(which="minor", size=0)
+    ax2.set_xticks(np.arange(0, num_cols, 1))
+    ax2.set_yticks(np.arange(0, num_rows, 1))
     
     plt.tight_layout()
     manager = plt.get_current_fig_manager()
