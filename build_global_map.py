@@ -228,10 +228,10 @@ class GlobalMapBuilder:
             prev_frame_data = self.frames[frame_idx - 1]
             prev_frame_grid = prev_frame_data['grid']
             
-            print(f"\n  Frame {frame_idx}: {len(frame_grid)} tiles", end=" - ")
+            print(f"\n  Frame {frame_idx}: {len(frame_grid)} tiles ({num_rows}x{num_cols} local grid)", end=" - ")
             
             # Build similarity matrix between current frame and previous frame
-            similarity_matrix = self._build_frame_similarity_matrix(frame_grid, prev_frame_grid)
+            similarity_matrix, rotation_matrix = self._build_frame_similarity_matrix(frame_grid, prev_frame_grid)
             
             # Find the best match (smallest distance) in entire similarity matrix
             best_overall_distance = float('inf')
@@ -254,28 +254,50 @@ class GlobalMapBuilder:
                     
                     if curr_pos and prev_pos and prev_tile_id in self.tile_global_positions:
                         best_overall_distance = distance
-                        first_match = (curr_pos[0], curr_pos[1], curr_tile_id, prev_tile_id, prev_pos, distance)
+                        rotation_offset = rotation_matrix[(curr_tile_id, prev_tile_id)]
+                        first_match = (curr_pos[0], curr_pos[1], curr_tile_id, prev_tile_id, prev_pos, distance, rotation_offset)
             
             if first_match:
-                curr_row, curr_col, curr_tile_id, prev_tile_id, prev_pos, distance = first_match
+                curr_row, curr_col, curr_tile_id, prev_tile_id, prev_pos, distance, rotation_offset = first_match
                 
                 # Get global position of previous frame tile
                 prev_global_pos = self.tile_global_positions[prev_tile_id]
+                
+                # If rotation detected, apply coordinate transform to match orientation
+                if rotation_offset != 0:
+                    curr_row, curr_col = self._rotate_coordinates(curr_row, curr_col, num_rows, num_cols, rotation_offset)
                 
                 # Calculate offset between current and previous frame positions
                 offset_row = prev_global_pos[0] - curr_row
                 offset_col = prev_global_pos[1] - curr_col
                 
-                print(f"Matched to frame {frame_idx-1} (distance: {distance:.0f})")
+                print(f"Matched to frame {frame_idx-1} (distance: {distance:.0f}, rotation: {rotation_offset}°)")
+                print(f"  Anchor: tile {curr_tile_id} at local ({curr_row},{curr_col}) → tile {prev_tile_id} at global {prev_global_pos}")
+                print(f"  Offset: row={offset_row}, col={offset_col}")
                 
-                # Add all tiles from current frame using calculated offset
+                # Add all tiles from current frame EXCEPT the matched one (which is already in global map)
+                tiles_added = 0
                 for (local_row, local_col), tile_id in frame_grid.items():
                     if tile_id is None:
                         continue
                     
-                    global_row = local_row + offset_row
-                    global_col = local_col + offset_col
+                    # Skip the matched tile (already in global map from previous frame)
+                    if tile_id == curr_tile_id:
+                        print(f"  Skipping matched tile {curr_tile_id} (already in global map)")
+                        continue
+                    
+                    # Apply rotation to local coordinates if needed
+                    if rotation_offset != 0:
+                        rotated_row, rotated_col = self._rotate_coordinates(local_row, local_col, num_rows, num_cols, rotation_offset)
+                    else:
+                        rotated_row, rotated_col = local_row, local_col
+                    
+                    global_row = rotated_row + offset_row
+                    global_col = rotated_col + offset_col
                     self.tile_global_positions[tile_id] = (global_row, global_col)
+                    tiles_added += 1
+                
+                print(f"  Added {tiles_added} new tiles to global map")
             else:
                 print(f"No match to previous frame, skipping")
         
@@ -284,6 +306,7 @@ class GlobalMapBuilder:
     def _build_frame_similarity_matrix(self, frame_grid, prev_frame_grid):
         """Build similarity matrix between tiles in current and previous frame"""
         similarity_matrix = {}
+        rotation_matrix = {}  # Store rotation offsets
         
         # Get sorted lists of tile IDs for matrix
         curr_tile_ids = sorted([tid for _, tid in frame_grid.items() if tid is not None])
@@ -302,15 +325,16 @@ class GlobalMapBuilder:
                 if not prev_tile:
                     continue
                 
-                # Calculate distance between tiles
-                distance = self._tile_distance(curr_tile, prev_tile)
+                # Calculate distance between tiles (with rotation info)
+                distance, rotation_offset = self._tile_distance(curr_tile, prev_tile)
                 similarity_matrix[(curr_tile_id, prev_tile_id)] = distance
+                rotation_matrix[(curr_tile_id, prev_tile_id)] = rotation_offset
                 matrix_2d[i, j] = distance
         
         # Print 2D matrix
         self._print_similarity_matrix(curr_tile_ids, prev_tile_ids, matrix_2d)
         
-        return similarity_matrix
+        return similarity_matrix, rotation_matrix
     
     def _print_similarity_matrix(self, curr_tile_ids, prev_tile_ids, matrix_2d):
         """Print 2D similarity matrix in readable format"""
@@ -346,11 +370,14 @@ class GlobalMapBuilder:
             print(f"      {marker} Tile {curr_id} → Tile {prev_id}: {best_dist:.0f}")
     
     def _tile_distance(self, tile1, tile2):
-        """Calculate distance between two tiles (checking all rotations)"""
+        """Calculate distance between two tiles (checking all rotations)
+        Returns: (distance, rotation_offset) where rotation_offset is how much tile1 needs to rotate to match tile2
+        """
         sigs1 = tile1['signatures']
         sigs2 = tile2['signatures']
         
         best_distance = float('inf')
+        best_rotation_offset = 0
         
         for rot1 in [0, 90, 180, 270]:
             for rot2 in [0, 90, 180, 270]:
@@ -361,8 +388,10 @@ class GlobalMapBuilder:
                     distance = euclidean_distance(sig1, sig2)
                     if distance < best_distance:
                         best_distance = distance
+                        # Calculate rotation offset: how much to rotate tile1 to match tile2's orientation
+                        best_rotation_offset = (rot2 - rot1) % 360
         
-        return best_distance
+        return best_distance, best_rotation_offset
     
     def _rotate_coordinates(self, row, col, height, width, rotation_offset):
         """Transform (row, col) based on rotation offset"""
