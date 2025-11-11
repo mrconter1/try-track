@@ -46,11 +46,23 @@ def debug_frame_layout(video_path, frame_number=0):
             print(f"Frame {frame_num}: No tiles detected")
             return False
         
+        print(f"Frame {frame_num}: {len(grid_map)} tiles detected", end="")
+        
         # --- Calculate Tile Signatures ---
         tile_signatures = {}
+        filtered_coords = set()
+        filtered_tiles = 0
         for (row, col), square_polygon in grid_map.items():
             try:
                 warped = extract_and_warp_square(frame, square_polygon)
+                
+                # Filter by std dev (quality check)
+                gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+                std_dev = float(np.std(gray_warped))
+                if std_dev > 20:
+                    filtered_tiles += 1
+                    filtered_coords.add((row, col))
+                    continue
                 
                 signatures = {}
                 for rotation in [0, 90, 180, 270]:
@@ -71,9 +83,15 @@ def debug_frame_layout(video_path, frame_number=0):
             except Exception as e:
                 pass
         
-        # --- Determine Grid Dimensions ---
-        all_rows = [r for r, c in grid_map.keys()]
-        all_cols = [c for r, c in grid_map.keys()]
+        if filtered_tiles > 0:
+            print(f" → {filtered_tiles} filtered (std > 20), {len(tile_signatures)} kept")
+        else:
+            print()
+        
+        # --- Determine Grid Dimensions (only from kept tiles) ---
+        kept_coords = [(r, c) for r, c in grid_map.keys() if (r, c) not in filtered_coords]
+        all_rows = [r for r, c in kept_coords]
+        all_cols = [c for r, c in kept_coords]
         num_rows = max(all_rows) + 1 if all_rows else 0
         num_cols = max(all_cols) + 1 if all_cols else 0
         
@@ -85,6 +103,10 @@ def debug_frame_layout(video_path, frame_number=0):
         # Panel 1: Frame with Lines and Grid Coordinates
         frame_with_coords = frame_with_lines.copy()
         for (row, col), square_polygon in grid_map.items():
+            # Skip filtered tiles
+            if (row, col) in filtered_coords:
+                continue
+            
             p1, p2, p3, p4 = square_polygon
             cx = int((p1[0] + p3[0]) / 2)
             cy = int((p1[1] + p3[1]) / 2)
@@ -104,6 +126,10 @@ def debug_frame_layout(video_path, frame_number=0):
         composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
         
         for (row, col), square_polygon in grid_map.items():
+            # Skip filtered tiles
+            if (row, col) in filtered_coords:
+                continue
+            
             try:
                 warped = extract_and_warp_square(frame, square_polygon)
                 warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
