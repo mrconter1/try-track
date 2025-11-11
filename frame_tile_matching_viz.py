@@ -261,7 +261,7 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             curr_data['tiles'] = matched_tile_list
             frames[frame_num] = curr_data
             
-            # Draw filtered matched pairs
+            # Draw filtered matched pairs (circles and lines with cv2, text with PIL)
             for curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist in filtered_matches:
                 # Draw previous tile center (yellow)
                 cv2.circle(combined, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
@@ -271,18 +271,31 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                 
                 # Draw line from prev to curr
                 cv2.line(combined, (prev_cx, prev_cy), (curr_cx, curr_cy), (0, 255, 255), 2)
-                
-                # Add grid coordinates for previous frame tile (yellow text)
+            
+            # Convert to PIL for text rendering
+            from PIL import Image, ImageDraw, ImageFont
+            pil_combined = Image.fromarray(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(pil_combined)
+            
+            # Load font
+            try:
+                font_large = ImageFont.truetype("arial.ttf", 36)
+                font_small = ImageFont.truetype("arial.ttf", 24)
+            except:
+                font_large = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+            
+            # Draw text annotations
+            for curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist in filtered_matches:
+                # Add grid coordinates for previous frame tile (yellow text) - above center
                 prev_row, prev_col = prev_coord
                 prev_label = f"({prev_row},{prev_col})"
-                cv2.putText(combined, prev_label, (prev_cx - 25, prev_cy - 15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                draw.text((prev_cx - 40, prev_cy - 50), prev_label, fill=(255, 255, 0), font=font_large)
                 
-                # Add grid coordinates for current frame tile (green text)
+                # Add grid coordinates for current frame tile (green text) - below center
                 curr_row, curr_col = curr_coord
                 curr_label = f"({curr_row},{curr_col})"
-                cv2.putText(combined, curr_label, (curr_cx - 25, curr_cy - 15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                draw.text((curr_cx - 40, curr_cy + 15), curr_label, fill=(0, 255, 0), font=font_large)
                 
                 # Add rotation info near the line midpoint
                 if rotations:
@@ -290,8 +303,10 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                     mid_x = (prev_cx + curr_cx) // 2
                     mid_y = (prev_cy + curr_cy) // 2
                     rot_text = f"{curr_rot}°→{prev_rot}°"
-                    cv2.putText(combined, rot_text, (mid_x - 20, mid_y - 5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+                    draw.text((mid_x - 20, mid_y - 5), rot_text, fill=(255, 255, 0), font=font_small)
+            
+            # Convert back to numpy array
+            combined = cv2.cvtColor(np.array(pil_combined), cv2.COLOR_RGB2BGR)
             
             matches = len(filtered_matches)
             
