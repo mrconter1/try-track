@@ -111,7 +111,8 @@ def extract_grid_squares(lines, frame_shape):
     
     # Sort lines by their position (rho) to establish order
     horizontal.sort(key=lambda x: x[0])
-    vertical.sort(key=lambda x: x[0])
+    # Reverse sort for vertical lines to handle perspective correctly
+    vertical.sort(key=lambda x: x[0], reverse=True)
     
     # Find intersections between adjacent horizontal and vertical lines
     for i in range(len(horizontal) - 1):
