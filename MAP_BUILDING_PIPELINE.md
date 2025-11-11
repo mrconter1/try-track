@@ -48,9 +48,12 @@ MAIN LOOP:
     // Filter to keep only uniform tiles (remove ones with feet/shadows)
     uniform_tile_images = filter_tiles_by_quality(tile_images, MAX_STD_THRESHOLD)
     
-    frame_grid = create_empty_grid(tile_images.dimensions)
+    // Filter to keep only tiles that are completely inside viewport (exclude partially visible tiles at frame edges)
+    viewport_tiles = filter_tiles_within_viewport(uniform_tile_images, video_frame.shape)
     
-    FOR EACH (row, col, tile_image) IN uniform_tile_images:
+    frame_grid = create_empty_grid(viewport_tiles.dimensions)
+    
+    FOR EACH (row, col, tile_image) IN viewport_tiles:
       
       // Generate hash signatures for all 4 rotations (16x16 blocks, CLAHE preprocessing)
       signatures = new TileSignature()
