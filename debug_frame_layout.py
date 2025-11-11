@@ -63,7 +63,7 @@ def debug_frame_layout(video_path, frame_number=0):
                     else:  # 270
                         rotated = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
                     
-                    hash_sig = generate_tile_hash(rotated, blocks_per_side=16, use_clahe=True)
+                    hash_sig = generate_tile_hash(rotated, blocks_per_side=8, use_clahe=True)
                     if hash_sig:
                         signatures[rotation] = hash_sig
                 
