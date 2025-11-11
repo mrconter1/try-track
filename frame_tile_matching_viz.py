@@ -234,6 +234,18 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                 # Draw line from prev to curr
                 cv2.line(combined, (prev_cx, prev_cy), (curr_cx, curr_cy), (0, 255, 255), 2)
                 
+                # Add grid coordinates for previous frame tile (yellow text)
+                prev_row, prev_col = prev_coord
+                prev_label = f"({prev_row},{prev_col})"
+                cv2.putText(combined, prev_label, (prev_cx - 25, prev_cy - 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                
+                # Add grid coordinates for current frame tile (green text)
+                curr_row, curr_col = curr_coord
+                curr_label = f"({curr_row},{curr_col})"
+                cv2.putText(combined, curr_label, (curr_cx - 25, curr_cy - 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                
                 # Add rotation info near the line midpoint
                 if rotations:
                     curr_rot, prev_rot = rotations
