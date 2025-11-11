@@ -140,21 +140,22 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         if frame_num > 0 and prev_frame_data and 'frame' in prev_frame_data:
             prev_data = prev_frame_data
             
-            # Create side-by-side image
-            h, w = curr_data['frame'].shape[:2]
+            # Overlay frames - assume same size or resize
             h_prev, w_prev = prev_data['frame'].shape[:2]
+            h_curr, w_curr = curr_data['frame'].shape[:2]
             
-            # Pad to same height if needed
-            max_h = max(h, h_prev)
+            # Resize current frame to match previous frame size
+            if (h_prev, w_prev) != (h_curr, w_curr):
+                curr_resized = cv2.resize(curr_data['frame'], (w_prev, h_prev))
+            else:
+                curr_resized = curr_data['frame']
             
-            prev_frame_padded = np.zeros((max_h, w_prev, 3), dtype=np.uint8)
-            prev_frame_padded[:h_prev] = prev_data['frame']
+            # Blend frames: 50% previous + 50% current
+            combined = cv2.addWeighted(prev_data['frame'], 0.5, curr_resized, 0.5, 0)
             
-            curr_frame_padded = np.zeros((max_h, w, 3), dtype=np.uint8)
-            curr_frame_padded[:h] = curr_data['frame']
-            
-            # Concatenate horizontally
-            combined = np.concatenate([prev_frame_padded, curr_frame_padded], axis=1)
+            # Adjust current tile centers to match the resized dimensions
+            scale_x = w_prev / w_curr if w_prev != w_curr else 1.0
+            scale_y = h_prev / h_curr if h_prev != h_curr else 1.0
             
             # Find all pairwise distances and create one-to-one matching
             # Calculate distances for all current-prev tile pairs
@@ -190,22 +191,27 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             
             # Draw matched pairs
             for curr_coord, prev_coord, rotations, distance in matches_list:
-                curr_cx, curr_cy = curr_data['centers'][curr_coord]
+                # Get previous tile center
                 prev_cx, prev_cy = prev_data['centers'][prev_coord]
                 
-                # Draw previous tile center (only if matched)
+                # Get current tile center and scale if needed
+                curr_cx_orig, curr_cy_orig = curr_data['centers'][curr_coord]
+                curr_cx = int(curr_cx_orig * scale_x)
+                curr_cy = int(curr_cy_orig * scale_y)
+                
+                # Draw previous tile center (yellow)
                 cv2.circle(combined, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
                 
-                # Draw current tile center (only if matched)
-                cv2.circle(combined, (w_prev + curr_cx, curr_cy), 5, (0, 255, 0), -1)
+                # Draw current tile center (green)
+                cv2.circle(combined, (curr_cx, curr_cy), 5, (0, 255, 0), -1)
                 
                 # Draw line from prev to curr
-                cv2.line(combined, (prev_cx, prev_cy), (w_prev + curr_cx, curr_cy), (0, 255, 255), 2)
+                cv2.line(combined, (prev_cx, prev_cy), (curr_cx, curr_cy), (0, 255, 255), 2)
                 
                 # Add rotation info near the line midpoint
                 if rotations:
                     curr_rot, prev_rot = rotations
-                    mid_x = (prev_cx + w_prev + curr_cx) // 2
+                    mid_x = (prev_cx + curr_cx) // 2
                     mid_y = (prev_cy + curr_cy) // 2
                     rot_text = f"{curr_rot}°→{prev_rot}°"
                     cv2.putText(combined, rot_text, (mid_x - 20, mid_y - 5),
