@@ -160,32 +160,59 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             for (row, col), (cx, cy) in prev_data['centers'].items():
                 cv2.circle(combined, (cx, cy), 5, (0, 255, 255), -1)
             
-            # Draw tile centers on current frame and connection lines
-            matches = 0
+            # Find all pairwise distances and create one-to-one matching
+            # Calculate distances for all current-prev tile pairs
+            distance_matrix = {}
             for curr_coord, curr_sigs in curr_data['signatures'].items():
+                for prev_coord, prev_sigs in prev_data['signatures'].items():
+                    best_dist = float('inf')
+                    best_rots = None
+                    
+                    for curr_rot in [0, 90, 180, 270]:
+                        for prev_rot in [0, 90, 180, 270]:
+                            if curr_rot in curr_sigs and prev_rot in prev_sigs:
+                                dist = euclidean_distance(curr_sigs[curr_rot], prev_sigs[prev_rot])
+                                if dist < best_dist:
+                                    best_dist = dist
+                                    best_rots = (curr_rot, prev_rot)
+                    
+                    if best_rots:
+                        distance_matrix[(curr_coord, prev_coord)] = (best_dist, best_rots)
+            
+            # Greedy one-to-one matching: match lowest distances first
+            sorted_pairs = sorted(distance_matrix.items(), key=lambda x: x[1][0])
+            matched_prev = set()
+            matched_curr = set()
+            matches_list = []
+            
+            for (curr_coord, prev_coord), (dist, rotations) in sorted_pairs:
+                # Only match if neither has been matched yet
+                if curr_coord not in matched_curr and prev_coord not in matched_prev:
+                    matches_list.append((curr_coord, prev_coord, rotations, dist))
+                    matched_curr.add(curr_coord)
+                    matched_prev.add(prev_coord)
+            
+            # Draw matched pairs
+            for curr_coord, prev_coord, rotations, distance in matches_list:
                 curr_cx, curr_cy = curr_data['centers'][curr_coord]
+                prev_cx, prev_cy = prev_data['centers'][prev_coord]
                 
-                # Find best match in previous frame
-                prev_coord, rotations, distance = find_best_match(curr_coord, curr_sigs, prev_data['signatures'])
+                # Draw current tile center
+                cv2.circle(combined, (w_prev + curr_cx, curr_cy), 5, (0, 255, 0), -1)
                 
-                if prev_coord is not None:
-                    matches += 1
-                    prev_cx, prev_cy = prev_data['centers'][prev_coord]
-                    
-                    # Draw current tile center
-                    cv2.circle(combined, (w_prev + curr_cx, curr_cy), 5, (0, 255, 0), -1)
-                    
-                    # Draw line from prev to curr
-                    cv2.line(combined, (prev_cx, prev_cy), (w_prev + curr_cx, curr_cy), (0, 255, 255), 2)
-                    
-                    # Add rotation info near the line midpoint
-                    if rotations:
-                        curr_rot, prev_rot = rotations
-                        mid_x = (prev_cx + w_prev + curr_cx) // 2
-                        mid_y = (prev_cy + curr_cy) // 2
-                        rot_text = f"{curr_rot}°→{prev_rot}°"
-                        cv2.putText(combined, rot_text, (mid_x - 20, mid_y - 5),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+                # Draw line from prev to curr
+                cv2.line(combined, (prev_cx, prev_cy), (w_prev + curr_cx, curr_cy), (0, 255, 255), 2)
+                
+                # Add rotation info near the line midpoint
+                if rotations:
+                    curr_rot, prev_rot = rotations
+                    mid_x = (prev_cx + w_prev + curr_cx) // 2
+                    mid_y = (prev_cy + curr_cy) // 2
+                    rot_text = f"{curr_rot}°→{prev_rot}°"
+                    cv2.putText(combined, rot_text, (mid_x - 20, mid_y - 5),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+            
+            matches = len(matches_list)
             
             ax.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
             ax.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
