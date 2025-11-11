@@ -156,10 +156,6 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             # Concatenate horizontally
             combined = np.concatenate([prev_frame_padded, curr_frame_padded], axis=1)
             
-            # Draw tile centers on previous frame
-            for (row, col), (cx, cy) in prev_data['centers'].items():
-                cv2.circle(combined, (cx, cy), 5, (0, 255, 255), -1)
-            
             # Find all pairwise distances and create one-to-one matching
             # Calculate distances for all current-prev tile pairs
             distance_matrix = {}
@@ -197,7 +193,10 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                 curr_cx, curr_cy = curr_data['centers'][curr_coord]
                 prev_cx, prev_cy = prev_data['centers'][prev_coord]
                 
-                # Draw current tile center
+                # Draw previous tile center (only if matched)
+                cv2.circle(combined, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
+                
+                # Draw current tile center (only if matched)
                 cv2.circle(combined, (w_prev + curr_cx, curr_cy), 5, (0, 255, 0), -1)
                 
                 # Draw line from prev to curr
