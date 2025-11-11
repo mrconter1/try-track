@@ -19,11 +19,13 @@ MAIN LOOP:
     // Find grid intersections from horizontal/vertical lines
     grid_squares = create_grid_from_lines(filtered_lines, frame.shape)
     
-    // Process each detected tile in frame
-    FOR EACH square IN grid_squares:
-      
-      // Apply perspective warp to make tile perfectly square
-      tile_image = rewarp_to_square(frame, square)
+    // Extract all tile images and apply perspective warp to 1:1 ratio (perfect squares)
+    tile_images = extract_tile_images(grid_squares, frame)
+    
+    // Filter to keep only uniform tiles (remove ones with feet/shadows)
+    uniform_tile_images = filter_tiles_by_quality(tile_images, MAX_STD_THRESHOLD)
+    
+    FOR EACH tile_image IN uniform_tile_images:
       
       // Generate hash signature (16x16 blocks, CLAHE preprocessing)
       tile_signature = create_tile_signature(tile_image)
