@@ -108,11 +108,30 @@ def extract_grid_squares(lines, frame_shape):
         # Angles close to 0 or 180 degrees are vertical
         else:
             vertical.append((rho, theta))
+            
+    # --- NEW SORTING LOGIC ---
+    # Sort lines based on their intercept with the image center line.
+    # This is robust to rotation and perspective.
     
-    # Sort lines by their position (rho) to establish order
-    horizontal.sort(key=lambda x: x[0])
-    # Reverse sort for vertical lines to handle perspective correctly
-    vertical.sort(key=lambda x: x[0], reverse=True)
+    # Sort horizontal lines top-to-bottom
+    # We find where each line crosses the vertical centerline (x = w/2)
+    def get_y_intercept(line, width):
+        rho, theta = line
+        if np.sin(theta) != 0:
+            return (rho - (width / 2) * np.cos(theta)) / np.sin(theta)
+        return float('inf') # Should not happen for horizontal lines
+
+    horizontal.sort(key=lambda line: get_y_intercept(line, w))
+
+    # Sort vertical lines left-to-right
+    # We find where each line crosses the horizontal centerline (y = h/2)
+    def get_x_intercept(line, height):
+        rho, theta = line
+        if np.cos(theta) != 0:
+            return (rho - (height / 2) * np.sin(theta)) / np.cos(theta)
+        return float('inf') # Should not happen for vertical lines
+
+    vertical.sort(key=lambda line: get_x_intercept(line, h))
     
     # Find intersections between adjacent horizontal and vertical lines
     for i in range(len(horizontal) - 1):
