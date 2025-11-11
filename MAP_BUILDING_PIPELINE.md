@@ -41,16 +41,8 @@ MAIN LOOP:
         tile_signatures[tile_id] = tile_signature
         map_tiles[tile_id] = new_tile_entry(tile_id, tile_image)
       END IF
-      
-      // Store observation and triangulate if seen from multiple cameras
-      register_tile_observation(tile_id, square.position, frame.camera_id)
     
     END FOR
-    
-    // Periodically optimize all tile positions using bundle adjustment
-    IF frame_count % OPTIMIZATION_INTERVAL == 0:
-      optimize_global_map(map_tiles, all_observations)
-    END IF
   
   END FOR
 
