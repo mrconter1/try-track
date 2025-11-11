@@ -149,9 +149,8 @@ def frame_similarity_viz(video_path, frame_number=0):
         for ax in fig.get_axes():
             ax.remove()
         
-        ax_prev = fig.add_subplot(1, 3, 1)
-        ax_curr = fig.add_subplot(1, 3, 2)
-        ax_matrix = fig.add_subplot(1, 3, 3)
+        ax_prev = fig.add_subplot(1, 2, 1)
+        ax_curr = fig.add_subplot(1, 2, 2)
         
         # ===== LEFT PANEL: Previous Frame with Grid Overlay =====
         if frame_num > 0 and prev_frame_data and 'frame' in prev_frame_data:
@@ -220,48 +219,7 @@ def frame_similarity_viz(video_path, frame_number=0):
         ax_curr.set_title(f'Frame {frame_num} (Current)')
         ax_curr.axis('off')
         
-        # ===== RIGHT PANEL: Similarity Matrix =====
-        if frame_num > 0:
-            similarity_data = compute_similarity_matrix(curr_data, prev_frame_data)
-            matrix, curr_tiles, prev_tiles, best_rotations = similarity_data
-            
-            if matrix is not None:
-                # Create heatmap
-                im = ax_matrix.imshow(matrix, cmap='viridis', aspect='auto')
-                
-                # Labels
-                curr_labels = [f"({r},{c})" for r, c in curr_tiles]
-                prev_labels = [f"({r},{c})" for r, c in prev_tiles]
-                
-                ax_matrix.set_xticks(range(len(prev_tiles)))
-                ax_matrix.set_yticks(range(len(curr_tiles)))
-                ax_matrix.set_xticklabels(prev_labels, rotation=45, ha='right', fontsize=9)
-                ax_matrix.set_yticklabels(curr_labels, fontsize=9)
-                
-                ax_matrix.set_xlabel('Previous Frame Tiles', fontsize=10)
-                ax_matrix.set_ylabel('Current Frame Tiles', fontsize=10)
-                ax_matrix.set_title('Similarity Matrix (Distance)', fontsize=11)
-                
-                # Add colorbar
-                plt.colorbar(im, ax=ax_matrix)
-                
-                # Add rotation info to cells
-                for i in range(len(curr_tiles)):
-                    for j in range(len(prev_tiles)):
-                        if (i, j) in best_rotations and best_rotations[(i, j)]:
-                            curr_rot, prev_rot = best_rotations[(i, j)]
-                            text = ax_matrix.text(j, i, f"{curr_rot}°→{prev_rot}°",
-                                          ha="center", va="center", color="white", fontsize=7)
-                
-                print(f" | Prev: {len(prev_tiles)} tiles, Matrix: {len(curr_tiles)}x{len(prev_tiles)}")
-            else:
-                ax_matrix.text(0.5, 0.5, 'No previous frame data', ha='center', va='center', transform=ax_matrix.transAxes)
-                ax_matrix.set_title('Similarity Matrix')
-                print()
-        else:
-            ax_matrix.text(0.5, 0.5, 'Frame 0 - No previous frame', ha='center', va='center', transform=ax_matrix.transAxes)
-            ax_matrix.set_title('Similarity Matrix')
-            print()
+        print()
         
         # Store current data as previous for next frame
         prev_frame_data.clear()
@@ -293,8 +251,8 @@ def frame_similarity_viz(video_path, frame_number=0):
     print(f"Starting at frame {frame_number}/{total_frames-1}")
     print("Use RIGHT arrow to go to next frame, LEFT arrow for previous, Q to quit\n")
     
-    # Create figure with 3 panels
-    fig = plt.figure(figsize=(18, 7))
+    # Create figure with 2 panels
+    fig = plt.figure(figsize=(14, 6))
     state['fig'] = fig
     
     # Initial update
