@@ -135,7 +135,8 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         for ax in fig.get_axes():
             ax.remove()
         
-        ax = fig.add_subplot(1, 1, 1)
+        ax_main = fig.add_subplot(1, 2, 1)
+        ax_grid = fig.add_subplot(1, 2, 2)
         
         if frame_num > 0 and prev_frame_data and 'frame' in prev_frame_data:
             prev_data = prev_frame_data
@@ -257,15 +258,82 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             
             matches = len(filtered_matches)
             
-            ax.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
-            ax.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
+            ax_main.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
+            ax_main.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
             print(f" | {matches}/{len(curr_data['signatures'])} tiles matched")
+            
+            # Build grid visualization of matched tiles (current frame only)
+            if filtered_matches:
+                # Calculate grid dimensions from current frame matched tiles only
+                curr_matched_coords = set()
+                for curr_coord, prev_coord, _, _, _, _, _, _, _ in filtered_matches:
+                    curr_matched_coords.add(curr_coord)
+                
+                if curr_matched_coords:
+                    all_rows = [r for r, c in curr_matched_coords]
+                    all_cols = [c for r, c in curr_matched_coords]
+                    max_row = max(all_rows) if all_rows else 0
+                    max_col = max(all_cols) if all_cols else 0
+                    num_rows = max_row + 1
+                    num_cols = max_col + 1
+                    
+                    # Create composite grid of warped tiles
+                    tile_display_size = 100
+                    composite_height = num_rows * tile_display_size
+                    composite_width = num_cols * tile_display_size
+                    composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
+                    
+                    # Draw current frame matched tiles with coordinates
+                    for coord in curr_matched_coords:
+                        row, col = coord
+                        if coord in curr_data['tiles']:
+                            warped = curr_data['tiles'][coord]
+                            warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
+                            
+                            # Convert to RGB for PIL drawing
+                            from PIL import Image, ImageDraw, ImageFont
+                            pil_image = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
+                            draw = ImageDraw.Draw(pil_image)
+                            
+                            # Add grid coordinates
+                            try:
+                                font = ImageFont.truetype("arial.ttf", 12)
+                            except:
+                                font = ImageFont.load_default()
+                            
+                            label = f"({row},{col})"
+                            draw.text((5, 5), label, fill=(255, 0, 0), font=font)
+                            
+                            # Convert back to numpy array
+                            warped_resized = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+                            
+                            y_start = row * tile_display_size
+                            x_start = col * tile_display_size
+                            composite_image[y_start:y_start+tile_display_size, x_start:x_start+tile_display_size] = warped_resized
+                    
+                    ax_grid.imshow(composite_image)
+                    ax_grid.set_title(f'Current Frame Matched Tiles ({num_rows}x{num_cols})')
+                    ax_grid.set_xticks(np.arange(-.5, num_cols, 1), minor=True)
+                    ax_grid.set_yticks(np.arange(-.5, num_rows, 1), minor=True)
+                    ax_grid.grid(which="minor", color="gray", linestyle='-', linewidth=0.5)
+                    ax_grid.tick_params(which="minor", size=0)
+                else:
+                    ax_grid.text(0.5, 0.5, 'No matched tiles', ha='center', va='center', transform=ax_grid.transAxes)
+                    ax_grid.set_title('Current Frame Matched Tiles')
+            else:
+                ax_grid.text(0.5, 0.5, 'No matches', ha='center', va='center', transform=ax_grid.transAxes)
+                ax_grid.set_title('Current Frame Matched Tiles')
+            
+            ax_grid.axis('off')
         else:
-            ax.imshow(cv2.cvtColor(curr_data['frame'], cv2.COLOR_BGR2RGB))
-            ax.set_title(f'Frame {frame_num} (No previous frame)')
+            ax_main.imshow(cv2.cvtColor(curr_data['frame'], cv2.COLOR_BGR2RGB))
+            ax_main.set_title(f'Frame {frame_num} (No previous frame)')
             print()
+            ax_grid.text(0.5, 0.5, 'No previous frame', ha='center', va='center', transform=ax_grid.transAxes)
+            ax_grid.set_title('Matched Tiles Grid')
+            ax_grid.axis('off')
         
-        ax.axis('off')
+        ax_main.axis('off')
         
         # Store current data as previous for next frame
         prev_frame_data.clear()
@@ -297,8 +365,8 @@ def frame_tile_matching_viz(video_path, frame_number=0):
     print(f"Starting at frame {frame_number}/{total_frames-1}")
     print("Use RIGHT arrow to go to next frame, LEFT arrow for previous, Q to quit\n")
     
-    # Create figure
-    fig = plt.figure(figsize=(16, 7))
+    # Create figure (wider to accommodate grid on the right)
+    fig = plt.figure(figsize=(20, 7))
     state['fig'] = fig
     
     # Initial update
