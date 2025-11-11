@@ -25,11 +25,15 @@ def frame_tile_matching_viz(video_path, frame_number=0):
     # State for navigation
     state = {'current_frame': frame_number, 'cap': cap, 'total_frames': total_frames, 'fig': None}
     
-    # Cache for previous frame
-    prev_frame_data = {}
+    # Frame cache - stores processed frame objects
+    frames = {}  # frame_number -> frame_obj
     
     def extract_frame_data(frame_num):
-        """Extract grid and tile data from a frame"""
+        """Extract grid and tile data from a frame, return frame object with new structure"""
+        # Check cache first
+        if frame_num in frames:
+            return frames[frame_num]
+        
         if frame_num < 0 or frame_num >= total_frames:
             return None
         
@@ -47,11 +51,14 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         if not grid_map:
             return None
         
-        # Extract tiles and signatures
-        tiles = {}
-        signatures = {}
+        # Extract tiles - new structure: list of tile objects
+        tile_list = []
+        
+        # Also keep dictionaries for matching logic (keyed by coordinates)
+        signatures_by_coord = {}
+        tiles_by_coord = {}
+        centers_by_coord = {}
         filtered = set()
-        centers = {}  # Store tile centers
         
         for (row, col), square_polygon in grid_map.items():
             try:
@@ -64,13 +71,11 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                     filtered.add((row, col))
                     continue
                 
-                tiles[(row, col)] = warped
-                
                 # Calculate tile center in original frame
                 p1, p2, p3, p4 = square_polygon
                 cx = int((p1[0] + p3[0]) / 2)
                 cy = int((p1[1] + p3[1]) / 2)
-                centers[(row, col)] = (cx, cy)
+                centers_by_coord[(row, col)] = (cx, cy)
                 
                 # Generate signatures for all rotations
                 sig_dict = {}
@@ -88,18 +93,38 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                     if hash_sig:
                         sig_dict[rotation] = hash_sig
                 
-                signatures[(row, col)] = sig_dict
+                # Create tile object (new structure)
+                tile_obj = {
+                    'signatures': sig_dict,
+                    'image': warped,
+                    'frame_row': row,
+                    'frame_col': col
+                }
+                tile_list.append(tile_obj)
+                
+                # Keep coord-based lookups for matching logic
+                signatures_by_coord[(row, col)] = sig_dict
+                tiles_by_coord[(row, col)] = warped
+                
             except Exception as e:
                 pass
         
-        return {
+        # Create frame object (new structure)
+        frame_obj = {
+            'frame_number': frame_num,
+            'tiles': tile_list,
             'frame': frame,
             'grid_map': grid_map,
-            'tiles': tiles,
-            'signatures': signatures,
-            'filtered': filtered,
-            'centers': centers
+            # Keep these for backward compatibility with matching logic
+            'signatures': signatures_by_coord,
+            'tiles_by_coord': tiles_by_coord,
+            'centers': centers_by_coord,
+            'filtered': filtered
         }
+        
+        # Cache it
+        frames[frame_num] = frame_obj
+        return frame_obj
     
     def find_best_match(curr_coord, curr_sigs, prev_signatures):
         """Find best matching tile in previous frame across all rotations"""
@@ -138,8 +163,8 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         ax_main = fig.add_subplot(1, 2, 1)
         ax_grid = fig.add_subplot(1, 2, 2)
         
-        if frame_num > 0 and prev_frame_data and 'frame' in prev_frame_data:
-            prev_data = prev_frame_data
+        if frame_num > 0 and frame_num - 1 in frames:
+            prev_data = frames[frame_num - 1]
             
             # Overlay frames - assume same size or resize
             h_prev, w_prev = prev_data['frame'].shape[:2]
@@ -224,6 +249,19 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             else:
                 filtered_matches = match_details
             
+            # Store only matched tiles in the frame cache
+            matched_tile_list = []
+            for curr_coord, prev_coord, _, _, _, _, _, _, _ in filtered_matches:
+                row, col = curr_coord
+                for tile_obj in curr_data['tiles']:
+                    if tile_obj['frame_row'] == row and tile_obj['frame_col'] == col:
+                        matched_tile_list.append(tile_obj)
+                        break
+            
+            # Update cached frame object to contain only matched tiles
+            curr_data['tiles'] = matched_tile_list
+            frames[frame_num] = curr_data
+            
             # Draw filtered matched pairs
             for curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist in filtered_matches:
                 # Draw previous tile center (yellow)
@@ -283,11 +321,13 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                     composite_width = num_cols * tile_display_size
                     composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
                     
-                    # Draw current frame matched tiles with coordinates
-                    for coord in curr_matched_coords:
-                        row, col = coord
-                        if coord in curr_data['tiles']:
-                            warped = curr_data['tiles'][coord]
+                    # Iterate through tile list and display matched tiles
+                    for tile_obj in curr_data['tiles']:
+                        row = tile_obj['frame_row']
+                        col = tile_obj['frame_col']
+                        
+                        if (row, col) in curr_matched_coords:
+                            warped = tile_obj['image']
                             warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
                             
                             # Convert to RGB for PIL drawing
@@ -334,10 +374,6 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             ax_grid.axis('off')
         
         ax_main.axis('off')
-        
-        # Store current data as previous for next frame
-        prev_frame_data.clear()
-        prev_frame_data.update(curr_data)
         
         fig.canvas.draw_idle()
         return True
