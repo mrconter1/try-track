@@ -87,12 +87,12 @@ def euclidean_distance(hash1, hash2):
     return np.sqrt(sum((b1 - b2)**2 for b1, b2 in zip(bytes1, bytes2)))
 
 def extract_grid_squares(lines, frame_shape):
-    """Extract grid squares formed by intersecting lines"""
+    """Extract grid squares formed by intersecting lines and return them in a grid map."""
     if len(lines) < 2:
-        return []
+        return {}
     
     h, w = frame_shape[:2]
-    squares = []
+    grid_squares = {} # Use a dictionary to store grid coordinates
     
     # Group lines into horizontal and vertical
     horizontal = []
@@ -128,9 +128,10 @@ def extract_grid_squares(lines, frame_shape):
             if all(p is not None for p in [p1, p2, p3, p4]):
                 # Check if all points are within frame bounds
                 if all(0 <= p[0] <= w and 0 <= p[1] <= h for p in [p1, p2, p3, p4]):
-                    squares.append((p1, p2, p3, p4))
+                    # The grid coordinate is (i, j) based on the line indices
+                    grid_squares[(i, j)] = (p1, p2, p3, p4)
     
-    return squares
+    return grid_squares
 
 def line_intersection(rho1, theta1, rho2, theta2):
     """Find intersection of two lines defined by (rho, theta)"""
