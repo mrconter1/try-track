@@ -300,77 +300,96 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             ax_main.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
             print(f" | {matches}/{len(curr_data['signatures'])} tiles matched")
             
-            # Build grid visualization of matched tiles (current frame only)
-            if filtered_matches:
-                # Calculate grid dimensions from current frame matched tiles only
-                curr_matched_coords = set()
-                for curr_coord, prev_coord, _, _, _, _, _, _, _ in filtered_matches:
-                    curr_matched_coords.add(curr_coord)
+            # Build grid visualization on 100x100 canvas (-50,-50 to 50,50)
+            if filtered_matches or curr_data['tiles']:
+                # Create 100x100 grid centered at origin
+                tile_display_size = 30
+                grid_size = 100
+                composite_height = grid_size * tile_display_size
+                composite_width = grid_size * tile_display_size
+                composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
                 
-                if curr_matched_coords:
-                    all_rows = [r for r, c in curr_matched_coords]
-                    all_cols = [c for r, c in curr_matched_coords]
-                    max_row = max(all_rows) if all_rows else 0
-                    max_col = max(all_cols) if all_cols else 0
-                    num_rows = max_row + 1
-                    num_cols = max_col + 1
+                # Draw center crosshair at (0,0)
+                center_pos = 50 * tile_display_size
+                cv2.line(composite_image, (center_pos, center_pos - 10), (center_pos, center_pos + 10), (255, 0, 0), 2)
+                cv2.line(composite_image, (center_pos - 10, center_pos), (center_pos + 10, center_pos), (255, 0, 0), 2)
+                
+                # Place tiles on grid
+                from PIL import Image, ImageDraw, ImageFont
+                for tile_obj in curr_data['tiles']:
+                    row = tile_obj['frame_row']
+                    col = tile_obj['frame_col']
                     
-                    # Create composite grid of warped tiles
-                    tile_display_size = 100
-                    composite_height = num_rows * tile_display_size
-                    composite_width = num_cols * tile_display_size
-                    composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
+                    # Convert frame coordinates to grid coordinates (center at 0,0)
+                    # Grid goes from -50,-50 to 50,50 (or 49,49)
+                    grid_row = row + 50
+                    grid_col = col + 50
                     
-                    # Iterate through tile list and display matched tiles
-                    for tile_obj in curr_data['tiles']:
-                        row = tile_obj['frame_row']
-                        col = tile_obj['frame_col']
+                    # Check if within bounds
+                    if 0 <= grid_row < grid_size and 0 <= grid_col < grid_size:
+                        warped = tile_obj['image']
+                        warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
                         
-                        if (row, col) in curr_matched_coords:
-                            warped = tile_obj['image']
-                            warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
-                            
-                            # Convert to RGB for PIL drawing
-                            from PIL import Image, ImageDraw, ImageFont
-                            pil_image = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
-                            draw = ImageDraw.Draw(pil_image)
-                            
-                            # Add grid coordinates
-                            try:
-                                font = ImageFont.truetype("arial.ttf", 12)
-                            except:
-                                font = ImageFont.load_default()
-                            
-                            label = f"({row},{col})"
-                            draw.text((5, 5), label, fill=(255, 0, 0), font=font)
-                            
-                            # Convert back to numpy array
-                            warped_resized = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-                            
-                            y_start = row * tile_display_size
-                            x_start = col * tile_display_size
-                            composite_image[y_start:y_start+tile_display_size, x_start:x_start+tile_display_size] = warped_resized
-                    
-                    ax_grid.imshow(composite_image)
-                    ax_grid.set_title(f'Current Frame Matched Tiles ({num_rows}x{num_cols})')
-                    ax_grid.set_xticks(np.arange(-.5, num_cols, 1), minor=True)
-                    ax_grid.set_yticks(np.arange(-.5, num_rows, 1), minor=True)
-                    ax_grid.grid(which="minor", color="gray", linestyle='-', linewidth=0.5)
-                    ax_grid.tick_params(which="minor", size=0)
-                else:
-                    ax_grid.text(0.5, 0.5, 'No matched tiles', ha='center', va='center', transform=ax_grid.transAxes)
-                    ax_grid.set_title('Current Frame Matched Tiles')
+                        # Convert to RGB for PIL drawing
+                        pil_image = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
+                        draw = ImageDraw.Draw(pil_image)
+                        
+                        # Add grid coordinates
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 10)
+                        except:
+                            font = ImageFont.load_default()
+                        
+                        label = f"({row},{col})"
+                        draw.text((2, 2), label, fill=(255, 0, 0), font=font)
+                        
+                        # Convert back to numpy array
+                        warped_resized = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+                        
+                        y_start = grid_row * tile_display_size
+                        x_start = grid_col * tile_display_size
+                        composite_image[y_start:y_start+tile_display_size, x_start:x_start+tile_display_size] = warped_resized
+                
+                ax_grid.imshow(composite_image)
+                ax_grid.set_title(f'100x100 Grid (-50,-50 to 50,50) | Center at (0,0)')
+                
+                # Add grid lines every 10 units
+                for i in range(0, grid_size + 1, 10):
+                    ax_grid.axhline(y=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
+                    ax_grid.axvline(x=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
             else:
-                ax_grid.text(0.5, 0.5, 'No matches', ha='center', va='center', transform=ax_grid.transAxes)
-                ax_grid.set_title('Current Frame Matched Tiles')
+                ax_grid.text(0.5, 0.5, 'No tiles', ha='center', va='center', transform=ax_grid.transAxes)
+                ax_grid.set_title('100x100 Grid')
             
             ax_grid.axis('off')
         else:
             ax_main.imshow(cv2.cvtColor(curr_data['frame'], cv2.COLOR_BGR2RGB))
             ax_main.set_title(f'Frame {frame_num} (No previous frame)')
             print()
-            ax_grid.text(0.5, 0.5, 'No previous frame', ha='center', va='center', transform=ax_grid.transAxes)
-            ax_grid.set_title('Matched Tiles Grid')
+            
+            # Still show 100x100 grid for first frame
+            tile_display_size = 30
+            grid_size = 100
+            composite_height = grid_size * tile_display_size
+            composite_width = grid_size * tile_display_size
+            composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
+            
+            # Draw center crosshair
+            center_pos = 50 * tile_display_size
+            cv2.line(composite_image, (center_pos, center_pos - 10), (center_pos, center_pos + 10), (255, 0, 0), 2)
+            cv2.line(composite_image, (center_pos - 10, center_pos), (center_pos + 10, center_pos), (255, 0, 0), 2)
+            
+            # For first frame, just cache all tiles without filtering
+            frames[frame_num] = curr_data
+            
+            ax_grid.imshow(composite_image)
+            ax_grid.set_title(f'100x100 Grid (-50,-50 to 50,50) | Center at (0,0)')
+            
+            # Add grid lines every 10 units
+            for i in range(0, grid_size + 1, 10):
+                ax_grid.axhline(y=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
+                ax_grid.axvline(x=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
+            
             ax_grid.axis('off')
         
         ax_main.axis('off')
