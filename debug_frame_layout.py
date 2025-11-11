@@ -109,6 +109,12 @@ def debug_frame_layout(video_path, frame_number=0):
             label = f"({row_idx},{col_idx})"
             cv2.putText(frame_with_coords, label, (int(item['cx']) - 25, int(item['cy'])),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            
+            # Add the tile index number
+            id_text = f"#{item['square_idx']}"
+            cv2.putText(frame_with_coords, id_text, (int(item['cx']) - 25, int(item['cy']) + 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
     ax2.imshow(cv2.cvtColor(frame_with_coords, cv2.COLOR_BGR2RGB))
     ax2.set_title('Lines & Grid Coordinates')
     ax2.axis('off')
@@ -135,6 +141,13 @@ def debug_frame_layout(video_path, frame_number=0):
                     y_start = row_idx * tile_display_size
                     x_start = col_idx * tile_display_size
                     composite_image[y_start:y_start+tile_display_size, x_start:x_start+tile_display_size] = warped_resized
+                    
+                    # Add tile ID text to the warped image
+                    id_text = f"#{square_idx}"
+                    cv2.putText(composite_image, id_text, 
+                               (x_start + 5, y_start + 25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
                 except Exception as e:
                     print(f"  Error warping tile at ({row_idx},{col_idx}): {e}")
             # If no tile, the dark gray background will show through as an empty cell
