@@ -43,9 +43,14 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         if not ret:
             return None
         
-        # Detect grid
+        # Detect grid (suppress output)
+        import sys
+        from io import StringIO
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
         line_detector = LineDetector()
         frame_with_lines, lines = line_detector.detect_lines(frame)
+        sys.stdout = old_stdout
         grid_map = extract_grid_squares(lines, frame.shape[:2])
         
         if not grid_map:
@@ -154,7 +159,6 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         
         kept_tiles = len(curr_data['tiles'])
         filtered_tiles = len(curr_data['filtered'])
-        print(f"Frame {frame_num}: {len(curr_data['grid_map'])} detected, {kept_tiles} kept, {filtered_tiles} filtered", end="")
         
         # Clear axes
         for ax in fig.get_axes():
@@ -239,13 +243,8 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                 std_distance = np.std(pixel_distances)
                 threshold = avg_distance + 1 * std_distance  # Stricter outlier threshold (1 std dev)
                 
-                print(f" | Pixel distance: avg={avg_distance:.1f}, std={std_distance:.1f}, threshold={threshold:.1f}", end="")
-                
                 # Filter out outliers
                 filtered_matches = [m for m in match_details if m[8] <= threshold]
-                outlier_count = len(match_details) - len(filtered_matches)
-                if outlier_count > 0:
-                    print(f", {outlier_count} outliers removed", end="")
             else:
                 filtered_matches = match_details
             
@@ -296,9 +295,14 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             
             matches = len(filtered_matches)
             
+            # Print only matched tiles
+            if matches > 0:
+                matched_coords = [coord for coord, _, _, _, _, _, _, _, _ in filtered_matches]
+                coord_str = ', '.join([f"({r},{c})" for r, c in matched_coords])
+                print(f"Frame {frame_num}: {matches} matched tiles - {coord_str}")
+            
             ax_main.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
             ax_main.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
-            print(f" | {matches}/{len(curr_data['signatures'])} tiles matched")
             
             # Build grid visualization on 100x100 canvas (-50,-50 to 50,50)
             if filtered_matches or curr_data['tiles']:
@@ -364,8 +368,7 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             ax_grid.axis('off')
         else:
             ax_main.imshow(cv2.cvtColor(curr_data['frame'], cv2.COLOR_BGR2RGB))
-            ax_main.set_title(f'Frame {frame_num} (No previous frame)')
-            print()
+            ax_main.set_title(f'Frame {frame_num} (No previous frame - Anchor)')
             
             # Still show 100x100 grid for first frame
             tile_display_size = 30
