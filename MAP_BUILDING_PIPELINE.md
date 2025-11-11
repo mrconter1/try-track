@@ -89,17 +89,42 @@ BUILD_GLOBAL_MAP:
   tile_global_positions = {}        // tile_id -> global coordinates
   
   FOR EACH frame IN frames:
-    // Find first tile in grid that matches existing global map
-    first_match = find_first_matching_tile_in_grid(frame.grid, tile_global_positions)
+    first_match = NULL
+    
+    // Find first tile in frame that matches global map
+    // (checks all 4 rotations of current tile against all global tiles)
+    FOR EACH (row, col) IN frame.grid:
+      IF frame.grid[row][col] != empty:
+        current_tile = get_tile(frame.grid[row][col])
+        (global_tile_id, rotation_offset) = find_match_in_global_map(current_tile, tile_global_positions)
+        
+        IF global_tile_id != NULL:
+          first_match = (row, col, frame.grid[row][col], global_tile_id)
+          BREAK
+        END IF
+      END IF
+    END FOR
     
     IF first_match != NULL:
-      (grid_row, grid_col, tile_id) = first_match
-      offset = tile_global_positions[tile_id] - (grid_row, grid_col)
+      (grid_row, grid_col, matched_tile_id, global_tile_id) = first_match
+      (global_tile_id, rotation_offset) = find_match_in_global_map(get_tile(matched_tile_id), tile_global_positions)
       
-      // Stitch entire grid into global map using offset
+      global_pos = tile_global_positions[global_tile_id]
+      offset = global_pos - (grid_row, grid_col)
+      
+      // Stitch entire grid into global map using offset and rotation
       FOR EACH (row, col) IN frame.grid:
         IF frame.grid[row][col] != empty:
-          global_coords = (row, col) + offset
+          IF rotation_offset == 0:
+            global_coords = (row, col) + offset
+          ELSE IF rotation_offset == 90:
+            global_coords = rotate_90_coords((row, col)) + offset
+          ELSE IF rotation_offset == 180:
+            global_coords = rotate_180_coords((row, col)) + offset
+          ELSE IF rotation_offset == 270:
+            global_coords = rotate_270_coords((row, col)) + offset
+          END IF
+          
           tile_global_positions[frame.grid[row][col]] = global_coords
         END IF
       END FOR
