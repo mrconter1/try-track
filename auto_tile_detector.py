@@ -102,12 +102,14 @@ def extract_grid_squares(lines, frame_shape):
         theta_deg = theta * 180 / np.pi
         theta_deg = theta_deg % 180
         
-        if theta_deg < 45 or theta_deg > 135:
+        # Angles close to 90 degrees are horizontal
+        if 45 < theta_deg < 135:
             horizontal.append((rho, theta))
+        # Angles close to 0 or 180 degrees are vertical
         else:
             vertical.append((rho, theta))
     
-    # Sort lines by rho
+    # Sort lines by their position (rho) to establish order
     horizontal.sort(key=lambda x: x[0])
     vertical.sort(key=lambda x: x[0])
     
