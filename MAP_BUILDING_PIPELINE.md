@@ -48,3 +48,43 @@ MAIN LOOP:
 
 RETURN global_map = build_map_output(map_tiles, map_coordinates)
 ```
+
+---
+
+# Global Map Building (Post-Processing)
+
+```
+INPUT:
+  grids = [
+    {
+      frame_number,
+      grid: 2D array where each cell is tile_signature (or empty)
+    },
+    ...  // One grid per frame
+  ]
+
+GLOBAL_MAP:
+  tile_global_positions = {}        // signature -> global_coords
+  frame_offsets = {}                // frame_number -> offset_transform
+
+BUILD_GLOBAL_MAP:
+  FOR EACH grid_frame IN grids:
+    // Find first tile signature in grid that matches existing global map
+    first_match = find_first_matching_tile_in_grid(grid_frame.grid, tile_global_positions)
+    
+    IF first_match != NULL:
+      (grid_row, grid_col, signature) = first_match
+      offset = tile_global_positions[signature] - (grid_row, grid_col)
+      
+      // Stitch entire grid into global map using offset
+      FOR EACH (row, col) IN grid_frame.grid:
+        IF grid_frame.grid[row][col] != empty:
+          global_coords = (row, col) + offset
+          tile_global_positions[grid_frame.grid[row][col]] = global_coords
+        END IF
+      END FOR
+    END IF
+  END FOR
+
+RETURN global_map_with_coordinates
+```
