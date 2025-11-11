@@ -451,6 +451,65 @@ class GlobalMapBuilder:
         
         return None, None
     
+    def visualize_frame_grids(self):
+        """Visualize individual frame grids"""
+        print("\n" + "="*70)
+        print("[VISUALIZATION] INDIVIDUAL FRAME GRIDS")
+        print("="*70)
+        
+        for frame_data in self.frames:
+            frame_num = frame_data['frame_number']
+            frame_grid = frame_data['grid']
+            num_rows = frame_data['num_rows']
+            num_cols = frame_data['num_cols']
+            
+            print(f"\nFrame {frame_num}: {len(frame_grid)} tiles in {num_rows}x{num_cols} grid")
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Plot tiles
+            rows = []
+            cols = []
+            tile_ids = []
+            
+            for (row, col), tile_id in frame_grid.items():
+                if tile_id is not None:
+                    rows.append(row)
+                    cols.append(col)
+                    tile_ids.append(tile_id)
+            
+            # Scatter plot
+            ax.scatter(cols, rows, c='green', s=200, alpha=0.7, edgecolors='darkgreen', linewidth=2)
+            
+            # Add tile ID labels
+            for row, col, tile_id in zip(rows, cols, tile_ids):
+                ax.text(col, row, str(tile_id), ha='center', va='center', 
+                       fontsize=10, color='white', weight='bold',
+                       bbox=dict(boxstyle='round', facecolor='black', alpha=0.8))
+            
+            # Grid
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=1)
+            ax.invert_yaxis()
+            
+            # Labels
+            ax.set_xlabel(f'Column (0 to {num_cols-1})', fontsize=12, fontweight='bold')
+            ax.set_ylabel(f'Row (0 to {num_rows-1})', fontsize=12, fontweight='bold')
+            ax.set_title(f'Frame {frame_num}: Local Grid ({num_rows}x{num_cols})\n{len(frame_grid)} tiles', 
+                        fontsize=14, fontweight='bold')
+            
+            # Set limits with padding
+            ax.set_xlim(-0.5, num_cols - 0.5)
+            ax.set_ylim(num_rows - 0.5, -0.5)
+            
+            plt.tight_layout()
+            
+            # Maximize window
+            manager = plt.get_current_fig_manager()
+            manager.window.showMaximized()
+            
+            plt.show()
+    
     def visualize_global_map(self, max_display_size=2000, save_path=None, fixed_grid_size=1000):
         """Visualize the global map as a 2D grid of tiles
         
@@ -633,6 +692,7 @@ def main():
     parser.add_argument('--no-viz', action='store_true', help='Skip visualization')
     parser.add_argument('--save-viz', type=str, default=None, help='Save visualization to PNG file instead of displaying')
     parser.add_argument('--max-display', type=int, default=2000, help='Max display size in pixels (default: 2000)')
+    parser.add_argument('--show-frames', action='store_true', help='Show individual frame grids before global map')
     
     args = parser.parse_args()
     
@@ -651,6 +711,11 @@ def main():
         builder.process_video()
         builder.build_global_map()
         
+        # Show individual frame grids if requested
+        if args.show_frames:
+            builder.visualize_frame_grids()
+        
+        # Show global map
         if not args.no_viz:
             if args.save_viz:
                 builder.visualize_global_map(max_display_size=args.max_display, save_path=args.save_viz)
