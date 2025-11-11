@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
+from PIL import Image, ImageDraw, ImageFont
 from line_detector import LineDetector
 from auto_tile_detector import extract_grid_squares, extract_and_warp_square, generate_tile_hash
 
@@ -116,24 +117,35 @@ def debug_frame_layout(video_path, frame_number=0):
             warped = extract_and_warp_square(frame, square_polygon)
             warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
             
+            # Convert to PIL for better text rendering
+            pil_image = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(pil_image)
+            
+            # Try to use a nice font, fallback to default if not available
+            try:
+                font_small = ImageFont.truetype("arial.ttf", 10)
+            except:
+                font_small = ImageFont.load_default()
+            
             # Add coordinate label
             label = f"({row},{col})"
-            cv2.putText(warped_resized, label, (5, 20), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            draw.text((5, 5), label, fill=(255, 0, 0), font=font_small)
             
             # Add signature info if available (each rotation on its own row)
             if (row, col) in tile_signatures:
                 sigs = tile_signatures[(row, col)]
-                y_offset = 40
+                y_offset = 25
                 for rot in [0, 90, 180, 270]:
                     if rot in sigs:
                         sig = sigs[rot]
                         # Use full 8-char hex string
                         sig_val = sig[:8] if isinstance(sig, str) else f"{sig[0]:.1f}"
-                        sig_line = f"{rot} deg = {sig_val}"
-                        cv2.putText(warped_resized, sig_line, (3, y_offset), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 200, 0), 1)
+                        sig_line = f"{rot}deg={sig_val}"
+                        draw.text((3, y_offset), sig_line, fill=(255, 0, 0), font=font_small)
                         y_offset += 12
+            
+            # Convert back to numpy array
+            warped_resized = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
             
             y_start = row * tile_display_size
             x_start = col * tile_display_size
