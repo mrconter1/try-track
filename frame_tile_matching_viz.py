@@ -189,7 +189,10 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                     matched_curr.add(curr_coord)
                     matched_prev.add(prev_coord)
             
-            # Draw matched pairs
+            # Calculate physical pixel distances for all matches
+            pixel_distances = []
+            match_details = []  # Store full details for filtering
+            
             for curr_coord, prev_coord, rotations, distance in matches_list:
                 # Get previous tile center
                 prev_cx, prev_cy = prev_data['centers'][prev_coord]
@@ -199,6 +202,29 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                 curr_cx = int(curr_cx_orig * scale_x)
                 curr_cy = int(curr_cy_orig * scale_y)
                 
+                # Calculate physical pixel distance
+                pixel_dist = np.sqrt((curr_cx - prev_cx)**2 + (curr_cy - prev_cy)**2)
+                pixel_distances.append(pixel_dist)
+                match_details.append((curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist))
+            
+            # Calculate average and standard deviation
+            if pixel_distances:
+                avg_distance = np.mean(pixel_distances)
+                std_distance = np.std(pixel_distances)
+                threshold = avg_distance + 1 * std_distance  # Stricter outlier threshold (1 std dev)
+                
+                print(f" | Pixel distance: avg={avg_distance:.1f}, std={std_distance:.1f}, threshold={threshold:.1f}", end="")
+                
+                # Filter out outliers
+                filtered_matches = [m for m in match_details if m[8] <= threshold]
+                outlier_count = len(match_details) - len(filtered_matches)
+                if outlier_count > 0:
+                    print(f", {outlier_count} outliers removed", end="")
+            else:
+                filtered_matches = match_details
+            
+            # Draw filtered matched pairs
+            for curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist in filtered_matches:
                 # Draw previous tile center (yellow)
                 cv2.circle(combined, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
                 
@@ -217,7 +243,7 @@ def frame_tile_matching_viz(video_path, frame_number=0):
                     cv2.putText(combined, rot_text, (mid_x - 20, mid_y - 5),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
             
-            matches = len(matches_list)
+            matches = len(filtered_matches)
             
             ax.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
             ax.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
