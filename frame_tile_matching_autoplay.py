@@ -538,16 +538,6 @@ def frame_tile_matching_autoplay(
                 x_start = grid_col * tile_display_size
 
                 warped_resized = cv2.resize(tile["image"], (tile_display_size, tile_display_size))
-                cv2.putText(
-                    warped_resized,
-                    f"G({tile['global_row']},{tile['global_col']})",
-                    (2, 12),
-                    font,
-                    0.3,
-                    (0, 0, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
 
                 composite_image[
                     y_start : y_start + tile_display_size, x_start : x_start + tile_display_size
