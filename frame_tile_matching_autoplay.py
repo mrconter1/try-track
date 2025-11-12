@@ -22,6 +22,7 @@ from typing import Optional
 def frame_tile_matching_autoplay(
     video_path: str,
     end_frame: Optional[int] = None,
+    max_frames: Optional[int] = None,
 ):
     """Iterate through frames automatically and visualize global tile stitching."""
     cap = cv2.VideoCapture(video_path)
@@ -34,8 +35,20 @@ def frame_tile_matching_autoplay(
         end_frame = total_frames
     end_frame = min(end_frame, total_frames)
 
+    if max_frames is not None:
+        max_frames = max(0, max_frames)
+        frame_limit = min(end_frame, max_frames)
+    else:
+        frame_limit = end_frame
+
     print(f"[Autoplay] Video: {video_path}")
-    print(f"[Autoplay] Frames: 0 → {end_frame - 1} (total {end_frame})\n")
+    if frame_limit > 0:
+        print(f"[Autoplay] Frames: 0 → {frame_limit - 1} (total {frame_limit})\n")
+    else:
+        if max_frames == 0:
+            print("[Autoplay] No frames scheduled (max_frames=0)\n")
+        else:
+            print("[Autoplay] No frames scheduled\n")
 
     line_detector = LineDetector()
     frames: dict[int, dict] = {}
@@ -489,7 +502,7 @@ def frame_tile_matching_autoplay(
 
     window_created = False
     try:
-        for frame_num in range(end_frame):
+        for frame_num in range(frame_limit):
             display = render_frame(frame_num)
             if display is None:
                 continue
@@ -535,6 +548,12 @@ def parse_args():
     parser.add_argument(
         "--end-frame", type=int, default=None, help="End frame index (exclusive, default=video end)"
     )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Maximum number of frames to process from the start",
+    )
     return parser.parse_args()
 
 
@@ -546,6 +565,7 @@ if __name__ == "__main__":
         frame_tile_matching_autoplay(
             video_path=args.video,
             end_frame=args.end_frame,
+            max_frames=args.max_frames,
         )
     finally:
         profiler.disable()
