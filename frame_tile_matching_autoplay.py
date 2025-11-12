@@ -1,6 +1,9 @@
 import argparse
+import cProfile
+import io
 import cv2
 import numpy as np
+import pstats
 
 from line_detector import LineDetector
 from auto_tile_detector import (
@@ -537,8 +540,17 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    frame_tile_matching_autoplay(
-        video_path=args.video,
-        end_frame=args.end_frame,
-    )
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        frame_tile_matching_autoplay(
+            video_path=args.video,
+            end_frame=args.end_frame,
+        )
+    finally:
+        profiler.disable()
+        stats_stream = io.StringIO()
+        stats = pstats.Stats(profiler, stream=stats_stream)
+        stats.strip_dirs().sort_stats("cumulative").print_stats(20)
+        print(stats_stream.getvalue())
 
