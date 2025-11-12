@@ -1,6 +1,7 @@
 import argparse
 import cProfile
 import io
+import auto_tile_detector
 import cv2
 import numpy as np
 import pstats
@@ -17,6 +18,45 @@ from frame_tile_matching_viz import rotate_coordinates, analyze_frame_pair
 
 # NOTE: we use Optional for Python 3.10 compatibility instead of PEP 604 union syntax
 from typing import Optional
+
+
+def compute_dhash_byte_fast(block: np.ndarray) -> int:
+    """Compute dHash byte using vectorized operations for performance."""
+    h, w = block.shape
+    h_mid = h // 2
+    w_mid = w // 2
+
+    if h_mid == 0 or w_mid == 0:
+        block_mean = float(block.mean(dtype=np.float32))
+        return int(block_mean > 128) << 7
+
+    h_even = h_mid * 2
+    w_even = w_mid * 2
+    trimmed = block[:h_even, :w_even]
+
+    reshaped = trimmed.reshape(2, h_mid, 2, w_mid)
+    quadrant_means = reshaped.mean(axis=(1, 3), dtype=np.float32)
+    q1 = float(quadrant_means[0, 0])
+    q2 = float(quadrant_means[0, 1])
+    q3 = float(quadrant_means[1, 0])
+    q4 = float(quadrant_means[1, 1])
+
+    block_mean = float(trimmed.mean(dtype=np.float32))
+
+    byte_val = (
+        ((q1 > q2) << 0)
+        | ((q3 > q4) << 1)
+        | ((q1 > q3) << 2)
+        | ((q2 > q4) << 3)
+        | ((q1 > q4) << 4)
+        | ((q2 > q3) << 5)
+        | (((q1 + q4) > (q2 + q3)) << 6)
+        | ((block_mean > 128) << 7)
+    )
+    return int(byte_val)
+
+
+auto_tile_detector.compute_dhash_byte = compute_dhash_byte_fast
 
 
 def frame_tile_matching_autoplay(
