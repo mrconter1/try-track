@@ -12,11 +12,13 @@ from auto_tile_detector import (
 from frame_tile_matching_viz import rotate_coordinates, analyze_frame_pair
 
 
+# NOTE: we use Optional for Python 3.10 compatibility instead of PEP 604 union syntax
+from typing import Optional
+
+
 def frame_tile_matching_autoplay(
     video_path: str,
-    start_frame: int = 0,
-    end_frame: int | None = None,
-    delay_seconds: float = 0.75,
+    end_frame: Optional[int] = None,
 ):
     """Iterate through frames automatically and visualize global tile stitching."""
     cap = cv2.VideoCapture(video_path)
@@ -30,8 +32,7 @@ def frame_tile_matching_autoplay(
     end_frame = min(end_frame, total_frames)
 
     print(f"[Autoplay] Video: {video_path}")
-    print(f"[Autoplay] Frames: {start_frame} → {end_frame - 1} (total {end_frame - start_frame})")
-    print(f"[Autoplay] Delay between frames: {delay_seconds:.2f}s\n")
+    print(f"[Autoplay] Frames: 0 → {end_frame - 1} (total {end_frame})\n")
 
     line_detector = LineDetector()
     frames: dict[int, dict] = {}
@@ -367,7 +368,7 @@ def frame_tile_matching_autoplay(
     ax_main = fig.add_subplot(1, 2, 1)
     ax_grid = fig.add_subplot(1, 2, 2)
 
-    for frame_num in range(start_frame, end_frame):
+    for frame_num in range(end_frame):
         if not plt.fignum_exists(fig.number):
             print("[Autoplay] Figure closed by user, stopping")
             break
@@ -376,7 +377,7 @@ def frame_tile_matching_autoplay(
         if not success:
             continue
 
-        plt.pause(delay_seconds)
+        plt.pause(0.015)
 
     plt.ioff()
     plt.show(block=True)
@@ -386,15 +387,8 @@ def frame_tile_matching_autoplay(
 def parse_args():
     parser = argparse.ArgumentParser(description="Auto-play tile matching visualization")
     parser.add_argument("--video", type=str, default="video.mp4", help="Video file path")
-    parser.add_argument("--start-frame", type=int, default=0, help="Starting frame index")
     parser.add_argument(
         "--end-frame", type=int, default=None, help="End frame index (exclusive, default=video end)"
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=0.75,
-        help="Seconds to pause between frames (default: 0.75)",
     )
     return parser.parse_args()
 
@@ -403,8 +397,6 @@ if __name__ == "__main__":
     args = parse_args()
     frame_tile_matching_autoplay(
         video_path=args.video,
-        start_frame=args.start_frame,
         end_frame=args.end_frame,
-        delay_seconds=args.delay,
     )
 
