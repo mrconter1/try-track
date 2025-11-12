@@ -66,6 +66,7 @@ def frame_tile_matching_autoplay(
     video_path: str,
     end_frame: Optional[int] = None,
     max_frames: Optional[int] = None,
+    match_radius: Optional[float] = 3,
     block_size: int = 8,
 ):
     """Iterate through frames automatically and visualize global tile stitching."""
@@ -99,7 +100,11 @@ def frame_tile_matching_autoplay(
     global_positions: dict[tuple[int, int], dict] = {}
     global_tiles: list[dict] = []
     integrated_frames: set[int] = set()
+    if match_radius is not None and match_radius < 0:
+        match_radius = None
+
     last_global_position: Optional[tuple[int, int]] = None
+    last_global_grid_center: Optional[tuple[float, float]] = None
     sequential_frame_index = 0
     capture_positioned = False
 
@@ -248,6 +253,7 @@ def frame_tile_matching_autoplay(
         return True
 
     def integrate_frame(frame_num: int):
+        nonlocal last_global_grid_center
         if frame_num in integrated_frames:
             return
 
@@ -256,19 +262,40 @@ def frame_tile_matching_autoplay(
             integrated_frames.add(frame_num)
             return
 
+        added_coords: list[tuple[int, int]] = []
+
         if not global_tiles:
             for tile_obj in frame_data["tiles"]:
-                add_global_tile(
+                global_row = tile_obj["frame_row"]
+                global_col = tile_obj["frame_col"]
+                if add_global_tile(
                     frame_index=frame_num,
                     tile_obj=tile_obj,
-                    global_row=tile_obj["frame_row"],
-                    global_col=tile_obj["frame_col"],
-                )
+                    global_row=global_row,
+                    global_col=global_col,
+                ):
+                    added_coords.append((global_row, global_col))
+            if added_coords:
+                avg_row = sum(coord[0] for coord in added_coords) / len(added_coords)
+                avg_col = sum(coord[1] for coord in added_coords) / len(added_coords)
+                last_global_grid_center = (avg_row, avg_col)
             integrated_frames.add(frame_num)
             return
 
         best_anchor = None
         best_distance = float("inf")
+
+        candidate_global_tiles = global_tiles
+        if match_radius is not None and last_global_grid_center is not None:
+            radius_sq = float(match_radius) ** 2
+            center_row, center_col = last_global_grid_center
+            filtered = [
+                tile
+                for tile in global_tiles
+                if (tile["global_row"] - center_row) ** 2 + (tile["global_col"] - center_col) ** 2 <= radius_sq
+            ]
+            if filtered:
+                candidate_global_tiles = filtered
 
         for tile_obj in frame_data["tiles"]:
             curr_coord = (tile_obj["frame_row"], tile_obj["frame_col"])
@@ -276,7 +303,7 @@ def frame_tile_matching_autoplay(
             if not curr_sigs:
                 continue
 
-            for global_tile in global_tiles:
+            for global_tile in candidate_global_tiles:
                 global_sigs = global_tile["signatures"]
                 for curr_rot, curr_sig in curr_sigs.items():
                     for global_rot, global_sig in global_sigs.items():
@@ -328,11 +355,17 @@ def frame_tile_matching_autoplay(
             global_col = rotated_col + offset_col
             if add_global_tile(frame_num, tile_obj, global_row, global_col):
                 added_tiles += 1
+                added_coords.append((global_row, global_col))
 
         print(
             f"[Autoplay] Integrated frame {frame_num}: anchor dist={best_anchor['distance']:.0f}, "
             f"rotation={rotation_offset}°, added={added_tiles} tiles"
         )
+
+        if added_coords:
+            avg_row = sum(coord[0] for coord in added_coords) / len(added_coords)
+            avg_col = sum(coord[1] for coord in added_coords) / len(added_coords)
+            last_global_grid_center = (avg_row, avg_col)
 
         integrated_frames.add(frame_num)
 
@@ -369,7 +402,7 @@ def frame_tile_matching_autoplay(
         )
 
     def render_frame(frame_num: int):
-        nonlocal last_global_position
+        nonlocal last_global_position, last_global_grid_center
         curr_data = extract_frame_data(frame_num)
         if not curr_data:
             print(f"[Autoplay] Frame {frame_num}: no data, skipping")
@@ -489,6 +522,7 @@ def frame_tile_matching_autoplay(
             composite_width = max(grid_cols, 1) * tile_display_size
             composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
             current_global_centers: list[tuple[int, int]] = []
+            current_global_grid_coords: list[tuple[int, int]] = []
 
             origin_in_bounds = (min_row <= 0 <= max_row) and (min_col <= 0 <= max_col)
             if origin_in_bounds:
@@ -523,6 +557,7 @@ def frame_tile_matching_autoplay(
                     current_global_centers.append(
                         (x_start + tile_display_size // 2, y_start + tile_display_size // 2)
                     )
+                    current_global_grid_coords.append((tile["global_row"], tile["global_col"]))
 
             for i in range(0, grid_rows + 1):
                 y = min(i * tile_display_size, composite_height - 1)
@@ -548,7 +583,15 @@ def frame_tile_matching_autoplay(
                 avg_x = int(sum(c[0] for c in current_global_centers) / len(current_global_centers))
                 avg_y = int(sum(c[1] for c in current_global_centers) / len(current_global_centers))
                 last_global_position = (avg_x, avg_y)
+            if current_global_grid_coords:
+                avg_row = sum(coord[0] for coord in current_global_grid_coords) / len(current_global_grid_coords)
+                avg_col = sum(coord[1] for coord in current_global_grid_coords) / len(current_global_grid_coords)
+                last_global_grid_center = (avg_row, avg_col)
             if last_global_position:
+                if match_radius is not None and match_radius > 0:
+                    radius_pixels = int(round(match_radius * tile_display_size))
+                    if radius_pixels > 0:
+                        cv2.circle(composite_image, last_global_position, radius_pixels, (0, 180, 255), 2)
                 cv2.circle(composite_image, last_global_position, 6, (255, 0, 0), -1)
 
             right_display = composite_image
@@ -659,6 +702,12 @@ def parse_args():
         default=8,
         help="Number of blocks per side for tile hashing (default=8)",
     )
+    parser.add_argument(
+        "--match-radius",
+        type=float,
+        default=3.0,
+        help="Grid radius (in tiles) used when searching for matching anchors; set negative to disable (default=3)",
+    )
     return parser.parse_args()
 
 
@@ -671,6 +720,7 @@ if __name__ == "__main__":
             video_path=args.video,
             end_frame=args.end_frame,
             max_frames=args.max_frames,
+            match_radius=args.match_radius,
             block_size=args.block_size,
         )
     finally:
