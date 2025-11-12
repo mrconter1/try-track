@@ -35,13 +35,16 @@ def compute_dhash_byte_fast(block: np.ndarray) -> int:
     trimmed = block[:h_even, :w_even]
 
     reshaped = trimmed.reshape(2, h_mid, 2, w_mid)
-    quadrant_means = reshaped.mean(axis=(1, 3), dtype=np.float32)
-    q1 = float(quadrant_means[0, 0])
-    q2 = float(quadrant_means[0, 1])
-    q3 = float(quadrant_means[1, 0])
-    q4 = float(quadrant_means[1, 1])
+    quadrant_sums = reshaped.sum(axis=(1, 3), dtype=np.int64)
+    quadrant_area = h_mid * w_mid
 
-    block_mean = float(trimmed.mean(dtype=np.float32))
+    q1 = float(quadrant_sums[0, 0]) / quadrant_area
+    q2 = float(quadrant_sums[0, 1]) / quadrant_area
+    q3 = float(quadrant_sums[1, 0]) / quadrant_area
+    q4 = float(quadrant_sums[1, 1]) / quadrant_area
+
+    total_sum = float(quadrant_sums.sum())
+    block_mean = total_sum / (quadrant_area * 4)
 
     byte_val = (
         ((q1 > q2) << 0)
