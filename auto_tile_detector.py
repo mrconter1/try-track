@@ -38,53 +38,51 @@ def compute_dhash_byte(block):
     return byte_val
 
 def generate_tile_hash(tile_image, blocks_per_side=16, use_clahe=True):
-    """Generate dhash for a tile image"""
+    """Generate dhash for a tile image and return raw bytes."""
     if tile_image is None or tile_image.size == 0:
         return None
-    
+
     # Convert to grayscale
     gray = cv2.cvtColor(tile_image, cv2.COLOR_BGR2GRAY)
-    
+
     # Resize to 256x256
     resized = cv2.resize(gray, (256, 256))
-    
+
     # Apply CLAHE preprocessing
     if use_clahe:
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         processed = clahe.apply(resized)
     else:
         processed = resized
-    
+
     # Compute dhash blocks
     block_size = 256 // blocks_per_side
-    signature = []
-    
+    signature = np.empty(blocks_per_side * blocks_per_side, dtype=np.uint8)
+
+    idx = 0
     for row in range(blocks_per_side):
+        y_start = row * block_size
+        y_end = (row + 1) * block_size
         for col in range(blocks_per_side):
-            y_start = row * block_size
-            y_end = (row + 1) * block_size
             x_start = col * block_size
             x_end = (col + 1) * block_size
-            
-            block = processed[y_start:y_end, x_start:x_end]
-            descriptor = compute_dhash_byte(block)
-            signature.append(descriptor)
-    
-    # Convert to hex hash
-    signature_bytes = bytes(signature)
-    hash_str = binascii.hexlify(signature_bytes).decode('ascii')
-    
-    return hash_str
 
-def hex_to_bytes(hex_str):
-    """Convert hex string to array of byte values"""
-    return [int(hex_str[i:i+2], 16) for i in range(0, len(hex_str), 2)]
+            block = processed[y_start:y_end, x_start:x_end]
+            signature[idx] = compute_dhash_byte(block)
+            idx += 1
+
+    return signature.tobytes()
+
 
 def euclidean_distance(hash1, hash2):
-    """Compute Euclidean distance between two hashes"""
-    bytes1 = hex_to_bytes(hash1)
-    bytes2 = hex_to_bytes(hash2)
-    return np.sqrt(sum((b1 - b2)**2 for b1, b2 in zip(bytes1, bytes2)))
+    """Compute Euclidean distance between two hash byte sequences."""
+    if hash1 is None or hash2 is None:
+        return float("inf")
+
+    arr1 = np.frombuffer(hash1, dtype=np.uint8).astype(np.float32)
+    arr2 = np.frombuffer(hash2, dtype=np.uint8).astype(np.float32)
+    diff = arr1 - arr2
+    return float(np.sqrt(np.dot(diff, diff)))
 
 def extract_grid_squares(lines, frame_shape):
     """Extract grid squares formed by intersecting lines and return them in a grid map."""
