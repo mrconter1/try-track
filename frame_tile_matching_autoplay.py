@@ -162,6 +162,8 @@ def frame_tile_matching_autoplay(
         signatures_by_coord = {}
         centers_by_coord = {}
 
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
         for (row, col), square_polygon in grid_map.items():
             try:
                 warped = extract_and_warp_square(frame, square_polygon)
@@ -169,6 +171,8 @@ def frame_tile_matching_autoplay(
                 gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
                 if float(np.std(gray_warped)) > 20:
                     continue
+
+                enhanced_gray = clahe.apply(gray_warped)
 
                 p1, _, p3, _ = square_polygon
                 cx = int((p1[0] + p3[0]) / 2)
@@ -178,15 +182,16 @@ def frame_tile_matching_autoplay(
                 signatures = {}
                 for rotation in [0, 90, 180, 270]:
                     if rotation == 0:
-                        rotated = warped
+                        rotated_gray = enhanced_gray
                     elif rotation == 90:
-                        rotated = cv2.rotate(warped, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                        rotated_gray = cv2.rotate(enhanced_gray, cv2.ROTATE_90_COUNTERCLOCKWISE)
                     elif rotation == 180:
-                        rotated = cv2.rotate(warped, cv2.ROTATE_180)
+                        rotated_gray = cv2.rotate(enhanced_gray, cv2.ROTATE_180)
                     else:
-                        rotated = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
+                        rotated_gray = cv2.rotate(enhanced_gray, cv2.ROTATE_90_CLOCKWISE)
 
-                    hash_sig = generate_tile_hash(rotated, blocks_per_side=8, use_clahe=True)
+                    rotated_bgr = cv2.cvtColor(rotated_gray, cv2.COLOR_GRAY2BGR)
+                    hash_sig = generate_tile_hash(rotated_bgr, blocks_per_side=8, use_clahe=False)
                     if hash_sig:
                         signatures[rotation] = hash_sig
 
