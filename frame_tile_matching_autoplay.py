@@ -1,6 +1,5 @@
 import argparse
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 
 from line_detector import LineDetector
@@ -237,16 +236,49 @@ def frame_tile_matching_autoplay(
 
         integrated_frames.add(frame_num)
 
-    def render_frame(ax_main, ax_grid, frame_num: int):
+    def pad_to_height(image: np.ndarray, target_height: int) -> np.ndarray:
+        if image.shape[0] == target_height:
+            return image
+        diff = target_height - image.shape[0]
+        top = diff // 2
+        bottom = diff - top
+        return cv2.copyMakeBorder(
+            image,
+            top,
+            bottom,
+            0,
+            0,
+            borderType=cv2.BORDER_CONSTANT,
+            value=(30, 30, 30),
+        )
+
+    def pad_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
+        if image.shape[1] == target_width:
+            return image
+        diff = target_width - image.shape[1]
+        left = diff // 2
+        right = diff - left
+        return cv2.copyMakeBorder(
+            image,
+            0,
+            0,
+            left,
+            right,
+            borderType=cv2.BORDER_CONSTANT,
+            value=(30, 30, 30),
+        )
+
+    def render_frame(frame_num: int):
         curr_data = extract_frame_data(frame_num)
         if not curr_data:
             print(f"[Autoplay] Frame {frame_num}: no data, skipping")
-            return False
-
-        ax_main.cla()
-        ax_grid.cla()
+            return None
 
         integrate_frame(frame_num)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_small_scale = 0.6
+        font_small_thickness = 1
 
         if frame_num > 0 and (frame_num - 1) in frames:
             prev_data = frames[frame_num - 1]
@@ -258,68 +290,88 @@ def frame_tile_matching_autoplay(
             else:
                 curr_resized = curr_data["frame"]
 
-            combined = cv2.addWeighted(prev_data["frame"], 0.5, curr_resized, 0.5, 0)
+            left_display = cv2.addWeighted(prev_data["frame"], 0.5, curr_resized, 0.5, 0)
             analysis = analyze_frame_pair(prev_data, curr_data)
             scaled_curr_centers = analysis["scaled_curr_centers"]
             best_match = analysis["best_match"]
 
-            for (_, _), (prev_cx, prev_cy) in prev_data["centers"].items():
-                cv2.circle(combined, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
+            for (prev_row, prev_col), (prev_cx, prev_cy) in prev_data["centers"].items():
+                cv2.circle(left_display, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
+                cv2.putText(
+                    left_display,
+                    f"({prev_row},{prev_col})",
+                    (prev_cx - 40, prev_cy - 10),
+                    font,
+                    font_small_scale,
+                    (0, 255, 255),
+                    font_small_thickness + 1,
+                    cv2.LINE_AA,
+                )
 
-            for (_, _), (curr_cx, curr_cy) in scaled_curr_centers.items():
-                cv2.circle(combined, (curr_cx, curr_cy), 5, (0, 255, 0), -1)
+            for (curr_row, curr_col), (curr_cx, curr_cy) in scaled_curr_centers.items():
+                cv2.circle(left_display, (curr_cx, curr_cy), 5, (0, 255, 0), -1)
+                cv2.putText(
+                    left_display,
+                    f"({curr_row},{curr_col})",
+                    (curr_cx - 40, curr_cy + 20),
+                    font,
+                    font_small_scale,
+                    (0, 255, 0),
+                    font_small_thickness + 1,
+                    cv2.LINE_AA,
+                )
 
             if best_match:
                 prev_cx, prev_cy = best_match["prev_center"]
                 curr_cx, curr_cy = best_match["curr_center"]
-                cv2.line(combined, (prev_cx, prev_cy), (curr_cx, curr_cy), (255, 0, 0), 2)
+                cv2.line(left_display, (prev_cx, prev_cy), (curr_cx, curr_cy), (255, 0, 0), 2)
 
-            from PIL import Image, ImageDraw, ImageFont
+                if best_match["rotations"]:
+                    curr_rot, prev_rot = best_match["rotations"]
+                    mid_x = (prev_cx + curr_cx) // 2
+                    mid_y = (prev_cy + curr_cy) // 2
+                    cv2.putText(
+                        left_display,
+                        f"{curr_rot}°→{prev_rot}°",
+                        (mid_x - 30, mid_y - 5),
+                        font,
+                        font_small_scale,
+                        (0, 255, 255),
+                        font_small_thickness + 1,
+                        cv2.LINE_AA,
+                    )
 
-            pil_combined = Image.fromarray(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
-            draw = ImageDraw.Draw(pil_combined)
-            try:
-                font_large = ImageFont.truetype("arial.ttf", 36)
-                font_small = ImageFont.truetype("arial.ttf", 24)
-            except OSError:
-                font_large = ImageFont.load_default()
-                font_small = ImageFont.load_default()
-
-            for (prev_row, prev_col), (prev_cx, prev_cy) in prev_data["centers"].items():
-                draw.text(
-                    (prev_cx - 40, prev_cy - 45),
-                    f"({prev_row},{prev_col})",
-                    fill=(255, 255, 0),
-                    font=font_small,
+                header_text = (
+                    f"Frame {frame_num - 1}→{frame_num} | "
+                    f"match ({best_match['curr_coord'][0]},{best_match['curr_coord'][1]})→"
+                    f"({best_match['prev_coord'][0]},{best_match['prev_coord'][1]}) "
+                    f"dist={best_match['distance']:.0f}"
                 )
+            else:
+                header_text = f"Frame {frame_num - 1}→{frame_num} | no valid match"
 
-            for (curr_row, curr_col), (curr_cx, curr_cy) in scaled_curr_centers.items():
-                draw.text(
-                    (curr_cx - 40, curr_cy + 10),
-                    f"({curr_row},{curr_col})",
-                    fill=(0, 255, 0),
-                    font=font_small,
-                )
-
-            if best_match and best_match["rotations"]:
-                curr_rot, prev_rot = best_match["rotations"]
-                prev_cx, prev_cy = best_match["prev_center"]
-                curr_cx, curr_cy = best_match["curr_center"]
-                mid_x = (prev_cx + curr_cx) // 2
-                mid_y = (prev_cy + curr_cy) // 2
-                draw.text(
-                    (mid_x - 20, mid_y - 5),
-                    f"{curr_rot}°→{prev_rot}°",
-                    fill=(255, 255, 0),
-                    font=font_small,
-                )
-
-            combined = cv2.cvtColor(np.array(pil_combined), cv2.COLOR_RGB2BGR)
-            ax_main.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
-            ax_main.set_title(f"Frame {frame_num - 1} → Frame {frame_num}")
+            cv2.putText(
+                left_display,
+                header_text,
+                (20, 40),
+                font,
+                0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
         else:
-            ax_main.imshow(cv2.cvtColor(curr_data["frame"], cv2.COLOR_BGR2RGB))
-            ax_main.set_title(f"Frame {frame_num} (anchor)")
+            left_display = curr_data["frame"].copy()
+            cv2.putText(
+                left_display,
+                f"Frame {frame_num} (anchor)",
+                (20, 40),
+                font,
+                0.9,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
         if global_tiles:
             tile_display_size = 30
@@ -343,13 +395,6 @@ def frame_tile_matching_autoplay(
                 cv2.line(composite_image, (origin_x, origin_y - 10), (origin_x, origin_y + 10), (255, 0, 0), 2)
                 cv2.line(composite_image, (origin_x - 10, origin_y), (origin_x + 10, origin_y), (255, 0, 0), 2)
 
-            from PIL import Image, ImageDraw, ImageFont
-
-            try:
-                tile_font = ImageFont.truetype("arial.ttf", 10)
-            except OSError:
-                tile_font = ImageFont.load_default()
-
             for tile in global_tiles:
                 grid_row = (tile["global_row"] - min_row) + padding
                 grid_col = (tile["global_col"] - min_col) + padding
@@ -357,15 +402,16 @@ def frame_tile_matching_autoplay(
                 x_start = grid_col * tile_display_size
 
                 warped_resized = cv2.resize(tile["image"], (tile_display_size, tile_display_size))
-                pil_tile = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
-                draw_tile = ImageDraw.Draw(pil_tile)
-                draw_tile.text(
-                    (2, 2),
+                cv2.putText(
+                    warped_resized,
                     f"G({tile['global_row']},{tile['global_col']})",
-                    fill=(255, 0, 0),
-                    font=tile_font,
+                    (2, 12),
+                    font,
+                    0.3,
+                    (0, 0, 255),
+                    1,
+                    cv2.LINE_AA,
                 )
-                warped_resized = cv2.cvtColor(np.array(pil_tile), cv2.COLOR_RGB2BGR)
 
                 composite_image[
                     y_start : y_start + tile_display_size, x_start : x_start + tile_display_size
@@ -380,35 +426,104 @@ def frame_tile_matching_autoplay(
                 thickness = 2 if j % 5 == 0 else 1
                 cv2.line(composite_image, (x, 0), (x, composite_height), (80, 80, 80), thickness)
 
-            ax_grid.imshow(cv2.cvtColor(composite_image, cv2.COLOR_BGR2RGB))
-            ax_grid.set_title(f"Global map ≤ frame {frame_num} ({len(global_tiles)} tiles)")
+            cv2.putText(
+                composite_image,
+                f"Global map ≤ frame {frame_num} ({len(global_tiles)} tiles)",
+                (20, 30),
+                font,
+                0.8,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            right_display = composite_image
         else:
-            ax_grid.text(0.5, 0.5, "No tiles", ha="center", va="center", transform=ax_grid.transAxes)
-            ax_grid.set_title("Global map")
+            right_height = left_display.shape[0]
+            right_width = max(left_display.shape[1] // 2, 400)
+            right_display = np.full((right_height, right_width, 3), 40, dtype=np.uint8)
+            cv2.putText(
+                right_display,
+                "Global map empty",
+                (20, right_height // 2),
+                font,
+                1.0,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
-        ax_main.axis("off")
-        ax_grid.axis("off")
-        return True
+        target_height = max(left_display.shape[0], right_display.shape[0])
+        left_display = pad_to_height(left_display, target_height)
+        right_display = pad_to_height(right_display, target_height)
 
-    plt.ion()
-    fig = plt.figure(figsize=(20, 7))
-    ax_main = fig.add_subplot(1, 2, 1)
-    ax_grid = fig.add_subplot(1, 2, 2)
+        target_width = max(left_display.shape[1], right_display.shape[1])
+        left_display = pad_to_width(left_display, target_width)
+        right_display = pad_to_width(right_display, target_width)
 
-    for frame_num in range(end_frame):
-        if not plt.fignum_exists(fig.number):
-            print("[Autoplay] Figure closed by user, stopping")
-            break
+        combined_display = np.hstack([left_display, right_display])
+        return combined_display
 
-        success = render_frame(ax_main, ax_grid, frame_num)
-        if not success:
-            continue
+    window_name = "Tile Matching Autoplay"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
 
-        plt.pause(0.015)
+    try:
+        import ctypes
 
-    plt.ioff()
-    plt.show(block=True)
-    cap.release()
+        user32 = ctypes.windll.user32
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
+        screen_width = user32.GetSystemMetrics(0)
+        screen_height = user32.GetSystemMetrics(1)
+    except Exception:
+        screen_width = 1920
+        screen_height = 1080
+
+    max_display_width = int(screen_width * 0.9)
+    max_display_height = int(screen_height * 0.9)
+
+    window_created = False
+    try:
+        for frame_num in range(end_frame):
+            display = render_frame(frame_num)
+            if display is None:
+                continue
+
+            disp_h, disp_w = display.shape[:2]
+            scale = min(max_display_width / disp_w, max_display_height / disp_h)
+            if scale <= 0:
+                scale = 1.0
+
+            if scale != 1.0:
+                resized_display = cv2.resize(
+                    display,
+                    (int(disp_w * scale), int(disp_h * scale)),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            else:
+                resized_display = display
+
+            cv2.resizeWindow(window_name, resized_display.shape[1], resized_display.shape[0])
+            cv2.imshow(window_name, resized_display)
+            window_created = True
+
+            key = cv2.waitKey(15) & 0xFF
+            if key in (27, ord("q")):
+                print("[Autoplay] Quit requested, stopping")
+                break
+
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                print("[Autoplay] Window closed by user, stopping")
+                break
+    finally:
+        if window_created:
+            try:
+                cv2.destroyWindow(window_name)
+            except cv2.error:
+                pass
+        cap.release()
 
 
 def parse_args():
