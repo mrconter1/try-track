@@ -605,7 +605,7 @@ def frame_tile_matching_autoplay(
             cv2.imshow(window_name, resized_display)
             window_created = True
 
-            key = cv2.waitKey(15) & 0xFF
+            key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")):
                 print("[Autoplay] Quit requested, stopping")
                 break
