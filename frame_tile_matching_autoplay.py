@@ -66,6 +66,7 @@ def frame_tile_matching_autoplay(
     video_path: str,
     end_frame: Optional[int] = None,
     max_frames: Optional[int] = None,
+    block_size: int = 8,
 ):
     """Iterate through frames automatically and visualize global tile stitching."""
     cap = cv2.VideoCapture(video_path)
@@ -195,7 +196,9 @@ def frame_tile_matching_autoplay(
                         rotated_gray = cv2.rotate(enhanced_gray, cv2.ROTATE_90_CLOCKWISE)
 
                     rotated_bgr = cv2.cvtColor(rotated_gray, cv2.COLOR_GRAY2BGR)
-                    hash_sig = generate_tile_hash(rotated_bgr, blocks_per_side=8, use_clahe=False)
+                    hash_sig = generate_tile_hash(
+                        rotated_bgr, blocks_per_side=block_size, use_clahe=False
+                    )
                     if hash_sig:
                         signatures[rotation] = hash_sig
 
@@ -650,6 +653,12 @@ def parse_args():
         default=None,
         help="Maximum number of frames to process from the start",
     )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=8,
+        help="Number of blocks per side for tile hashing (default=8)",
+    )
     return parser.parse_args()
 
 
@@ -662,6 +671,7 @@ if __name__ == "__main__":
             video_path=args.video,
             end_frame=args.end_frame,
             max_frames=args.max_frames,
+            block_size=args.block_size,
         )
     finally:
         profiler.disable()
