@@ -95,18 +95,40 @@ def frame_tile_matching_autoplay(
     global_positions: dict[tuple[int, int], dict] = {}
     global_tiles: list[dict] = []
     integrated_frames: set[int] = set()
+    sequential_frame_index = 0
+    capture_positioned = False
+
+    def read_next_frame():
+        nonlocal sequential_frame_index, capture_positioned
+        if not capture_positioned:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, sequential_frame_index)
+            capture_positioned = True
+        ret, frame = cap.read()
+        if not ret:
+            return None, None
+        current_index = sequential_frame_index
+        sequential_frame_index += 1
+        return current_index, frame
 
     def extract_frame_data(frame_num: int):
+        nonlocal sequential_frame_index
         if frame_num in frames:
             return frames[frame_num]
 
         if frame_num < 0 or frame_num >= total_frames:
             return None
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-        ret, frame = cap.read()
-        if not ret:
-            return None
+        while sequential_frame_index <= frame_num:
+            idx, next_frame = read_next_frame()
+            if next_frame is None:
+                break
+            store_frame_data(idx, next_frame)
+
+        return frames.get(frame_num)
+
+    def store_frame_data(frame_index: int, frame: np.ndarray | None):
+        if frame is None:
+            return
 
         # Detect grid (suppress verbose output from detector)
         import sys
@@ -119,7 +141,17 @@ def frame_tile_matching_autoplay(
 
         grid_map = extract_grid_squares(lines, frame.shape[:2])
         if not grid_map:
-            return None
+            frames[frame_index] = {
+                "frame_number": frame_index,
+                "tiles": [],
+                "frame": frame,
+                "grid_map": {},
+                "num_rows": 0,
+                "num_cols": 0,
+                "signatures": {},
+                "centers": {},
+            }
+            return
 
         grid_rows = [coord[0] for coord in grid_map.keys()]
         grid_cols = [coord[1] for coord in grid_map.keys()]
@@ -172,7 +204,7 @@ def frame_tile_matching_autoplay(
                 continue
 
         frame_data = {
-            "frame_number": frame_num,
+            "frame_number": frame_index,
             "tiles": tile_list,
             "frame": frame,
             "grid_map": grid_map,
@@ -182,7 +214,7 @@ def frame_tile_matching_autoplay(
             "centers": centers_by_coord,
         }
 
-        frames[frame_num] = frame_data
+        frames[frame_index] = frame_data
         return frame_data
 
     def add_global_tile(frame_index: int, tile_obj: dict, global_row: int, global_col: int) -> bool:
