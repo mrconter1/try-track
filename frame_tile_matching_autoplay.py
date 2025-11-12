@@ -8,6 +8,7 @@ from auto_tile_detector import (
     extract_grid_squares,
     extract_and_warp_square,
     generate_tile_hash,
+    euclidean_distance,
 )
 from frame_tile_matching_viz import rotate_coordinates, analyze_frame_pair
 
@@ -36,6 +37,9 @@ def frame_tile_matching_autoplay(
 
     line_detector = LineDetector()
     frames: dict[int, dict] = {}
+    global_positions: dict[tuple[int, int], dict] = {}
+    global_tiles: list[dict] = []
+    integrated_frames: set[int] = set()
 
     def extract_frame_data(frame_num: int):
         if frame_num in frames:
@@ -126,90 +130,112 @@ def frame_tile_matching_autoplay(
         frames[frame_num] = frame_data
         return frame_data
 
-    def build_global_map_tiles(target_frame_num: int):
-        global_positions: dict[tuple[int, int, int], tuple[int, int]] = {}
-        global_tiles: list[dict] = []
+    def add_global_tile(frame_index: int, tile_obj: dict, global_row: int, global_col: int) -> bool:
+        coord_key = (global_row, global_col)
+        if coord_key in global_positions:
+            return False
 
-        for idx in range(target_frame_num + 1):
-            frame_data = extract_frame_data(idx)
-            if not frame_data:
+        entry = {
+            "frame_index": frame_index,
+            "frame_row": tile_obj["frame_row"],
+            "frame_col": tile_obj["frame_col"],
+            "global_row": global_row,
+            "global_col": global_col,
+            "image": tile_obj["image"],
+            "signatures": tile_obj["signatures"],
+        }
+        global_positions[coord_key] = entry
+        global_tiles.append(entry)
+        return True
+
+    def integrate_frame(frame_num: int):
+        if frame_num in integrated_frames:
+            return
+
+        frame_data = extract_frame_data(frame_num)
+        if not frame_data or not frame_data["tiles"]:
+            integrated_frames.add(frame_num)
+            return
+
+        if not global_tiles:
+            for tile_obj in frame_data["tiles"]:
+                add_global_tile(
+                    frame_index=frame_num,
+                    tile_obj=tile_obj,
+                    global_row=tile_obj["frame_row"],
+                    global_col=tile_obj["frame_col"],
+                )
+            integrated_frames.add(frame_num)
+            return
+
+        best_anchor = None
+        best_distance = float("inf")
+
+        for tile_obj in frame_data["tiles"]:
+            curr_coord = (tile_obj["frame_row"], tile_obj["frame_col"])
+            curr_sigs = tile_obj["signatures"]
+            if not curr_sigs:
                 continue
 
-            if idx == 0 or not global_positions:
-                for tile_obj in frame_data["tiles"]:
-                    key = (idx, tile_obj["frame_row"], tile_obj["frame_col"])
-                    pos = (tile_obj["frame_row"], tile_obj["frame_col"])
-                    global_positions[key] = pos
-                    global_tiles.append(
-                        {
-                            "frame_index": idx,
-                            "frame_row": tile_obj["frame_row"],
-                            "frame_col": tile_obj["frame_col"],
-                            "global_row": pos[0],
-                            "global_col": pos[1],
-                            "image": tile_obj["image"],
-                        }
-                    )
-                continue
+            for global_tile in global_tiles:
+                global_sigs = global_tile["signatures"]
+                for curr_rot, curr_sig in curr_sigs.items():
+                    for global_rot, global_sig in global_sigs.items():
+                        dist = euclidean_distance(curr_sig, global_sig)
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_anchor = {
+                                "curr_tile": tile_obj,
+                                "curr_coord": curr_coord,
+                                "curr_rot": curr_rot,
+                                "global_tile": global_tile,
+                                "global_rot": global_rot,
+                                "rotation_offset": (global_rot - curr_rot) % 360,
+                                "distance": dist,
+                            }
 
-            prev_data = extract_frame_data(idx - 1)
-            if not prev_data:
-                continue
+        if not best_anchor:
+            integrated_frames.add(frame_num)
+            return
 
-            analysis = analyze_frame_pair(prev_data, frame_data)
-            best_match = analysis["best_match"]
-            if not best_match:
-                continue
+        rotation_offset = best_anchor["rotation_offset"]
+        anchor_global_row = best_anchor["global_tile"]["global_row"]
+        anchor_global_col = best_anchor["global_tile"]["global_col"]
+        num_rows = frame_data["num_rows"] or 1
+        num_cols = frame_data["num_cols"] or 1
 
-            rotations = best_match["rotations"]
-            rotation_offset = ((rotations[1] - rotations[0]) % 360) if rotations else 0
-            prev_row, prev_col = best_match["prev_coord"]
-            prev_key = (idx - 1, prev_row, prev_col)
-            if prev_key not in global_positions:
-                continue
+        rotated_anchor_row, rotated_anchor_col = rotate_coordinates(
+            best_anchor["curr_tile"]["frame_row"],
+            best_anchor["curr_tile"]["frame_col"],
+            num_rows,
+            num_cols,
+            rotation_offset,
+        )
 
-            prev_global_pos = global_positions[prev_key]
-            curr_row, curr_col = best_match["curr_coord"]
-            rotated_curr_row, rotated_curr_col = rotate_coordinates(
-                curr_row,
-                curr_col,
-                frame_data["num_rows"],
-                frame_data["num_cols"],
+        offset_row = anchor_global_row - rotated_anchor_row
+        offset_col = anchor_global_col - rotated_anchor_col
+
+        added_tiles = 0
+
+        for tile_obj in frame_data["tiles"]:
+            rotated_row, rotated_col = rotate_coordinates(
+                tile_obj["frame_row"],
+                tile_obj["frame_col"],
+                num_rows,
+                num_cols,
                 rotation_offset,
             )
-            offset_row = prev_global_pos[0] - rotated_curr_row
-            offset_col = prev_global_pos[1] - rotated_curr_col
+            global_row = rotated_row + offset_row
+            global_col = rotated_col + offset_col
+            if add_global_tile(frame_num, tile_obj, global_row, global_col):
+                added_tiles += 1
 
-            for tile_obj in frame_data["tiles"]:
-                local_row = tile_obj["frame_row"]
-                local_col = tile_obj["frame_col"]
-                rotated_row, rotated_col = rotate_coordinates(
-                    local_row,
-                    local_col,
-                    frame_data["num_rows"],
-                    frame_data["num_cols"],
-                    rotation_offset,
-                )
+        print(
+            f"[Autoplay] Integrated frame {frame_num}: anchor dist={best_anchor['distance']:.0f}, "
+            f"rotation={rotation_offset}°, added={added_tiles} tiles"
+        )
 
-                global_row = rotated_row + offset_row
-                global_col = rotated_col + offset_col
-                key = (idx, local_row, local_col)
-                if key in global_positions:
-                    continue
-
-                global_positions[key] = (global_row, global_col)
-                global_tiles.append(
-                    {
-                        "frame_index": idx,
-                        "frame_row": local_row,
-                        "frame_col": local_col,
-                        "global_row": global_row,
-                        "global_col": global_col,
-                        "image": tile_obj["image"],
-                    }
-                )
-
-        return global_tiles
+        integrated_frames.add(frame_num)
 
     def render_frame(ax_main, ax_grid, frame_num: int):
         curr_data = extract_frame_data(frame_num)
@@ -219,6 +245,8 @@ def frame_tile_matching_autoplay(
 
         ax_main.cla()
         ax_grid.cla()
+
+        integrate_frame(frame_num)
 
         if frame_num > 0 and (frame_num - 1) in frames:
             prev_data = frames[frame_num - 1]
@@ -293,7 +321,6 @@ def frame_tile_matching_autoplay(
             ax_main.imshow(cv2.cvtColor(curr_data["frame"], cv2.COLOR_BGR2RGB))
             ax_main.set_title(f"Frame {frame_num} (anchor)")
 
-        global_tiles = build_global_map_tiles(frame_num)
         if global_tiles:
             tile_display_size = 30
             padding = 2
