@@ -98,6 +98,7 @@ def frame_tile_matching_autoplay(
     global_positions: dict[tuple[int, int], dict] = {}
     global_tiles: list[dict] = []
     integrated_frames: set[int] = set()
+    last_global_position: Optional[tuple[int, int]] = None
     sequential_frame_index = 0
     capture_positioned = False
 
@@ -365,6 +366,7 @@ def frame_tile_matching_autoplay(
         )
 
     def render_frame(frame_num: int):
+        nonlocal last_global_position
         curr_data = extract_frame_data(frame_num)
         if not curr_data:
             print(f"[Autoplay] Frame {frame_num}: no data, skipping")
@@ -483,6 +485,7 @@ def frame_tile_matching_autoplay(
             composite_height = max(grid_rows, 1) * tile_display_size
             composite_width = max(grid_cols, 1) * tile_display_size
             composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
+            current_global_centers: list[tuple[int, int]] = []
 
             origin_in_bounds = (min_row <= 0 <= max_row) and (min_col <= 0 <= max_col)
             if origin_in_bounds:
@@ -513,6 +516,11 @@ def frame_tile_matching_autoplay(
                     y_start : y_start + tile_display_size, x_start : x_start + tile_display_size
                 ] = warped_resized
 
+                if tile["frame_index"] == frame_num:
+                    current_global_centers.append(
+                        (x_start + tile_display_size // 2, y_start + tile_display_size // 2)
+                    )
+
             for i in range(0, grid_rows + 1):
                 y = min(i * tile_display_size, composite_height - 1)
                 thickness = 2 if i % 5 == 0 else 1
@@ -532,6 +540,14 @@ def frame_tile_matching_autoplay(
                 2,
                 cv2.LINE_AA,
             )
+
+            if current_global_centers:
+                avg_x = int(sum(c[0] for c in current_global_centers) / len(current_global_centers))
+                avg_y = int(sum(c[1] for c in current_global_centers) / len(current_global_centers))
+                last_global_position = (avg_x, avg_y)
+            if last_global_position:
+                cv2.circle(composite_image, last_global_position, 6, (255, 0, 0), -1)
+
             right_display = composite_image
         else:
             right_height = left_display.shape[0]
