@@ -5,6 +5,110 @@ import matplotlib.pyplot as plt
 from line_detector import LineDetector
 from auto_tile_detector import extract_grid_squares, extract_and_warp_square, generate_tile_hash, euclidean_distance
 
+
+def rotate_coordinates(row, col, height, width, rotation_offset):
+    """Rotate (row, col) within a grid of size height x width by rotation_offset degrees."""
+    if rotation_offset == 0:
+        return row, col
+    elif rotation_offset == 90:
+        return col, height - 1 - row
+    elif rotation_offset == 180:
+        return height - 1 - row, width - 1 - col
+    elif rotation_offset == 270:
+        return width - 1 - col, row
+    else:
+        return row, col
+
+
+def analyze_frame_pair(prev_data, curr_data):
+    """
+    Analyze matching between two consecutive frames.
+    Returns dictionary with accepted matches, best match, scaled centers, and scale factors.
+    """
+    h_prev, w_prev = prev_data['frame'].shape[:2]
+    h_curr, w_curr = curr_data['frame'].shape[:2]
+
+    scale_x = w_prev / w_curr if w_prev != w_curr else 1.0
+    scale_y = h_prev / h_curr if h_prev != h_curr else 1.0
+
+    distance_matrix = {}
+    for curr_coord, curr_sigs in curr_data['signatures'].items():
+        for prev_coord, prev_sigs in prev_data['signatures'].items():
+            best_dist = float('inf')
+            best_rots = None
+
+            for curr_rot in [0, 90, 180, 270]:
+                if curr_rot not in curr_sigs:
+                    continue
+                for prev_rot in [0, 90, 180, 270]:
+                    if prev_rot not in prev_sigs:
+                        continue
+                    dist = euclidean_distance(curr_sigs[curr_rot], prev_sigs[prev_rot])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_rots = (curr_rot, prev_rot)
+
+            if best_rots:
+                distance_matrix[(curr_coord, prev_coord)] = (best_dist, best_rots)
+
+    sorted_pairs = sorted(distance_matrix.items(), key=lambda x: x[1][0])
+    matched_prev = set()
+    matched_curr = set()
+    matches_list = []
+
+    for (curr_coord, prev_coord), (dist, rotations) in sorted_pairs:
+        if curr_coord in matched_curr or prev_coord in matched_prev:
+            continue
+        matches_list.append((curr_coord, prev_coord, rotations, dist))
+        matched_curr.add(curr_coord)
+        matched_prev.add(prev_coord)
+
+    matched_details = []
+    pixel_distances = []
+    curr_centers = curr_data['centers']
+    prev_centers = prev_data['centers']
+
+    for curr_coord, prev_coord, rotations, distance in matches_list:
+        if prev_coord not in prev_centers or curr_coord not in curr_centers:
+            continue
+        prev_cx, prev_cy = prev_centers[prev_coord]
+        curr_cx_orig, curr_cy_orig = curr_centers[curr_coord]
+        curr_cx = int(curr_cx_orig * scale_x)
+        curr_cy = int(curr_cy_orig * scale_y)
+        pixel_dist = np.sqrt((curr_cx - prev_cx) ** 2 + (curr_cy - prev_cy) ** 2)
+        pixel_distances.append(pixel_dist)
+        matched_details.append({
+            'curr_coord': curr_coord,
+            'prev_coord': prev_coord,
+            'rotations': rotations,
+            'distance': distance,
+            'prev_center': (prev_cx, prev_cy),
+            'curr_center': (curr_cx, curr_cy),
+            'pixel_distance': pixel_dist
+        })
+
+    if pixel_distances:
+        avg_distance = np.mean(pixel_distances)
+        std_distance = np.std(pixel_distances)
+        threshold = avg_distance + 1 * std_distance
+        accepted_matches = [m for m in matched_details if m['pixel_distance'] <= threshold]
+    else:
+        accepted_matches = matched_details
+
+    best_match = min(accepted_matches, key=lambda m: m['distance']) if accepted_matches else None
+
+    scaled_curr_centers = {}
+    for coord, (cx, cy) in curr_centers.items():
+        scaled_curr_centers[coord] = (int(cx * scale_x), int(cy * scale_y))
+
+    return {
+        'accepted_matches': accepted_matches,
+        'best_match': best_match,
+        'scaled_curr_centers': scaled_curr_centers,
+        'scale_x': scale_x,
+        'scale_y': scale_y
+    }
+
 def frame_tile_matching_viz(video_path, frame_number=0):
     """
     Visualize tile matching between consecutive frames with connection lines.
@@ -55,6 +159,11 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         
         if not grid_map:
             return None
+        
+        grid_rows = [coord[0] for coord in grid_map.keys()]
+        grid_cols = [coord[1] for coord in grid_map.keys()]
+        num_rows = (max(grid_rows) + 1) if grid_rows else 0
+        num_cols = (max(grid_cols) + 1) if grid_cols else 0
         
         # Extract tiles - new structure: list of tile objects
         tile_list = []
@@ -120,6 +229,8 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             'tiles': tile_list,
             'frame': frame,
             'grid_map': grid_map,
+            'num_rows': num_rows,
+            'num_cols': num_cols,
             # Keep these for backward compatibility with matching logic
             'signatures': signatures_by_coord,
             'tiles_by_coord': tiles_by_coord,
@@ -131,24 +242,83 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         frames[frame_num] = frame_obj
         return frame_obj
     
-    def find_best_match(curr_coord, curr_sigs, prev_signatures):
-        """Find best matching tile in previous frame across all rotations"""
-        best_dist = float('inf')
-        best_prev_coord = None
-        best_rotations = None
+    def build_global_map_tiles(target_frame_num):
+        """Build global tile placements up to the target frame using best anchors."""
+        global_positions = {}
+        global_tiles = []
         
-        for prev_coord, prev_sigs in prev_signatures.items():
-            # Compare across all rotation combinations
-            for curr_rot in [0, 90, 180, 270]:
-                for prev_rot in [0, 90, 180, 270]:
-                    if curr_rot in curr_sigs and prev_rot in prev_sigs:
-                        dist = euclidean_distance(curr_sigs[curr_rot], prev_sigs[prev_rot])
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_prev_coord = prev_coord
-                            best_rotations = (curr_rot, prev_rot)
+        for idx in range(target_frame_num + 1):
+            frame_data = extract_frame_data(idx)
+            if not frame_data:
+                continue
+            
+            if idx == 0 or not global_positions:
+                # Anchor first available frame at origin using local coordinates
+                for tile_obj in frame_data['tiles']:
+                    key = (idx, tile_obj['frame_row'], tile_obj['frame_col'])
+                    pos = (tile_obj['frame_row'], tile_obj['frame_col'])
+                    global_positions[key] = pos
+                    global_tiles.append({
+                        'frame_index': idx,
+                        'frame_row': tile_obj['frame_row'],
+                        'frame_col': tile_obj['frame_col'],
+                        'global_row': pos[0],
+                        'global_col': pos[1],
+                        'image': tile_obj['image']
+                    })
+                continue
+            
+            prev_data = extract_frame_data(idx - 1)
+            if not prev_data:
+                continue
+            
+            analysis = analyze_frame_pair(prev_data, frame_data)
+            best_match = analysis['best_match']
+            if not best_match:
+                continue
+            
+            rotations = best_match['rotations']
+            rotation_offset = ((rotations[1] - rotations[0]) % 360) if rotations else 0
+            prev_row, prev_col = best_match['prev_coord']
+            prev_key = (idx - 1, prev_row, prev_col)
+            if prev_key not in global_positions:
+                continue
+            
+            prev_global_pos = global_positions[prev_key]
+            curr_row, curr_col = best_match['curr_coord']
+            rotated_curr_row, rotated_curr_col = rotate_coordinates(
+                curr_row, curr_col,
+                frame_data['num_rows'], frame_data['num_cols'],
+                rotation_offset
+            )
+            offset_row = prev_global_pos[0] - rotated_curr_row
+            offset_col = prev_global_pos[1] - rotated_curr_col
+            
+            for tile_obj in frame_data['tiles']:
+                local_row = tile_obj['frame_row']
+                local_col = tile_obj['frame_col']
+                rotated_row, rotated_col = rotate_coordinates(
+                    local_row, local_col,
+                    frame_data['num_rows'], frame_data['num_cols'],
+                    rotation_offset
+                )
+                global_row = rotated_row + offset_row
+                global_col = rotated_col + offset_col
+                key = (idx, local_row, local_col)
+                if key in global_positions:
+                    continue
+                
+                global_positions[key] = (global_row, global_col)
+                global_tiles.append({
+                    'frame_index': idx,
+                    'frame_row': local_row,
+                    'frame_col': local_col,
+                    'global_row': global_row,
+                    'global_col': global_col,
+                    'image': tile_obj['image']
+                })
         
-        return best_prev_coord, best_rotations, best_dist
+        return global_tiles
     
     def update_visualization(fig, frame_num):
         """Update figure with frames and matching lines"""
@@ -156,9 +326,6 @@ def frame_tile_matching_viz(video_path, frame_number=0):
         if not curr_data:
             print(f"Frame {frame_num}: Could not extract data")
             return False
-        
-        kept_tiles = len(curr_data['tiles'])
-        filtered_tiles = len(curr_data['filtered'])
         
         # Clear axes
         for ax in fig.get_axes():
@@ -183,94 +350,21 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             # Blend frames: 50% previous + 50% current
             combined = cv2.addWeighted(prev_data['frame'], 0.5, curr_resized, 0.5, 0)
             
-            # Adjust current tile centers to match the resized dimensions
-            scale_x = w_prev / w_curr if w_prev != w_curr else 1.0
-            scale_y = h_prev / h_curr if h_prev != h_curr else 1.0
+            analysis = analyze_frame_pair(prev_data, curr_data)
+            scaled_curr_centers = analysis['scaled_curr_centers']
+            best_match = analysis['best_match']
             
-            # Find all pairwise distances and create one-to-one matching
-            # Calculate distances for all current-prev tile pairs
-            distance_matrix = {}
-            for curr_coord, curr_sigs in curr_data['signatures'].items():
-                for prev_coord, prev_sigs in prev_data['signatures'].items():
-                    best_dist = float('inf')
-                    best_rots = None
-                    
-                    for curr_rot in [0, 90, 180, 270]:
-                        for prev_rot in [0, 90, 180, 270]:
-                            if curr_rot in curr_sigs and prev_rot in prev_sigs:
-                                dist = euclidean_distance(curr_sigs[curr_rot], prev_sigs[prev_rot])
-                                if dist < best_dist:
-                                    best_dist = dist
-                                    best_rots = (curr_rot, prev_rot)
-                    
-                    if best_rots:
-                        distance_matrix[(curr_coord, prev_coord)] = (best_dist, best_rots)
-            
-            # Greedy one-to-one matching: match lowest distances first
-            sorted_pairs = sorted(distance_matrix.items(), key=lambda x: x[1][0])
-            matched_prev = set()
-            matched_curr = set()
-            matches_list = []
-            
-            for (curr_coord, prev_coord), (dist, rotations) in sorted_pairs:
-                # Only match if neither has been matched yet
-                if curr_coord not in matched_curr and prev_coord not in matched_prev:
-                    matches_list.append((curr_coord, prev_coord, rotations, dist))
-                    matched_curr.add(curr_coord)
-                    matched_prev.add(prev_coord)
-            
-            # Calculate physical pixel distances for all matches
-            pixel_distances = []
-            match_details = []  # Store full details for filtering
-            
-            for curr_coord, prev_coord, rotations, distance in matches_list:
-                # Get previous tile center
-                prev_cx, prev_cy = prev_data['centers'][prev_coord]
-                
-                # Get current tile center and scale if needed
-                curr_cx_orig, curr_cy_orig = curr_data['centers'][curr_coord]
-                curr_cx = int(curr_cx_orig * scale_x)
-                curr_cy = int(curr_cy_orig * scale_y)
-                
-                # Calculate physical pixel distance
-                pixel_dist = np.sqrt((curr_cx - prev_cx)**2 + (curr_cy - prev_cy)**2)
-                pixel_distances.append(pixel_dist)
-                match_details.append((curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist))
-            
-            # Calculate average and standard deviation
-            if pixel_distances:
-                avg_distance = np.mean(pixel_distances)
-                std_distance = np.std(pixel_distances)
-                threshold = avg_distance + 1 * std_distance  # Stricter outlier threshold (1 std dev)
-                
-                # Filter out outliers
-                filtered_matches = [m for m in match_details if m[8] <= threshold]
-            else:
-                filtered_matches = match_details
-            
-            # Store only matched tiles in the frame cache
-            matched_tile_list = []
-            for curr_coord, prev_coord, _, _, _, _, _, _, _ in filtered_matches:
-                row, col = curr_coord
-                for tile_obj in curr_data['tiles']:
-                    if tile_obj['frame_row'] == row and tile_obj['frame_col'] == col:
-                        matched_tile_list.append(tile_obj)
-                        break
-            
-            # Update cached frame object to contain only matched tiles
-            curr_data['tiles'] = matched_tile_list
-            frames[frame_num] = curr_data
-            
-            # Draw filtered matched pairs (circles and lines with cv2, text with PIL)
-            for curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist in filtered_matches:
-                # Draw previous tile center (yellow)
+            # Draw centers for all detected tiles
+            for (prev_row, prev_col), (prev_cx, prev_cy) in prev_data['centers'].items():
                 cv2.circle(combined, (prev_cx, prev_cy), 5, (0, 255, 255), -1)
-                
-                # Draw current tile center (green)
+            
+            for (curr_row, curr_col), (curr_cx, curr_cy) in scaled_curr_centers.items():
                 cv2.circle(combined, (curr_cx, curr_cy), 5, (0, 255, 0), -1)
-                
-                # Draw line from prev to curr
-                cv2.line(combined, (prev_cx, prev_cy), (curr_cx, curr_cy), (0, 255, 255), 2)
+            
+            if best_match:
+                prev_cx, prev_cy = best_match['prev_center']
+                curr_cx, curr_cy = best_match['curr_center']
+                cv2.line(combined, (prev_cx, prev_cy), (curr_cx, curr_cy), (255, 0, 0), 2)
             
             # Convert to PIL for text rendering
             from PIL import Image, ImageDraw, ImageFont
@@ -284,132 +378,120 @@ def frame_tile_matching_viz(video_path, frame_number=0):
             except:
                 font_large = ImageFont.load_default()
                 font_small = ImageFont.load_default()
+                font_coords = ImageFont.load_default()
+            else:
+                font_coords = font_small
             
-            # Draw text annotations
-            for curr_coord, prev_coord, rotations, distance, prev_cx, prev_cy, curr_cx, curr_cy, pixel_dist in filtered_matches:
-                # Add grid coordinates for previous frame tile (yellow text) - above center
-                prev_row, prev_col = prev_coord
+            # Annotate coordinates for previous frame tiles
+            for (prev_row, prev_col), (prev_cx, prev_cy) in prev_data['centers'].items():
                 prev_label = f"({prev_row},{prev_col})"
-                draw.text((prev_cx - 40, prev_cy - 50), prev_label, fill=(255, 255, 0), font=font_large)
-                
-                # Add grid coordinates for current frame tile (green text) - below center
-                curr_row, curr_col = curr_coord
+                draw.text((prev_cx - 40, prev_cy - 45), prev_label, fill=(255, 255, 0), font=font_coords)
+            
+            # Annotate coordinates for current frame tiles
+            for (curr_row, curr_col), (curr_cx, curr_cy) in scaled_curr_centers.items():
                 curr_label = f"({curr_row},{curr_col})"
-                draw.text((curr_cx - 40, curr_cy + 15), curr_label, fill=(0, 255, 0), font=font_large)
-                
-                # Add rotation info near the line midpoint
-                if rotations:
-                    curr_rot, prev_rot = rotations
-                    mid_x = (prev_cx + curr_cx) // 2
-                    mid_y = (prev_cy + curr_cy) // 2
-                    rot_text = f"{curr_rot}°→{prev_rot}°"
-                    draw.text((mid_x - 20, mid_y - 5), rot_text, fill=(255, 255, 0), font=font_small)
+                draw.text((curr_cx - 40, curr_cy + 10), curr_label, fill=(0, 255, 0), font=font_coords)
+            
+            # Add rotation info near the line midpoint for best match
+            if best_match and best_match['rotations']:
+                curr_rot, prev_rot = best_match['rotations']
+                prev_cx, prev_cy = best_match['prev_center']
+                curr_cx, curr_cy = best_match['curr_center']
+                mid_x = (prev_cx + curr_cx) // 2
+                mid_y = (prev_cy + curr_cy) // 2
+                rot_text = f"{curr_rot}°→{prev_rot}°"
+                draw.text((mid_x - 20, mid_y - 5), rot_text, fill=(255, 255, 0), font=font_small)
             
             # Convert back to numpy array
             combined = cv2.cvtColor(np.array(pil_combined), cv2.COLOR_RGB2BGR)
             
-            matches = len(filtered_matches)
+            matches = 1 if best_match else 0
             
-            # Print only matched tiles
-            if matches > 0:
-                matched_coords = [coord for coord, _, _, _, _, _, _, _, _ in filtered_matches]
-                coord_str = ', '.join([f"({r},{c})" for r, c in matched_coords])
-                print(f"Frame {frame_num}: {matches} matched tiles - {coord_str}")
+            # Print only best match details
+            if best_match:
+                curr_row, curr_col = best_match['curr_coord']
+                prev_row, prev_col = best_match['prev_coord']
+                distance = best_match['distance']
+                print(f"Frame {frame_num}: best match ({curr_row},{curr_col}) → ({prev_row},{prev_col}) | dist={distance:.0f}")
             
             ax_main.imshow(cv2.cvtColor(combined, cv2.COLOR_BGR2RGB))
             ax_main.set_title(f'Frame {frame_num-1} (Prev) → Frame {frame_num} (Curr) | {matches} matches')
             
-            # Build grid visualization on 100x100 canvas (-50,-50 to 50,50)
-            if filtered_matches or curr_data['tiles']:
-                # Create 100x100 grid centered at origin
-                tile_display_size = 30
-                grid_size = 100
-                composite_height = grid_size * tile_display_size
-                composite_width = grid_size * tile_display_size
-                composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
-                
-                # Draw center crosshair at (0,0)
-                center_pos = 50 * tile_display_size
-                cv2.line(composite_image, (center_pos, center_pos - 10), (center_pos, center_pos + 10), (255, 0, 0), 2)
-                cv2.line(composite_image, (center_pos - 10, center_pos), (center_pos + 10, center_pos), (255, 0, 0), 2)
-                
-                # Place tiles on grid
-                from PIL import Image, ImageDraw, ImageFont
-                for tile_obj in curr_data['tiles']:
-                    row = tile_obj['frame_row']
-                    col = tile_obj['frame_col']
-                    
-                    # Convert frame coordinates to grid coordinates (center at 0,0)
-                    # Grid goes from -50,-50 to 50,50 (or 49,49)
-                    grid_row = row + 50
-                    grid_col = col + 50
-                    
-                    # Check if within bounds
-                    if 0 <= grid_row < grid_size and 0 <= grid_col < grid_size:
-                        warped = tile_obj['image']
-                        warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
-                        
-                        # Convert to RGB for PIL drawing
-                        pil_image = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
-                        draw = ImageDraw.Draw(pil_image)
-                        
-                        # Add grid coordinates
-                        try:
-                            font = ImageFont.truetype("arial.ttf", 10)
-                        except:
-                            font = ImageFont.load_default()
-                        
-                        label = f"({row},{col})"
-                        draw.text((2, 2), label, fill=(255, 0, 0), font=font)
-                        
-                        # Convert back to numpy array
-                        warped_resized = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-                        
-                        y_start = grid_row * tile_display_size
-                        x_start = grid_col * tile_display_size
-                        composite_image[y_start:y_start+tile_display_size, x_start:x_start+tile_display_size] = warped_resized
-                
-                ax_grid.imshow(composite_image)
-                ax_grid.set_title(f'100x100 Grid (-50,-50 to 50,50) | Center at (0,0)')
-                
-                # Add grid lines every 10 units
-                for i in range(0, grid_size + 1, 10):
-                    ax_grid.axhline(y=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
-                    ax_grid.axvline(x=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
-            else:
-                ax_grid.text(0.5, 0.5, 'No tiles', ha='center', va='center', transform=ax_grid.transAxes)
-                ax_grid.set_title('100x100 Grid')
-            
-            ax_grid.axis('off')
         else:
             ax_main.imshow(cv2.cvtColor(curr_data['frame'], cv2.COLOR_BGR2RGB))
             ax_main.set_title(f'Frame {frame_num} (No previous frame - Anchor)')
             
-            # Still show 100x100 grid for first frame
+            # For first frame, ensure it is cached for subsequent steps
+            frames[frame_num] = curr_data
+        
+        # Build and render global map tiles up to the current frame
+        global_tiles = build_global_map_tiles(frame_num)
+        if global_tiles:
             tile_display_size = 30
-            grid_size = 100
-            composite_height = grid_size * tile_display_size
-            composite_width = grid_size * tile_display_size
+            padding = 2
+            global_rows = [tile['global_row'] for tile in global_tiles]
+            global_cols = [tile['global_col'] for tile in global_tiles]
+            min_row = min(global_rows)
+            max_row = max(global_rows)
+            min_col = min(global_cols)
+            max_col = max(global_cols)
+            
+            grid_rows = (max_row - min_row + 1) + padding * 2
+            grid_cols = (max_col - min_col + 1) + padding * 2
+            composite_height = max(grid_rows, 1) * tile_display_size
+            composite_width = max(grid_cols, 1) * tile_display_size
             composite_image = np.full((composite_height, composite_width, 3), 40, dtype=np.uint8)
             
-            # Draw center crosshair
-            center_pos = 50 * tile_display_size
-            cv2.line(composite_image, (center_pos, center_pos - 10), (center_pos, center_pos + 10), (255, 0, 0), 2)
-            cv2.line(composite_image, (center_pos - 10, center_pos), (center_pos + 10, center_pos), (255, 0, 0), 2)
+            origin_in_bounds = (min_row <= 0 <= max_row) and (min_col <= 0 <= max_col)
+            if origin_in_bounds:
+                origin_y = (0 - min_row + padding) * tile_display_size
+                origin_x = (0 - min_col + padding) * tile_display_size
+                cv2.line(composite_image, (origin_x, origin_y - 10), (origin_x, origin_y + 10), (255, 0, 0), 2)
+                cv2.line(composite_image, (origin_x - 10, origin_y), (origin_x + 10, origin_y), (255, 0, 0), 2)
             
-            # For first frame, just cache all tiles without filtering
-            frames[frame_num] = curr_data
+            from PIL import Image, ImageDraw, ImageFont
+            try:
+                tile_font = ImageFont.truetype("arial.ttf", 10)
+            except:
+                tile_font = ImageFont.load_default()
             
-            ax_grid.imshow(composite_image)
-            ax_grid.set_title(f'100x100 Grid (-50,-50 to 50,50) | Center at (0,0)')
+            for tile in global_tiles:
+                grid_row = (tile['global_row'] - min_row) + padding
+                grid_col = (tile['global_col'] - min_col) + padding
+                
+                if grid_row < 0 or grid_col < 0:
+                    continue
+                
+                y_start = grid_row * tile_display_size
+                x_start = grid_col * tile_display_size
+                
+                warped = tile['image']
+                warped_resized = cv2.resize(warped, (tile_display_size, tile_display_size))
+                
+                pil_tile = Image.fromarray(cv2.cvtColor(warped_resized, cv2.COLOR_BGR2RGB))
+                draw_tile = ImageDraw.Draw(pil_tile)
+                label = f"G({tile['global_row']},{tile['global_col']})"
+                draw_tile.text((2, 2), label, fill=(255, 0, 0), font=tile_font)
+                warped_resized = cv2.cvtColor(np.array(pil_tile), cv2.COLOR_RGB2BGR)
+                
+                composite_image[y_start:y_start + tile_display_size, x_start:x_start + tile_display_size] = warped_resized
             
-            # Add grid lines every 10 units
-            for i in range(0, grid_size + 1, 10):
-                ax_grid.axhline(y=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
-                ax_grid.axvline(x=i * tile_display_size, color='gray', linewidth=0.5, alpha=0.5)
+            for i in range(0, grid_rows + 1):
+                y = min(i * tile_display_size, composite_height - 1)
+                thickness = 2 if i % 5 == 0 else 1
+                cv2.line(composite_image, (0, y), (composite_width, y), (80, 80, 80), thickness)
+            for j in range(0, grid_cols + 1):
+                x = min(j * tile_display_size, composite_width - 1)
+                thickness = 2 if j % 5 == 0 else 1
+                cv2.line(composite_image, (x, 0), (x, composite_height), (80, 80, 80), thickness)
             
-            ax_grid.axis('off')
+            ax_grid.imshow(cv2.cvtColor(composite_image, cv2.COLOR_BGR2RGB))
+            ax_grid.set_title(f'Global Map (frames ≤ {frame_num}) | {len(global_tiles)} tiles')
+        else:
+            ax_grid.text(0.5, 0.5, 'No tiles placed yet', ha='center', va='center', transform=ax_grid.transAxes)
+            ax_grid.set_title('Global Map')
         
+        ax_grid.axis('off')
         ax_main.axis('off')
         
         fig.canvas.draw_idle()
