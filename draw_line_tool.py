@@ -26,51 +26,6 @@ def draw_hough_line(frame, rho, theta_deg, color=(0, 0, 255), thickness=2):
     cv2.line(frame, (x1, y1), (x2, y2), color, thickness)
     return frame
 
-def get_parallel_line_pixel_values(frame, cx, cy, angle_deg, probe_offset, num_samples):
-    """
-    Gets pixel values for two parallel lines, ensuring samples correspond spatially.
-    Returns (main_pixel_values, probe_pixel_values) where values can be np.nan
-    if the sample point is outside the frame.
-    """
-    h, w = frame.shape[:2]
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    angle_rad = np.deg2rad(angle_deg)
-    v_dir = np.array([np.cos(angle_rad), np.sin(angle_rad)])       # Vector along the line
-    v_norm = np.array([-np.sin(angle_rad), np.cos(angle_rad)])    # Vector perpendicular to the line
-
-    center_point = np.array([cx, cy])
-    
-    # Define a sampling axis much longer than the frame diagonal to ensure full coverage
-    max_dist = np.sqrt(h**2 + w**2)
-    distances = np.linspace(-max_dist, max_dist, num_samples)
-
-    main_values = []
-    probe_values = []
-
-    for s in distances:
-        # Calculate the point on the main line
-        main_point = center_point + s * v_dir
-        # Calculate the corresponding point on the probe line
-        probe_point = main_point + probe_offset * v_norm
-
-        # Check main point
-        mx, my = int(main_point[0]), int(main_point[1])
-        if 0 <= mx < w and 0 <= my < h:
-            main_values.append(gray_frame[my, mx])
-        else:
-            main_values.append(np.nan)
-
-        # Check probe point
-        px, py = int(probe_point[0]), int(probe_point[1])
-        if 0 <= px < w and 0 <= py < h:
-            probe_values.append(gray_frame[py, px])
-        else:
-            probe_values.append(np.nan)
-
-    return np.array(main_values), np.array(probe_values)
-
-
 def get_line_metrics(frame, rho, theta_deg, num_samples):
     """
     Calculates metrics for a line.
@@ -125,7 +80,6 @@ class App:
         self.angle_var = tk.DoubleVar(value=self.args.angle)
         self.cx_var = tk.DoubleVar(value=initial_cx)
         self.cy_var = tk.DoubleVar(value=initial_cy)
-        self.probe_offset_var = tk.DoubleVar(value=self.args.probe_offset)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -167,23 +121,9 @@ class App:
         self.cy_label = ttk.Label(control_frame, text=f"{self.cy_var.get():.1f}", width=7)
         self.cy_label.grid(row=2, column=4, padx=5)
         
-        # Probe Offset Controls
-        ttk.Label(control_frame, text="Probe Offset:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_probe_offset(-1)).grid(row=3, column=1)
-        self.probe_offset_slider = tk.Scale(control_frame, from_=1, to=100, orient=tk.HORIZONTAL, variable=self.probe_offset_var, command=self.update_image, resolution=0.1, showvalue=0)
-        self.probe_offset_slider.grid(row=3, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_probe_offset(1)).grid(row=3, column=3)
-        self.probe_offset_label = ttk.Label(control_frame, text=f"{self.probe_offset_var.get():.1f}", width=7)
-        self.probe_offset_label.grid(row=3, column=4, padx=5)
-
-        # Std Dev Display
-        ttk.Label(control_frame, text="Std Dev (Red):").grid(row=4, column=0, sticky=tk.W, pady=2)
-        self.std_dev_label = ttk.Label(control_frame, text="N/A", width=7)
-        self.std_dev_label.grid(row=4, column=1, columnspan=4, sticky="ew", padx=5)
-
         # --- Search Button ---
-        self.search_button = ttk.Button(control_frame, text="Find Max Difference", command=self.start_line_search)
-        self.search_button.grid(row=0, column=5, rowspan=5, padx=10, sticky="ns")
+        self.search_button = ttk.Button(control_frame, text="Find Best Fit", command=self.start_best_fit_search)
+        self.search_button.grid(row=0, column=5, rowspan=3, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -215,28 +155,27 @@ class App:
 
         self.update_image()
     
-    def start_line_search(self):
+    def start_best_fit_search(self):
         """Starts the grid search in a new thread to avoid freezing the GUI."""
         self.search_button.config(state="disabled", text="Searching...")
         
-        # Get the current parameters
+        # Get the metrics for the current line to set a baseline
         angle_deg = self.angle_var.get()
         cx = self.cx_var.get()
         cy = self.cy_var.get()
-        probe_offset = self.probe_offset_var.get()
         
-        # Get the metrics for the current line to set a baseline
-        main_vals, probe_vals = get_parallel_line_pixel_values(
-            self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
-        )
-        initial_diff_sum = np.nansum(probe_vals - main_vals)
+        theta_deg = (angle_deg + 90) % 180
+        theta_rad = np.deg2rad(theta_deg)
+        rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
+        
+        _, initial_pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
 
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_diff_sum, probe_offset))
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_pixel_sum,))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self, initial_diff_sum, probe_offset):
+    def _grid_search_worker(self, initial_pixel_sum):
         """The long-running grid search task."""
         center_cx = self.cx_var.get()
         center_cy = self.cy_var.get()
@@ -245,7 +184,7 @@ class App:
         best_cx = center_cx
         best_cy = center_cy
         best_angle = center_angle
-        max_diff_sum = initial_diff_sum if initial_diff_sum is not None else float('-inf')
+        min_pixel_sum = initial_pixel_sum if initial_pixel_sum is not None else float('inf')
 
         iterations = zip(self.args.position_ranges, self.args.angle_ranges, self.args.num_search_samples)
         total_iterations = len(self.args.position_ranges)
@@ -264,14 +203,15 @@ class App:
                 angle_raw = np.random.uniform(angle_min, angle_max)
                 angle = angle_raw % 180.0
 
-                main_vals, probe_vals = get_parallel_line_pixel_values(
-                    self.original_frame, cx, cy, angle, probe_offset, self.args.num_samples
-                )
+                # Convert to rho/theta for metrics calculation
+                theta_deg = (angle + 90) % 180
+                theta_rad = np.deg2rad(theta_deg)
+                rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
                 
-                current_diff_sum = np.nansum(probe_vals - main_vals)
+                _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
                 
-                if current_diff_sum > max_diff_sum:
-                    max_diff_sum = current_diff_sum
+                if pixel_sum is not None and pixel_sum < min_pixel_sum:
+                    min_pixel_sum = pixel_sum
                     best_cx = cx
                     best_cy = cy
                     best_angle = angle
@@ -285,102 +225,51 @@ class App:
             center_cx, center_cy, center_angle = best_cx, best_cy, best_angle
         
         # When done, schedule an update on the main GUI thread
-        self.root.after(0, self.finish_line_search, best_cx, best_cy, best_angle)
+        self.root.after(0, self.finish_best_fit_search, best_cx, best_cy, best_angle)
 
-    def finish_line_search(self, best_cx, best_cy, best_angle):
+    def finish_best_fit_search(self, best_cx, best_cy, best_angle):
         """Updates the GUI with the results from the search."""
         self.cx_var.set(best_cx)
         self.cy_var.set(best_cy)
         self.angle_var.set(best_angle)
         
-        self.search_button.config(state="normal", text="Find Max Difference")
+        self.search_button.config(state="normal", text="Find Best Fit")
         
         self.update_image()
 
 
-    def draw_pixel_plot(self, main_pixel_values, probe_pixel_values, diff_pixel_values):
+    def draw_pixel_plot(self, pixel_values):
         self.plot_canvas.delete("all") # Clear previous plot
 
-        # --- Helper to draw an intensity plot (0-255 range) ---
-        def _draw_intensity_plot(pixel_values, color):
-            if pixel_values is None or len(pixel_values) == 0:
-                return
+        if pixel_values is None or len(pixel_values) == 0:
+            self.plot_canvas.create_text(10, 10, anchor="nw", text="Line is out of bounds.")
+            return
 
-            canvas_w = self.plot_canvas.winfo_width()
-            canvas_h = self.plot_canvas.winfo_height()
-
-            # Create points, handling NaNs
-            num_samples = len(pixel_values)
-            x_step = canvas_w / max(1, num_samples - 1)
-
-            current_segment = []
-            for i, value in enumerate(pixel_values):
-                if not np.isnan(value):
-                    x = i * x_step
-                    y = canvas_h - (value / 255.0) * canvas_h
-                    current_segment.extend([x, y])
-                else:
-                    if len(current_segment) > 2:
-                        self.plot_canvas.create_line(current_segment, fill=color, width=2)
-                    current_segment = []
-            if len(current_segment) > 2:
-                self.plot_canvas.create_line(current_segment, fill=color, width=2)
-
-        # --- Helper to draw a difference plot (-255 to 255 range) ---
-        def _draw_difference_plot(pixel_values, color):
-            if pixel_values is None or len(pixel_values) == 0:
-                return
-
-            canvas_w = self.plot_canvas.winfo_width()
-            canvas_h = self.plot_canvas.winfo_height()
-
-            # Create points, handling NaNs
-            num_samples = len(pixel_values)
-            x_step = canvas_w / max(1, num_samples - 1)
-
-            current_segment = []
-            for i, value in enumerate(pixel_values):
-                if not np.isnan(value):
-                    x = i * x_step
-                    # Scale from -255 to 255, with 0 in the middle
-                    y = (canvas_h / 2) - (value / 255.0) * (canvas_h / 2)
-                    current_segment.extend([x, y])
-                else:
-                    if len(current_segment) > 2:
-                        self.plot_canvas.create_line(current_segment, fill=color, width=1)
-                    current_segment = []
-            if len(current_segment) > 2:
-                self.plot_canvas.create_line(current_segment, fill=color, width=1)
-
-        # --- Check canvas readiness and draw plots ---
         canvas_w = self.plot_canvas.winfo_width()
         canvas_h = self.plot_canvas.winfo_height()
-        if canvas_w < 2 or canvas_h < 2:
-             self.root.after(50, lambda: self.draw_pixel_plot(main_pixel_values, probe_pixel_values, diff_pixel_values))
+
+        if canvas_w < 2 or canvas_h < 2: # Canvas not ready on first draw
+             self.root.after(50, lambda: self.draw_pixel_plot(pixel_values))
              return
 
-        # Draw the plots
-        _draw_intensity_plot(main_pixel_values, "red")
-        _draw_intensity_plot(probe_pixel_values, "green")
-        _draw_difference_plot(diff_pixel_values, "blue")
+        # Create points for the line graph
+        points = []
+        num_samples = len(pixel_values)
+        x_step = canvas_w / max(1, num_samples - 1)
 
-        # Draw axis labels and lines for context
-        has_data = not (np.all(np.isnan(main_pixel_values)) and
-                        np.all(np.isnan(probe_pixel_values)))
+        for i, value in enumerate(pixel_values):
+            x = i * x_step
+            y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
+            points.extend([x, y])
 
-        if has_data:
-            # Intensity scale (left)
-            self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10), fill="black")
-            self.plot_canvas.create_line(0, 10, 10, 10)
-            self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10), fill="black")
-            self.plot_canvas.create_line(0, canvas_h - 10, 10, canvas_h - 10)
+        if len(points) > 2:
+            self.plot_canvas.create_line(points, fill="blue", width=2)
 
-            # Difference scale (right)
-            self.plot_canvas.create_line(0, canvas_h/2, canvas_w, canvas_h/2, fill="lightblue", dash=(2, 4))
-            self.plot_canvas.create_text(canvas_w - 15, canvas_h/2, anchor="e", text="0", font=("Arial", 10), fill="blue")
-
-        else:
-            self.plot_canvas.create_text(10, 10, anchor="nw", text="Lines are out of bounds.")
+        # Draw Y-axis labels for context
+        self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
+        self.plot_canvas.create_line(0, 10, 10, 10)
+        self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10))
+        self.plot_canvas.create_line(0, canvas_h-10, 10, canvas_h-10)
 
 
     def adjust_angle(self, amount):
@@ -398,17 +287,11 @@ class App:
         self.cy_var.set(round(current_val + amount, 1))
         self.update_image()
         
-    def adjust_probe_offset(self, amount):
-        current_val = self.probe_offset_var.get()
-        self.probe_offset_var.set(round(current_val + amount, 1))
-        self.update_image()
-
     def update_image(self, *args):
         # Get user-friendly parameters from the GUI
         angle_deg = self.angle_var.get()
         cx = self.cx_var.get()
         cy = self.cy_var.get()
-        probe_offset = self.probe_offset_var.get()
 
         # --- Convert (cx, cy, angle) to (rho, theta) ---
         # Theta is the angle of the normal, so it's 90 degrees offset from the line's angle.
@@ -422,27 +305,14 @@ class App:
 
         frame_copy = self.original_frame.copy()
         
-        # Draw main line
-        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg, color=(0, 0, 255), thickness=2)
+        # Draw line
+        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
-        # Draw probe line
-        probe_rho = rho + probe_offset
-        frame_with_line = draw_hough_line(frame_with_line, probe_rho, theta_deg, color=(0, 255, 0), thickness=2)
-
         # Draw a green dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
 
-        # Get metrics for both lines using the new corresponding sample method
-        main_pixel_values, probe_pixel_values = get_parallel_line_pixel_values(
-            self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
-        )
-        
-        # Calculate the difference
-        diff_pixel_values = probe_pixel_values - main_pixel_values # Green - Red
-
-        # Calculate Std Dev only on the valid (non-NaN) pixels of the main line
-        std_dev = np.nanstd(main_pixel_values) if not np.all(np.isnan(main_pixel_values)) else None
-
+        # Calculate Std Dev
+        std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -454,7 +324,7 @@ class App:
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         # --- Update the pixel plot ---
-        self.draw_pixel_plot(main_pixel_values, probe_pixel_values, diff_pixel_values)
+        self.draw_pixel_plot(pixel_values)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
@@ -471,8 +341,6 @@ class App:
         self.angle_label.config(text=f"{angle_deg:.2f}")
         self.cx_label.config(text=f"{cx:.1f}")
         self.cy_label.config(text=f"{cy:.1f}")
-        self.probe_offset_label.config(text=f"{self.probe_offset_var.get():.1f}")
-        self.std_dev_label.config(text=f"{std_dev:.2f}" if std_dev is not None else "N/A")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
@@ -525,7 +393,6 @@ def parse_args():
     parser.add_argument("--position-ranges", type=float, nargs='+', default=[20.0, 10.0, 5.0], help="Search ranges for cx and cy for each iteration.")
     parser.add_argument("--angle-ranges", type=float, nargs='+', default=[180.0, 20.0, 5.0], help="Search ranges for the angle for each iteration.")
     parser.add_argument("--num-search-samples", type=int, nargs='+', default=[1000, 1000, 500], help="Number of random samples for each iteration of the darkest line search.")
-    parser.add_argument("--probe-offset", type=float, default=20.0, help="Distance between the main line and the probe line.")
     return parser.parse_args()
 
 if __name__ == "__main__":
