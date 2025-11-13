@@ -72,18 +72,6 @@ class App:
         
         self.root.title("Hough Line Control")
         
-        # --- Set Display Size based on screen size for maximized window ---
-        max_width = root.winfo_screenwidth() - 40   # Padding for window borders
-        max_height = root.winfo_screenheight() - 180 # Padding for borders, taskbar, and controls
-        
-        h, w = self.original_frame.shape[:2]
-        
-        # Calculate the best fit for the screen
-        ratio = min(max_width / w, max_height / h)
-        
-        self.display_w = int(w * ratio)
-        self.display_h = int(h * ratio)
-
         # --- Variables ---
         h, w = self.original_frame.shape[:2]
         initial_cx = self.args.center_x if self.args.center_x is not None else w / 2
@@ -99,19 +87,7 @@ class App:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         
-        # Image display
-        self.image_label = ttk.Label(main_frame)
-        self.image_label.grid(row=0, column=0, sticky="nsew")
-        
-        # Pixel Plot Canvas
-        self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200)
-        self.plot_canvas.grid(row=0, column=1, sticky="nsew")
-
-        main_frame.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=3) # Image gets 3/4 of the space
-        main_frame.columnconfigure(1, weight=1) # Plot gets 1/4 of the space
-
-        # --- Controls Frame ---
+        # --- Controls Frame (Create this first to measure its height) ---
         control_frame = ttk.Frame(main_frame, padding="5")
         control_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
 
@@ -150,6 +126,32 @@ class App:
         self.search_button.grid(row=0, column=5, rowspan=3, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
+
+        # --- Force update to calculate control frame's actual size ---
+        self.root.update_idletasks()
+        control_height = control_frame.winfo_reqheight()
+
+        # --- Now, dynamically set Display Size based on remaining space ---
+        max_width = root.winfo_screenwidth() - 40   # Padding for window borders
+        max_height = root.winfo_screenheight() - control_height - 100 # Padding for borders and taskbar
+        
+        h_orig, w_orig = self.original_frame.shape[:2]
+        ratio = min(max_width / w_orig, max_height / h_orig)
+        
+        self.display_w = int(w_orig * ratio)
+        self.display_h = int(h_orig * ratio)
+
+        # --- Image and Plot Layout ---
+        self.image_label = ttk.Label(main_frame)
+        self.image_label.grid(row=0, column=0, sticky="nsew")
+        
+        # Pixel Plot Canvas
+        self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200)
+        self.plot_canvas.grid(row=0, column=1, sticky="nsew")
+
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=3) # Image gets 3/4 of the space
+        main_frame.columnconfigure(1, weight=1) # Plot gets 1/4 of the space
 
         self.update_image()
     
