@@ -23,7 +23,12 @@ def main(args):
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
 
     # Use the tuned parameters that were giving the best (though still imperfect) results
-    detector = LineDetector(hough_threshold=275, line_merge_dist=15)
+    detector = LineDetector(
+        canny_low=args.canny_low,
+        canny_high=args.canny_high,
+        hough_threshold=args.hough_threshold,
+        scale=args.scale
+    )
 
     window_name = "Line Detector Debugger"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -68,6 +73,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Debug the LineDetector on a video.")
     parser.add_argument("--video", type=str, default="video.mp4", help="Path to the video file.")
     parser.add_argument("--start-frame", type=int, default=0, help="Frame number to start processing from.")
+    parser.add_argument("--hough-threshold", type=int, default=275, help="Hough transform accumulator threshold.")
+    parser.add_argument("--canny-low", type=int, default=30, help="Lower Canny edge detection threshold.")
+    parser.add_argument("--canny-high", type=int, default=100, help="Higher Canny edge detection threshold.")
+    parser.add_argument("--scale", type=float, default=0.5, help="Downscaling factor for processing.")
     return parser.parse_args()
 
 if __name__ == "__main__":
