@@ -161,29 +161,23 @@ def show_first_frame_with_grid(
                 2,
             )
 
-        # Match heights for side-by-side display
+        # Match heights for side-by-side display by resizing
         orig_h, orig_w = frame_with_grid.shape[:2]
         unwarp_h, unwarp_w = unwarped.shape[:2]
         
         target_height = max(orig_h, unwarp_h)
         
-        # Pad original to target height
-        if orig_h < target_height:
-            pad_top = (target_height - orig_h) // 2
-            pad_bottom = target_height - orig_h - pad_top
-            frame_with_grid = cv2.copyMakeBorder(
-                frame_with_grid, pad_top, pad_bottom, 0, 0,
-                borderType=cv2.BORDER_CONSTANT, value=(30, 30, 30)
-            )
+        # Resize original to target height while preserving aspect ratio
+        if orig_h != target_height and orig_h > 0:
+            scale = target_height / orig_h
+            new_width = int(round(orig_w * scale))
+            frame_with_grid = cv2.resize(frame_with_grid, (new_width, target_height), interpolation=cv2.INTER_CUBIC)
         
-        # Pad unwarped to target height
-        if unwarp_h < target_height:
-            pad_top = (target_height - unwarp_h) // 2
-            pad_bottom = target_height - unwarp_h - pad_top
-            unwarped = cv2.copyMakeBorder(
-                unwarped, pad_top, pad_bottom, 0, 0,
-                borderType=cv2.BORDER_CONSTANT, value=(30, 30, 30)
-            )
+        # Resize unwarped to target height while preserving aspect ratio
+        if unwarp_h != target_height and unwarp_h > 0:
+            scale = target_height / unwarp_h
+            new_width = int(round(unwarp_w * scale))
+            unwarped = cv2.resize(unwarped, (new_width, target_height), interpolation=cv2.INTER_CUBIC)
         
         # Stack side by side
         combined = np.hstack([frame_with_grid, unwarped])
