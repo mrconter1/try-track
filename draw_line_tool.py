@@ -26,6 +26,51 @@ def draw_hough_line(frame, rho, theta_deg, color=(0, 0, 255), thickness=2):
     cv2.line(frame, (x1, y1), (x2, y2), color, thickness)
     return frame
 
+def get_parallel_line_pixel_values(frame, cx, cy, angle_deg, probe_offset, num_samples):
+    """
+    Gets pixel values for two parallel lines, ensuring samples correspond spatially.
+    Returns (main_pixel_values, probe_pixel_values) where values can be np.nan
+    if the sample point is outside the frame.
+    """
+    h, w = frame.shape[:2]
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    angle_rad = np.deg2rad(angle_deg)
+    v_dir = np.array([np.cos(angle_rad), np.sin(angle_rad)])       # Vector along the line
+    v_norm = np.array([-np.sin(angle_rad), np.cos(angle_rad)])    # Vector perpendicular to the line
+
+    center_point = np.array([cx, cy])
+    
+    # Define a sampling axis much longer than the frame diagonal to ensure full coverage
+    max_dist = np.sqrt(h**2 + w**2)
+    distances = np.linspace(-max_dist, max_dist, num_samples)
+
+    main_values = []
+    probe_values = []
+
+    for s in distances:
+        # Calculate the point on the main line
+        main_point = center_point + s * v_dir
+        # Calculate the corresponding point on the probe line
+        probe_point = main_point + probe_offset * v_norm
+
+        # Check main point
+        mx, my = int(main_point[0]), int(main_point[1])
+        if 0 <= mx < w and 0 <= my < h:
+            main_values.append(gray_frame[my, mx])
+        else:
+            main_values.append(np.nan)
+
+        # Check probe point
+        px, py = int(probe_point[0]), int(probe_point[1])
+        if 0 <= px < w and 0 <= py < h:
+            probe_values.append(gray_frame[py, px])
+        else:
+            probe_values.append(np.nan)
+
+    return np.array(main_values), np.array(probe_values)
+
+
 def get_line_metrics(frame, rho, theta_deg, num_samples):
     """
     Calculates metrics for a line.
@@ -249,18 +294,26 @@ class App:
             canvas_w = self.plot_canvas.winfo_width()
             canvas_h = self.plot_canvas.winfo_height()
 
-            # Create points for the line graph
+            # Create points for the line graph, handling NaNs by creating separate line segments
             points = []
             num_samples = len(pixel_values)
             x_step = canvas_w / max(1, num_samples - 1)
 
+            current_segment = []
             for i, value in enumerate(pixel_values):
-                x = i * x_step
-                y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
-                points.extend([x, y])
+                if not np.isnan(value):
+                    x = i * x_step
+                    y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
+                    current_segment.extend([x, y])
+                else:
+                    if len(current_segment) > 2: # Need at least 2 points for a line
+                        self.plot_canvas.create_line(current_segment, fill=color, width=2)
+                    current_segment = []
+            
+            # Draw the last segment if it exists
+            if len(current_segment) > 2:
+                self.plot_canvas.create_line(current_segment, fill=color, width=2)
 
-            if len(points) > 2:
-                self.plot_canvas.create_line(points, fill=color, width=2)
 
         # --- Check canvas readiness and draw plots ---
         canvas_w = self.plot_canvas.winfo_width()
@@ -327,9 +380,14 @@ class App:
         # Draw a green dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
 
-        # Get metrics for both lines
-        std_dev, _, main_pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
-        _, _, probe_pixel_values = get_line_metrics(self.original_frame, probe_rho, theta_deg, self.args.num_samples)
+        # Get metrics for both lines using the new corresponding sample method
+        main_pixel_values, probe_pixel_values = get_parallel_line_pixel_values(
+            self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
+        )
+        
+        # Calculate Std Dev only on the valid (non-NaN) pixels of the main line
+        std_dev = np.nanstd(main_pixel_values) if not np.all(np.isnan(main_pixel_values)) else None
+
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
