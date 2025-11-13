@@ -110,10 +110,8 @@ def show_first_frame_with_grid(
         return
 
     detector = LineDetector(scale=scale)
-    window_name_original = "Original with Grid"
-    window_name_unwarp = "Unwarped Top-Down"
-    cv2.namedWindow(window_name_original, cv2.WINDOW_NORMAL)
-    cv2.namedWindow(window_name_unwarp, cv2.WINDOW_NORMAL)
+    window_name = "Grid Detection & Unwarp"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     print("Controls: Right arrow → next frame, Left arrow → previous frame, q / Esc → quit")
 
@@ -163,48 +161,53 @@ def show_first_frame_with_grid(
                 2,
             )
 
-        frame_height, frame_width = frame_with_grid.shape[:2]
-        _max_width = max_width if max_width > 0 else frame_width
-        _max_height = max_height if max_height > 0 else frame_height
-
-        scale_factor = min(_max_width / frame_width, _max_height / frame_height)
+        # Match heights for side-by-side display
+        orig_h, orig_w = frame_with_grid.shape[:2]
+        unwarp_h, unwarp_w = unwarped.shape[:2]
+        
+        target_height = max(orig_h, unwarp_h)
+        
+        # Pad original to target height
+        if orig_h < target_height:
+            pad_top = (target_height - orig_h) // 2
+            pad_bottom = target_height - orig_h - pad_top
+            frame_with_grid = cv2.copyMakeBorder(
+                frame_with_grid, pad_top, pad_bottom, 0, 0,
+                borderType=cv2.BORDER_CONSTANT, value=(30, 30, 30)
+            )
+        
+        # Pad unwarped to target height
+        if unwarp_h < target_height:
+            pad_top = (target_height - unwarp_h) // 2
+            pad_bottom = target_height - unwarp_h - pad_top
+            unwarped = cv2.copyMakeBorder(
+                unwarped, pad_top, pad_bottom, 0, 0,
+                borderType=cv2.BORDER_CONSTANT, value=(30, 30, 30)
+            )
+        
+        # Stack side by side
+        combined = np.hstack([frame_with_grid, unwarped])
+        
+        # Scale to fit display
+        combined_h, combined_w = combined.shape[:2]
+        _max_width = max_width if max_width > 0 else combined_w
+        _max_height = max_height if max_height > 0 else combined_h
+        
+        scale_factor = min(_max_width / combined_w, _max_height / combined_h)
         if scale_factor <= 0:
             scale_factor = 1.0
-
-        display_width = int(round(frame_width * scale_factor))
-        display_height = int(round(frame_height * scale_factor))
-
-        if display_width <= 0 or display_height <= 0:
-            display_image = frame_with_grid
-            display_width, display_height = frame_width, frame_height
-        elif scale_factor != 1.0:
-            display_image = cv2.resize(
-                frame_with_grid, (display_width, display_height), interpolation=cv2.INTER_CUBIC
-            )
-        else:
-            display_image = frame_with_grid
-
-        # Display original with grid
-        if cv2.getWindowProperty(window_name_original, cv2.WND_PROP_VISIBLE) >= 1:
-            cv2.resizeWindow(window_name_original, display_width, display_height)
-        cv2.imshow(window_name_original, display_image)
-
-        # Display unwarped view
-        unwarp_height, unwarp_width = unwarped.shape[:2]
-        unwarp_scale = min(max_width / unwarp_width, max_height / unwarp_height) if unwarp_width > 0 and unwarp_height > 0 else 1.0
-        if unwarp_scale <= 0:
-            unwarp_scale = 1.0
-        unwarp_display_width = int(round(unwarp_width * unwarp_scale))
-        unwarp_display_height = int(round(unwarp_height * unwarp_scale))
         
-        if unwarp_display_width > 0 and unwarp_display_height > 0 and unwarp_scale != 1.0:
-            unwarped_display = cv2.resize(unwarped, (unwarp_display_width, unwarp_display_height), interpolation=cv2.INTER_CUBIC)
+        display_width = int(round(combined_w * scale_factor))
+        display_height = int(round(combined_h * scale_factor))
+        
+        if display_width > 0 and display_height > 0 and scale_factor != 1.0:
+            display_image = cv2.resize(combined, (display_width, display_height), interpolation=cv2.INTER_CUBIC)
         else:
-            unwarped_display = unwarped
-
-        if cv2.getWindowProperty(window_name_unwarp, cv2.WND_PROP_VISIBLE) >= 1:
-            cv2.resizeWindow(window_name_unwarp, unwarp_display_width, unwarp_display_height)
-        cv2.imshow(window_name_unwarp, unwarped_display)
+            display_image = combined
+        
+        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.resizeWindow(window_name, display_width, display_height)
+        cv2.imshow(window_name, display_image)
 
         key = cv2.waitKeyEx(0)
         if key == -1:
@@ -219,8 +222,7 @@ def show_first_frame_with_grid(
             frame_index = max(frame_index - 1, 0)
             continue
 
-    cv2.destroyWindow(window_name_original)
-    cv2.destroyWindow(window_name_unwarp)
+    cv2.destroyWindow(window_name)
     cap.release()
 
 
