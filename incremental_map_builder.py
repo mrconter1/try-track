@@ -19,8 +19,7 @@ class GlobalMap:
         for (r, c), tile_img in frame_tiles.items():
             global_r = self.current_pos[0] + r + frame_offset[0]
             global_c = self.current_pos[1] + c + frame_offset[1]
-            if (global_r, global_c) not in self.tiles:
-                self.tiles[(global_r, global_c)] = tile_img
+            self.tiles[(global_r, global_c)] = tile_img
 
     def render_map(self, 
                    highlight_tiles: Optional[Dict[Tuple[int, int], np.ndarray]] = None,
