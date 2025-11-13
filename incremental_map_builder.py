@@ -247,9 +247,9 @@ def main(args):
                     global_map.current_pos[1] + best_offset[1]
                 )
                 print(f"Frame {frame_idx}: Match found. New position: {global_map.current_pos}")
-                print("--- Top 5 Matches ---")
-                for (offset, avg_diff, overlap) in sorted_offsets[:5]:
-                    print(f"  Offset: {str(offset):>8s}, Overlap: {overlap:2d} tiles, Avg Diff: {avg_diff:.2f}")
+                # print("--- Top 5 Matches ---")
+                # for (offset, avg_diff, overlap) in sorted_offsets[:5]:
+                #     print(f"  Offset: {str(offset):>8s}, Overlap: {overlap:2d} tiles, Avg Diff: {avg_diff:.2f}")
 
             else:
                 # No confident match found, do not update position or map
