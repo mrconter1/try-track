@@ -3,6 +3,38 @@ import numpy as np
 import argparse
 from line_detector import LineDetector
 
+def plot_rho_theta(lines, frame_shape, plot_size=(400, 600)):
+    """
+    Creates a 2D plot of lines in Rho-Theta space.
+    X-axis: Theta (0-180 degrees), Y-axis: Rho
+    """
+    plot_img = np.zeros((plot_size[0], plot_size[1], 3), dtype=np.uint8)
+    h, w = frame_shape[:2]
+    max_rho = np.sqrt(h**2 + w**2)  # Max possible rho is the diagonal
+
+    # Draw axes and labels
+    cv2.line(plot_img, (0, plot_size[0] // 2), (plot_size[1], plot_size[0] // 2), (50, 50, 50), 1) # Rho=0 axis
+    cv2.line(plot_img, (plot_size[1] // 2, 0), (plot_size[1] // 2, plot_size[0]), (50, 50, 50), 1) # Theta=90 deg axis
+    cv2.putText(plot_img, "Theta (0-180 deg)", (plot_size[1] - 150, plot_size[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    cv2.putText(plot_img, "Rho", (10, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+    if not lines:
+        return plot_img
+
+    for rho, theta in lines:
+        # Map theta (0, pi) to x-axis (0, plot_width)
+        x = int((theta / np.pi) * plot_size[1])
+        # Map rho (-max_rho, max_rho) to y-axis (0, plot_height)
+        y = int(((rho + max_rho) / (2 * max_rho)) * plot_size[0])
+
+        # Ensure points are within bounds
+        x = np.clip(x, 0, plot_size[1] - 1)
+        y = np.clip(y, 0, plot_size[0] - 1)
+        
+        cv2.circle(plot_img, (x, y), 3, (0, 255, 0), -1)
+
+    return plot_img
+
 def main(args):
     """
     A script to step through video frames and visualize the raw output
@@ -33,8 +65,10 @@ def main(args):
     # --- GUI Setup ---
     window_name = "Line Detector Debugger"
     controls_window_name = "Controls"
+    plot_window_name = "Rho-Theta Plot"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.namedWindow(controls_window_name, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(plot_window_name, cv2.WINDOW_NORMAL)
 
     def nothing(x):
         pass
@@ -70,8 +104,11 @@ def main(args):
             current_frame_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
             print(f"\rProcessing Frame: {current_frame_pos} | Hough: {hough_threshold}, Canny: {canny_low}/{canny_high}", end="")
 
-            labeled_frame, _ = detector.detect_lines_raw(frame.copy())
+            labeled_frame, raw_lines = detector.detect_lines_raw(frame.copy())
+            plot_image = plot_rho_theta(raw_lines, frame.shape)
+            
             cv2.imshow(window_name, labeled_frame)
+            cv2.imshow(plot_window_name, plot_image)
         else:
             # Create a blank screen if no frame
             blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
