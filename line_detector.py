@@ -21,29 +21,29 @@ class LineDetector:
         edges = self._detect_edges(gray)
         raw_lines = self._detect_hough_lines(edges)
 
-        print("\n[LINE_DETECTOR] Raw Lines Detected:")
-        if not raw_lines:
-            print("  None")
-        else:
-            # Sort lines by theta for easier comparison
-            sorted_raw_lines = sorted(raw_lines, key=lambda l: l[1])
-            for i, (rho, theta) in enumerate(sorted_raw_lines):
-                rho_scaled = rho / self.scale if self.scale < 1.0 else rho
-                x1, y1, x2, y2 = self._line_to_frame_edges(rho_scaled, theta, w, h)
-                print(f"  - Raw Line {i:2d}: rho={rho:8.2f}, theta={np.rad2deg(theta):6.2f} deg | pts=({x1},{y1})->({x2},{y2})")
+        # print("\n[LINE_DETECTOR] Raw Lines Detected:")
+        # if not raw_lines:
+        #     print("  None")
+        # else:
+        #     # Sort lines by theta for easier comparison
+        #     sorted_raw_lines = sorted(raw_lines, key=lambda l: l[1])
+        #     for i, (rho, theta) in enumerate(sorted_raw_lines):
+        #         rho_scaled = rho / self.scale if self.scale < 1.0 else rho
+        #         x1, y1, x2, y2 = self._line_to_frame_edges(rho_scaled, theta, w, h)
+        #         print(f"  - Raw Line {i:2d}: rho={rho:8.2f}, theta={np.rad2deg(theta):6.2f} deg | pts=({x1},{y1})->({x2},{y2})")
 
         merged_lines = self._merge_lines(raw_lines)
         
-        print("[LINE_DETECTOR] Merged Lines:")
-        if not merged_lines:
-            print("  None")
-        else:
-            sorted_merged_lines = sorted(merged_lines, key=lambda l: l[1])
-            for i, (rho, theta) in enumerate(sorted_merged_lines):
-                rho_scaled = rho / self.scale if self.scale < 1.0 else rho
-                # Note: Merged lines are already denormalized, so we can draw them directly
-                x1, y1, x2, y2 = self._line_to_frame_edges(rho_scaled, theta, w, h)
-                print(f"  - Merged Line {i:2d}: rho={rho:8.2f}, theta={np.rad2deg(theta):6.2f} deg | pts=({x1},{y1})->({x2},{y2})")
+        # print("[LINE_DETECTOR] Merged Lines:")
+        # if not merged_lines:
+        #     print("  None")
+        # else:
+        #     sorted_merged_lines = sorted(merged_lines, key=lambda l: l[1])
+        #     for i, (rho, theta) in enumerate(sorted_merged_lines):
+        #         rho_scaled = rho / self.scale if self.scale < 1.0 else rho
+        #         # Note: Merged lines are already denormalized, so we can draw them directly
+        #         x1, y1, x2, y2 = self._line_to_frame_edges(rho_scaled, theta, w, h)
+        #         print(f"  - Merged Line {i:2d}: rho={rho:8.2f}, theta={np.rad2deg(theta):6.2f} deg | pts=({x1},{y1})->({x2},{y2})")
         
         # Scale rho values back to original frame size
         if self.scale < 1.0:
@@ -51,7 +51,7 @@ class LineDetector:
         labeled_frame = self._draw_lines(frame.copy(), merged_lines)
         
         elapsed_ms = (time.time() - start_time) * 1000
-        print(f"[LINE_DETECTOR] Frame processed in {elapsed_ms:.2f}ms | Raw: {len(raw_lines)}, Merged: {len(merged_lines)}")
+        # print(f"[LINE_DETECTOR] Frame processed in {elapsed_ms:.2f}ms | Raw: {len(raw_lines)}, Merged: {len(merged_lines)}")
         
         return labeled_frame, merged_lines
     
