@@ -114,7 +114,6 @@ class App:
         self.root = root
         self.args = args
         self.original_frame = initial_frame
-        self.probe_offset = 20
         
         self.root.title("Hough Line Control")
         
@@ -126,6 +125,7 @@ class App:
         self.angle_var = tk.DoubleVar(value=self.args.angle)
         self.cx_var = tk.DoubleVar(value=initial_cx)
         self.cy_var = tk.DoubleVar(value=initial_cy)
+        self.probe_offset_var = tk.DoubleVar(value=self.args.probe_offset)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -167,9 +167,18 @@ class App:
         self.cy_label = ttk.Label(control_frame, text=f"{self.cy_var.get():.1f}", width=7)
         self.cy_label.grid(row=2, column=4, padx=5)
         
+        # Probe Offset Controls
+        ttk.Label(control_frame, text="Probe Offset:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_probe_offset(-1)).grid(row=3, column=1)
+        self.probe_offset_slider = tk.Scale(control_frame, from_=1, to=100, orient=tk.HORIZONTAL, variable=self.probe_offset_var, command=self.update_image, resolution=0.1, showvalue=0)
+        self.probe_offset_slider.grid(row=3, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_probe_offset(1)).grid(row=3, column=3)
+        self.probe_offset_label = ttk.Label(control_frame, text=f"{self.probe_offset_var.get():.1f}", width=7)
+        self.probe_offset_label.grid(row=3, column=4, padx=5)
+
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Max Difference", command=self.start_line_search)
-        self.search_button.grid(row=0, column=5, rowspan=3, padx=10, sticky="ns")
+        self.search_button.grid(row=0, column=5, rowspan=4, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -209,19 +218,20 @@ class App:
         angle_deg = self.angle_var.get()
         cx = self.cx_var.get()
         cy = self.cy_var.get()
+        probe_offset = self.probe_offset_var.get()
         
         # Get the metrics for the current line to set a baseline
         main_vals, probe_vals = get_parallel_line_pixel_values(
-            self.original_frame, cx, cy, angle_deg, self.probe_offset, self.args.num_samples
+            self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
         )
         initial_diff_sum = np.nansum(probe_vals - main_vals)
 
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_diff_sum,))
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_diff_sum, probe_offset))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self, initial_diff_sum):
+    def _grid_search_worker(self, initial_diff_sum, probe_offset):
         """The long-running grid search task."""
         center_cx = self.cx_var.get()
         center_cy = self.cy_var.get()
@@ -250,7 +260,7 @@ class App:
                 angle = angle_raw % 180.0
 
                 main_vals, probe_vals = get_parallel_line_pixel_values(
-                    self.original_frame, cx, cy, angle, self.probe_offset, self.args.num_samples
+                    self.original_frame, cx, cy, angle, probe_offset, self.args.num_samples
                 )
                 
                 current_diff_sum = np.nansum(probe_vals - main_vals)
@@ -383,11 +393,17 @@ class App:
         self.cy_var.set(round(current_val + amount, 1))
         self.update_image()
         
+    def adjust_probe_offset(self, amount):
+        current_val = self.probe_offset_var.get()
+        self.probe_offset_var.set(round(current_val + amount, 1))
+        self.update_image()
+
     def update_image(self, *args):
         # Get user-friendly parameters from the GUI
         angle_deg = self.angle_var.get()
         cx = self.cx_var.get()
         cy = self.cy_var.get()
+        probe_offset = self.probe_offset_var.get()
 
         # --- Convert (cx, cy, angle) to (rho, theta) ---
         # Theta is the angle of the normal, so it's 90 degrees offset from the line's angle.
@@ -405,7 +421,7 @@ class App:
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg, color=(0, 0, 255), thickness=2)
         
         # Draw probe line
-        probe_rho = rho + self.probe_offset
+        probe_rho = rho + probe_offset
         frame_with_line = draw_hough_line(frame_with_line, probe_rho, theta_deg, color=(0, 255, 0), thickness=2)
 
         # Draw a green dot at the center point
@@ -413,7 +429,7 @@ class App:
 
         # Get metrics for both lines using the new corresponding sample method
         main_pixel_values, probe_pixel_values = get_parallel_line_pixel_values(
-            self.original_frame, cx, cy, angle_deg, self.probe_offset, self.args.num_samples
+            self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
         )
         
         # Calculate the difference
@@ -450,6 +466,7 @@ class App:
         self.angle_label.config(text=f"{angle_deg:.2f}")
         self.cx_label.config(text=f"{cx:.1f}")
         self.cy_label.config(text=f"{cy:.1f}")
+        self.probe_offset_label.config(text=f"{probe_offset:.1f}")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
@@ -502,6 +519,7 @@ def parse_args():
     parser.add_argument("--position-ranges", type=float, nargs='+', default=[20.0, 10.0, 5.0], help="Search ranges for cx and cy for each iteration.")
     parser.add_argument("--angle-ranges", type=float, nargs='+', default=[180.0, 20.0, 5.0], help="Search ranges for the angle for each iteration.")
     parser.add_argument("--num-search-samples", type=int, nargs='+', default=[1000, 1000, 500], help="Number of random samples for each iteration of the darkest line search.")
+    parser.add_argument("--probe-offset", type=float, default=20.0, help="Distance between the main line and the probe line.")
     return parser.parse_args()
 
 if __name__ == "__main__":
