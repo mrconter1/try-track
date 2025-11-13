@@ -113,6 +113,20 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) ->
     # First unwarped mosaic
     if first["mosaic"] is not None:
         mosaic_a = first["mosaic"].copy()
+        
+        # Draw circles at crossings (tile corners)
+        tile_display_size = 80
+        for (row, col) in first["grid_map"].keys():
+            # Draw circles at the four corners of each tile
+            corners = [
+                (col * tile_display_size, row * tile_display_size),
+                ((col + 1) * tile_display_size, row * tile_display_size),
+                ((col + 1) * tile_display_size, (row + 1) * tile_display_size),
+                (col * tile_display_size, (row + 1) * tile_display_size),
+            ]
+            for corner in corners:
+                cv2.circle(mosaic_a, corner, 3, (0, 255, 255), -1)
+        
         if max_h > 0 and max_w > 0:
             mosaic_a = pad_to_height(mosaic_a, max_h)
             mosaic_a = pad_to_width(mosaic_a, max_w)
@@ -127,6 +141,20 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) ->
     # Second unwarped mosaic
     if second["mosaic"] is not None:
         mosaic_b = second["mosaic"].copy()
+        
+        # Draw circles at crossings (tile corners)
+        tile_display_size = 80
+        for (row, col) in second["grid_map"].keys():
+            # Draw circles at the four corners of each tile
+            corners = [
+                (col * tile_display_size, row * tile_display_size),
+                ((col + 1) * tile_display_size, row * tile_display_size),
+                ((col + 1) * tile_display_size, (row + 1) * tile_display_size),
+                (col * tile_display_size, (row + 1) * tile_display_size),
+            ]
+            for corner in corners:
+                cv2.circle(mosaic_b, corner, 3, (0, 255, 0), -1)
+        
         if max_h > 0 and max_w > 0:
             mosaic_b = pad_to_height(mosaic_b, max_h)
             mosaic_b = pad_to_width(mosaic_b, max_w)
