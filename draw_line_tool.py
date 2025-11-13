@@ -176,9 +176,14 @@ class App:
         self.probe_offset_label = ttk.Label(control_frame, text=f"{self.probe_offset_var.get():.1f}", width=7)
         self.probe_offset_label.grid(row=3, column=4, padx=5)
 
+        # Std Dev Display
+        ttk.Label(control_frame, text="Std Dev (Red):").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.std_dev_label = ttk.Label(control_frame, text="N/A", width=7)
+        self.std_dev_label.grid(row=4, column=1, columnspan=4, sticky="ew", padx=5)
+
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Max Difference", command=self.start_line_search)
-        self.search_button.grid(row=0, column=5, rowspan=4, padx=10, sticky="ns")
+        self.search_button.grid(row=0, column=5, rowspan=5, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -466,7 +471,8 @@ class App:
         self.angle_label.config(text=f"{angle_deg:.2f}")
         self.cx_label.config(text=f"{cx:.1f}")
         self.cy_label.config(text=f"{cy:.1f}")
-        self.probe_offset_label.config(text=f"{probe_offset:.1f}")
+        self.probe_offset_label.config(text=f"{self.probe_offset_var.get():.1f}")
+        self.std_dev_label.config(text=f"{std_dev:.2f}" if std_dev is not None else "N/A")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
