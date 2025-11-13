@@ -159,8 +159,8 @@ class App:
         min_pixel_sum = float('inf')
 
         # Define the search space
-        rho_range = np.arange(current_rho - 5, current_rho + 5, 0.1)
-        theta_range = np.arange(current_theta - 5, current_theta + 5, 0.1)
+        rho_range = np.arange(current_rho - self.args.search_range, current_rho + self.args.search_range, self.args.step_size)
+        theta_range = np.arange(current_theta - self.args.search_range, current_theta + self.args.search_range, self.args.step_size)
 
         total_rhos = len(rho_range)
         print("Starting darkest line search...")
@@ -306,6 +306,8 @@ def parse_args():
     parser.add_argument("--rho", type=float, default=100.0, help="The initial 'rho' parameter of the line.")
     parser.add_argument("--theta", type=float, default=45.0, help="The initial 'theta' parameter of the line (in degrees).")
     parser.add_argument("--num-samples", type=int, default=100, help="Number of samples for color std deviation.")
+    parser.add_argument("--search-range", type=float, default=5.0, help="Search range (+-) for rho and theta for darkest line search.")
+    parser.add_argument("--step-size", type=float, default=0.1, help="Step size for rho and theta for darkest line search.")
     return parser.parse_args()
 
 if __name__ == "__main__":
