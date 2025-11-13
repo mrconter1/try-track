@@ -45,6 +45,10 @@ class VideoPlayer:
         )
         self.slider.pack(fill=tk.X, padx=10, pady=5)
 
+        # Add a label for pixel distance
+        self.dist_label = ttk.Label(main_frame, text="Pixel distance: N/A", font=("Helvetica", 12))
+        self.dist_label.pack(pady=5)
+
         self.root.bind_all("<Left>", self.prev_frame)
         self.root.bind_all("<Right>", self.next_frame)
         self.root.bind_all("<Shift-Left>", self.shift_left)
@@ -127,7 +131,10 @@ class VideoPlayer:
             
             self.last_printed_index = self.current_pair_index
 
-        display_image = compose_display(first, second, self.current_pair_index, self.current_pair_index + 1, self.x_offset, self.y_offset)
+        display_image, pixel_dist = compose_display(
+            first, second, self.current_pair_index, self.current_pair_index + 1, self.x_offset, self.y_offset
+        )
+        self.dist_label.config(text=f"Sum of pixel difference (RGB) for overlapping region: {pixel_dist:,.0f}")
 
         # Resize for display
         h, w = display_image.shape[:2]

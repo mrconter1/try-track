@@ -117,7 +117,9 @@ def extract_crossings(grid_map: Dict[Tuple[int, int], Tuple], frame_shape: Tuple
     return sorted(list(crossings))
 
 
-def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int, x_offset: int = 0, y_offset: int = 0) -> np.ndarray:
+def compose_display(
+    first: Dict, second: Dict, frame_idx: int, next_idx: int, x_offset: int = 0, y_offset: int = 0
+) -> Tuple[np.ndarray, float]:
     label_font = cv2.FONT_HERSHEY_SIMPLEX
     mosaics = []
 
@@ -191,13 +193,29 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int, x_
 
         # --- Create and add the overlay ---
         # Apply offset to the second mosaic
+        mosaic_b_shifted = mosaic_b
         if x_offset != 0 or y_offset != 0:
             M = np.float32([[1, 0, x_offset], [0, 1, y_offset]])
-            mosaic_b = cv2.warpAffine(mosaic_b, M, (mosaic_b.shape[1], mosaic_b.shape[0]), borderValue=(40, 40, 40))
+            mosaic_b_shifted = cv2.warpAffine(mosaic_b, M, (mosaic_b.shape[1], mosaic_b.shape[0]), borderValue=(40, 40, 40))
 
-        overlay = cv2.addWeighted(mosaic_a, 0.5, mosaic_b, 0.5, 0)
-        cv2.putText(overlay, f"Overlay {frame_idx} + {next_idx}", (20, 40), label_font, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(overlay, f"Offset: ({x_offset}, {y_offset})", (20, 80), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        # Calculate pixel distance
+        background_color = np.array([40, 40, 40], dtype=np.uint8)
+        mask_a = np.any(mosaic_a != background_color, axis=-1)
+        mask_b_shifted = np.any(mosaic_b_shifted != background_color, axis=-1)
+        overlap_mask = mask_a & mask_b_shifted
+
+        pixel_dist = 0.0
+        if np.any(overlap_mask):
+            diff = np.abs(mosaic_a.astype(np.float32) - mosaic_b_shifted.astype(np.float32))
+            pixel_dist = np.sum(diff[overlap_mask])
+
+        overlay = cv2.addWeighted(mosaic_a, 0.5, mosaic_b_shifted, 0.5, 0)
+        cv2.putText(
+            overlay, f"Overlay {frame_idx} + {next_idx}", (20, 40), label_font, 0.9, (255, 255, 255), 2, cv2.LINE_AA
+        )
+        cv2.putText(
+            overlay, f"Offset: ({x_offset}, {y_offset})", (20, 80), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA
+        )
         mosaics.append(overlay)
 
     # --- Final composition of the views ---
@@ -217,11 +235,11 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int, x_
             mosaics_with_separators.append(separator)
     
     if not mosaics_with_separators:
-        return np.full((400, 800, 3), 30, dtype=np.uint8) # Return a blank image if something goes wrong
+        return np.full((400, 800, 3), 30, dtype=np.uint8), 0.0  # Return a blank image if something goes wrong
 
     combined = np.hstack(mosaics_with_separators)
     
-    return combined
+    return combined, pixel_dist
 
 
 def run_viewer(args: argparse.Namespace) -> None:
@@ -247,7 +265,7 @@ def run_viewer(args: argparse.Namespace) -> None:
                 print(f"Could not load frame pair {pair_index}, {pair_index + 1}")
                 break
 
-            display = compose_display(first, second, pair_index, pair_index + 1)
+            display, _ = compose_display(first, second, pair_index, pair_index + 1)
 
             max_width = int(args.max_window_width)
             max_height = int(args.max_window_height)
