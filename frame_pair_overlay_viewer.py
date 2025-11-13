@@ -119,7 +119,7 @@ def extract_crossings(grid_map: Dict[Tuple[int, int], Tuple], frame_shape: Tuple
 
 def compose_display(
     first: Dict, second: Dict, frame_idx: int, next_idx: int, x_offset: int = 0, y_offset: int = 0
-) -> Tuple[np.ndarray, float]:
+) -> Tuple[np.ndarray, float, float]:
     label_font = cv2.FONT_HERSHEY_SIMPLEX
     mosaics = []
 
@@ -208,6 +208,9 @@ def compose_display(
         if np.any(overlap_mask):
             diff = np.abs(mosaic_a.astype(np.float32) - mosaic_b_shifted.astype(np.float32))
             pixel_dist = np.sum(diff[overlap_mask])
+        
+        overlap_area = np.sum(overlap_mask)
+        normalized_dist = pixel_dist / overlap_area if overlap_area > 0 else 0.0
 
         overlay = cv2.addWeighted(mosaic_a, 0.5, mosaic_b_shifted, 0.5, 0)
         cv2.putText(
@@ -235,11 +238,11 @@ def compose_display(
             mosaics_with_separators.append(separator)
     
     if not mosaics_with_separators:
-        return np.full((400, 800, 3), 30, dtype=np.uint8), 0.0  # Return a blank image if something goes wrong
+        return np.full((400, 800, 3), 30, dtype=np.uint8), 0.0, 0.0 # Return a blank image if something goes wrong
 
     combined = np.hstack(mosaics_with_separators)
-    
-    return combined, pixel_dist
+
+    return combined, pixel_dist, normalized_dist
 
 
 def run_viewer(args: argparse.Namespace) -> None:
@@ -265,7 +268,7 @@ def run_viewer(args: argparse.Namespace) -> None:
                 print(f"Could not load frame pair {pair_index}, {pair_index + 1}")
                 break
 
-            display, _ = compose_display(first, second, pair_index, pair_index + 1)
+            display, _, _ = compose_display(first, second, pair_index, pair_index + 1)
 
             max_width = int(args.max_window_width)
             max_height = int(args.max_window_height)

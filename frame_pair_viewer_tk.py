@@ -131,10 +131,12 @@ class VideoPlayer:
             
             self.last_printed_index = self.current_pair_index
 
-        display_image, pixel_dist = compose_display(
+        display_image, pixel_dist, norm_dist = compose_display(
             first, second, self.current_pair_index, self.current_pair_index + 1, self.x_offset, self.y_offset
         )
-        self.dist_label.config(text=f"Sum of pixel difference (RGB) for overlapping region: {pixel_dist:,.0f}")
+        self.dist_label.config(
+            text=f"Pixel Diff Sum: {pixel_dist:,.0f} | Per-Pixel Avg: {norm_dist:,.2f}"
+        )
 
         # Resize for display
         h, w = display_image.shape[:2]
