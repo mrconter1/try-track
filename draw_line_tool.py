@@ -54,9 +54,9 @@ def calculate_color_std_dev(frame, rho, theta_deg, num_samples):
         
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         pixel_values = gray_frame[y_coords, x_coords]
-        return np.std(pixel_values)
+        return np.std(pixel_values), pixel_values
     else:
-        return None
+        return None, None
 
 # --- New Tkinter GUI Application ---
 
@@ -93,12 +93,18 @@ class App:
         # Image display
         self.image_label = ttk.Label(main_frame)
         self.image_label.grid(row=0, column=0, sticky="nsew")
+        
+        # Pixel Plot Canvas
+        self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200)
+        self.plot_canvas.grid(row=0, column=1, sticky="nsew")
+
         main_frame.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=3) # Image gets 3/4 of the space
+        main_frame.columnconfigure(1, weight=1) # Plot gets 1/4 of the space
 
         # --- Controls Frame ---
         control_frame = ttk.Frame(main_frame, padding="5")
-        control_frame.grid(row=1, column=0, sticky="ew")
+        control_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
 
         # Controls
         h, w = self.original_frame.shape[:2]
@@ -126,6 +132,40 @@ class App:
 
         self.update_image()
 
+    def draw_pixel_plot(self, pixel_values):
+        self.plot_canvas.delete("all") # Clear previous plot
+
+        if pixel_values is None or len(pixel_values) == 0:
+            self.plot_canvas.create_text(10, 10, anchor="nw", text="Line is out of bounds.")
+            return
+
+        canvas_w = self.plot_canvas.winfo_width()
+        canvas_h = self.plot_canvas.winfo_height()
+
+        if canvas_w < 2 or canvas_h < 2: # Canvas not ready on first draw
+             self.root.after(50, lambda: self.draw_pixel_plot(pixel_values))
+             return
+
+        # Create points for the line graph
+        points = []
+        num_samples = len(pixel_values)
+        x_step = canvas_w / max(1, num_samples - 1)
+
+        for i, value in enumerate(pixel_values):
+            x = i * x_step
+            y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
+            points.extend([x, y])
+
+        if len(points) > 2:
+            self.plot_canvas.create_line(points, fill="blue", width=2)
+
+        # Draw Y-axis labels for context
+        self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
+        self.plot_canvas.create_line(0, 10, 10, 10)
+        self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10))
+        self.plot_canvas.create_line(0, canvas_h-10, 10, canvas_h-10)
+
+
     def adjust_theta(self, amount):
         current_val = self.theta_var.get()
         self.theta_var.set(round(current_val + amount, 1))
@@ -146,7 +186,7 @@ class App:
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
         # Calculate Std Dev
-        std_dev = calculate_color_std_dev(self.original_frame, rho, theta_deg, self.args.num_samples)
+        std_dev, pixel_values = calculate_color_std_dev(self.original_frame, rho, theta_deg, self.args.num_samples)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -156,6 +196,9 @@ class App:
         if std_dev is not None:
             std_dev_text = f"Std Dev: {std_dev:.2f}"
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+        # --- Update the pixel plot ---
+        self.draw_pixel_plot(pixel_values)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
