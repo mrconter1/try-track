@@ -97,6 +97,155 @@ def compute_unwarp_homography(grid_crossings, tile_size=100):
     return H
 
 
+def rotate_image_90(image, rotation):
+    """Rotate image by 0, 90, 180, or 270 degrees."""
+    if rotation == 0:
+        return image
+    elif rotation == 90:
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif rotation == 180:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    elif rotation == 270:
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    return image
+
+
+def compute_overlap_score(prev_gray, curr_gray, dx, dy):
+    """Compute overlap quality score using normalized cross-correlation."""
+    h1, w1 = prev_gray.shape
+    h2, w2 = curr_gray.shape
+    
+    # Determine overlap region
+    x1_start = max(0, -dx)
+    y1_start = max(0, -dy)
+    x1_end = min(w1, w2 - dx)
+    y1_end = min(h1, h2 - dy)
+    
+    x2_start = max(0, dx)
+    y2_start = max(0, dy)
+    x2_end = min(w2, w1 + dx)
+    y2_end = min(h2, h1 + dy)
+    
+    # Check if there's valid overlap
+    if x1_end <= x1_start or y1_end <= y1_start or x2_end <= x2_start or y2_end <= y2_start:
+        return 0.0
+    
+    # Extract overlap regions
+    overlap1 = prev_gray[y1_start:y1_end, x1_start:x1_end]
+    overlap2 = curr_gray[y2_start:y2_end, x2_start:x2_end]
+    
+    if overlap1.size == 0 or overlap2.size == 0:
+        return 0.0
+    
+    # Compute normalized cross-correlation
+    overlap1_norm = (overlap1 - overlap1.mean()) / (overlap1.std() + 1e-6)
+    overlap2_norm = (overlap2 - overlap2.mean()) / (overlap2.std() + 1e-6)
+    
+    correlation = np.mean(overlap1_norm * overlap2_norm)
+    overlap_area = overlap1.size
+    
+    # Score is correlation weighted by overlap area
+    return correlation * np.sqrt(overlap_area)
+
+
+def find_best_alignment(prev_unwarp, curr_unwarp):
+    """Find translation to align current frame to previous frame (no rotation).
+    Returns: (rotation, dx, dy, score, aligned_image)
+    """
+    if prev_unwarp is None or curr_unwarp is None:
+        return 0, 0, 0, 0.0, curr_unwarp
+
+    prev_gray = cv2.cvtColor(prev_unwarp, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_unwarp, cv2.COLOR_BGR2GRAY)
+
+    # Find translation using phase correlation
+    if prev_gray.shape == curr_gray.shape:
+        shift, response = cv2.phaseCorrelate(prev_gray.astype(np.float32), curr_gray.astype(np.float32))
+        dx, dy = int(shift[0]), int(shift[1])
+    else:
+        # If shapes don't match, try feature matching
+        orb = cv2.ORB_create(500)
+        kp1, des1 = orb.detectAndCompute(prev_gray, None)
+        kp2, des2 = orb.detectAndCompute(curr_gray, None)
+
+        if des1 is not None and des2 is not None and len(des1) > 0 and len(des2) > 0:
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matches = bf.match(des1, des2)
+            matches = sorted(matches, key=lambda x: x.distance)
+
+            if len(matches) > 10:
+                pts1 = np.float32([kp1[m.queryIdx].pt for m in matches[:10]])
+                pts2 = np.float32([kp2[m.trainIdx].pt for m in matches[:10]])
+                offsets = pts1 - pts2
+                dx, dy = int(np.median(offsets[:, 0])), int(np.median(offsets[:, 1]))
+            else:
+                dx, dy = 0, 0
+        else:
+            dx, dy = 0, 0
+    
+    # Compute overlap quality score
+    score = compute_overlap_score(prev_gray, curr_gray, dx, dy)
+
+    return 0, dx, dy, score, curr_unwarp
+
+
+def create_alignment_visualization(prev_unwarp, curr_aligned, dx, dy, rotation, score):
+    """Create a visualization showing the alignment between previous and current frames."""
+    if prev_unwarp is None or curr_aligned is None:
+        placeholder = np.zeros((400, 400, 3), dtype=np.uint8)
+        cv2.putText(
+            placeholder,
+            "Waiting for frames...",
+            (50, 200),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+        return placeholder
+
+    # Create overlay: previous in red channel, current in green channel
+    h1, w1 = prev_unwarp.shape[:2]
+    h2, w2 = curr_aligned.shape[:2]
+    
+    # Make canvas large enough for both with offset
+    canvas_h = max(h1, h2 + abs(dy)) + 100
+    canvas_w = max(w1, w2 + abs(dx)) + 100
+    
+    overlay = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+    
+    # Place previous frame (in cyan/blue tint)
+    prev_gray = cv2.cvtColor(prev_unwarp, cv2.COLOR_BGR2GRAY)
+    overlay[50:50+h1, 50:50+w1, 0] = prev_gray  # Blue channel
+    overlay[50:50+h1, 50:50+w1, 1] = prev_gray  # Green channel
+    
+    # Place current frame with offset (in yellow/red tint)
+    curr_gray = cv2.cvtColor(curr_aligned, cv2.COLOR_BGR2GRAY)
+    y_offset = 50 + dy
+    x_offset = 50 + dx
+    
+    if y_offset >= 0 and x_offset >= 0:
+        y_end = min(y_offset + h2, canvas_h)
+        x_end = min(x_offset + w2, canvas_w)
+        h_crop = y_end - y_offset
+        w_crop = x_end - x_offset
+        overlay[y_offset:y_end, x_offset:x_end, 2] = curr_gray[:h_crop, :w_crop]  # Red channel
+        overlay[y_offset:y_end, x_offset:x_end, 1] = curr_gray[:h_crop, :w_crop]  # Green channel (overlap = white)
+    
+    # Add alignment info
+    cv2.putText(
+        overlay,
+        f"Translation: ({dx}, {dy})  Score: {score:.2f}",
+        (20, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        2,
+    )
+    
+    return overlay
+
+
 def show_first_frame_with_grid(
     video_path: str,
     scale: float = 0.5,
@@ -117,6 +266,7 @@ def show_first_frame_with_grid(
 
     frame_index = 0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    prev_unwarped = None
 
     while True:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
@@ -161,11 +311,19 @@ def show_first_frame_with_grid(
                 2,
             )
 
-        # Match heights for side-by-side display by resizing
+        # Find alignment between previous and current unwarped frames
+        rotation, dx, dy, score, curr_aligned = find_best_alignment(prev_unwarped, unwarped)
+        alignment_vis = create_alignment_visualization(prev_unwarped, curr_aligned, dx, dy, rotation, score)
+
+        # Update previous frame
+        prev_unwarped = unwarped.copy()
+
+        # Match heights for side-by-side display by resizing (now three views)
         orig_h, orig_w = frame_with_grid.shape[:2]
         unwarp_h, unwarp_w = unwarped.shape[:2]
+        align_h, align_w = alignment_vis.shape[:2]
         
-        target_height = max(orig_h, unwarp_h)
+        target_height = max(orig_h, unwarp_h, align_h)
         
         # Resize original to target height while preserving aspect ratio
         if orig_h != target_height and orig_h > 0:
@@ -179,8 +337,14 @@ def show_first_frame_with_grid(
             new_width = int(round(unwarp_w * scale))
             unwarped = cv2.resize(unwarped, (new_width, target_height), interpolation=cv2.INTER_CUBIC)
         
-        # Stack side by side
-        combined = np.hstack([frame_with_grid, unwarped])
+        # Resize alignment visualization to target height while preserving aspect ratio
+        if align_h != target_height and align_h > 0:
+            scale = target_height / align_h
+            new_width = int(round(align_w * scale))
+            alignment_vis = cv2.resize(alignment_vis, (new_width, target_height), interpolation=cv2.INTER_CUBIC)
+        
+        # Stack all three side by side
+        combined = np.hstack([frame_with_grid, unwarped, alignment_vis])
         
         # Scale to fit display
         combined_h, combined_w = combined.shape[:2]
