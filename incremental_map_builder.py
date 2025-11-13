@@ -212,7 +212,12 @@ def main(args):
         print("Warning: Could not get screen dimensions. Auto-zoom may not work as expected.")
         screen_w, screen_h = 1920, 1080 # Default fallback
 
-    frame_idx = 0
+    frame_idx = args.start_frame
+    if frame_idx >= processor.total_frames:
+        print(f"Error: Start frame {frame_idx} is beyond the end of the video ({processor.total_frames} frames).")
+        processor.release()
+        return
+
     while frame_idx < processor.total_frames:
         frame = processor.get_frame(frame_idx)
         if frame is None:
@@ -304,6 +309,7 @@ def main(args):
 def parse_args():
     parser = argparse.ArgumentParser(description="Incrementally build a map from video frames.")
     parser.add_argument("--video", type=str, default="video.mp4", help="Path to input video file")
+    parser.add_argument("--start-frame", type=int, default=0, help="Frame to start processing from")
     return parser.parse_args()
 
 if __name__ == "__main__":
