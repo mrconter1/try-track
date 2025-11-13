@@ -198,7 +198,19 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) ->
     # Match heights and stack horizontally
     max_height = max(img.shape[0] for img in mosaics)
     mosaics_padded = [pad_to_height(img, max_height) for img in mosaics]
-    combined = np.hstack(mosaics_padded)
+    
+    # Create blue vertical separators between views
+    separator_width = 1
+    separator = np.full((max_height, separator_width, 3), (255, 0, 0), dtype=np.uint8)  # Blue in BGR
+    
+    # Interleave mosaics with separators
+    mosaics_with_separators = []
+    for i, mosaic in enumerate(mosaics_padded):
+        mosaics_with_separators.append(mosaic)
+        if i < len(mosaics_padded) - 1:
+            mosaics_with_separators.append(separator)
+    
+    combined = np.hstack(mosaics_with_separators)
     
     return combined
 
