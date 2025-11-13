@@ -144,6 +144,12 @@ class VideoPlayer:
             # Sort results by normalized distance (ascending)
             results.sort(key=lambda item: item[2])
             
+            # Automatically apply the best offset
+            if results:
+                best_offset_tile, _, _ = results[0]
+                self.x_offset = best_offset_tile[0] * TILE_DISPLAY_SIZE
+                self.y_offset = best_offset_tile[1] * TILE_DISPLAY_SIZE
+
             for (x_tile, y_tile), total_dist, norm_dist in results:
                 print(f"Tile Offset ({x_tile:2d}, {y_tile:2d}): Sum={total_dist:12,.0f}, Avg={norm_dist:8,.2f}")
 
