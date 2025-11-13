@@ -7,7 +7,7 @@ import numpy as np
 from typing import Optional, Dict, Tuple
 
 # Assuming frame_pair_overlay_viewer.py is in the same directory
-from frame_pair_overlay_viewer import FrameCache, compose_display, extract_crossings
+from frame_pair_overlay_viewer import FrameCache, compose_display, extract_crossings, TILE_DISPLAY_SIZE
 
 class VideoPlayer:
     def __init__(self, root, video_path: str, max_width: int, max_height: int):
@@ -18,6 +18,8 @@ class VideoPlayer:
         self.total_frames = self.frame_cache.get_total_frames()
         self.max_width = max_width
         self.max_height = max_height
+        self.x_offset = 0
+        self.y_offset = 0
 
         if self.total_frames < 2:
             raise RuntimeError("Video must contain at least two frames.")
@@ -45,6 +47,10 @@ class VideoPlayer:
 
         self.root.bind_all("<Left>", self.prev_frame)
         self.root.bind_all("<Right>", self.next_frame)
+        self.root.bind_all("<Shift-Left>", self.shift_left)
+        self.root.bind_all("<Shift-Right>", self.shift_right)
+        self.root.bind_all("<Shift-Up>", self.shift_up)
+        self.root.bind_all("<Shift-Down>", self.shift_down)
         
         # Maximize the window
         self.root.state('zoomed')
@@ -86,6 +92,22 @@ class VideoPlayer:
             self.slider.set(self.current_pair_index)
             self.update_frame()
 
+    def shift_left(self, event=None):
+        self.x_offset -= TILE_DISPLAY_SIZE
+        self.update_frame()
+
+    def shift_right(self, event=None):
+        self.x_offset += TILE_DISPLAY_SIZE
+        self.update_frame()
+
+    def shift_up(self, event=None):
+        self.y_offset -= TILE_DISPLAY_SIZE
+        self.update_frame()
+
+    def shift_down(self, event=None):
+        self.y_offset += TILE_DISPLAY_SIZE
+        self.update_frame()
+
     def update_frame(self):
         first = self.frame_cache.get_frame_data(self.current_pair_index)
         second = self.frame_cache.get_frame_data(self.current_pair_index + 1)
@@ -105,7 +127,7 @@ class VideoPlayer:
             
             self.last_printed_index = self.current_pair_index
 
-        display_image = compose_display(first, second, self.current_pair_index, self.current_pair_index + 1)
+        display_image = compose_display(first, second, self.current_pair_index, self.current_pair_index + 1, self.x_offset, self.y_offset)
 
         # Resize for display
         h, w = display_image.shape[:2]
