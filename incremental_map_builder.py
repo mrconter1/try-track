@@ -130,13 +130,6 @@ class FrameProcessor:
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
-    def get_frame(self, index: int) -> Optional[np.ndarray]:
-        if index < 0 or index >= self.total_frames:
-            return None
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, index)
-        ret, frame = self.cap.read()
-        return frame if ret else None
-
     def extract_tiles(self, frame: np.ndarray) -> Dict[Tuple[int, int], np.ndarray]:
         """Extracts warped tiles from a single frame."""
         tiles = {}
@@ -218,9 +211,12 @@ def main(args):
         processor.release()
         return
 
+    if frame_idx > 0:
+        processor.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+
     while frame_idx < processor.total_frames:
-        frame = processor.get_frame(frame_idx)
-        if frame is None:
+        ret, frame = processor.cap.read()
+        if not ret:
             break
 
         frame_tiles = processor.extract_tiles(frame)
