@@ -87,11 +87,14 @@ class FrameProcessor:
 def find_best_offset(
     global_map: GlobalMap,
     frame_tiles: Dict[Tuple[int, int], np.ndarray],
-    search_range: int = 3
-) -> Tuple[int, int]:
-    """Finds the best offset for a new frame against the global map."""
-    best_offset = (0, 0)
-    min_avg_diff = float('inf')
+    search_range: int = 3,
+    min_overlap_tiles: int = 3,
+) -> List[Tuple[Tuple[int, int], float, int]]:
+    """
+    Finds all valid offsets for a new frame against the global map,
+    sorted by the best match (lowest average pixel difference).
+    """
+    valid_offsets = []
 
     for r_offset in range(-search_range, search_range + 1):
         for c_offset in range(-search_range, search_range + 1):
@@ -109,13 +112,14 @@ def find_best_offset(
                     total_diff += diff
                     overlap_count += 1
             
-            if overlap_count > 0:
+            if overlap_count >= min_overlap_tiles:
+                # Normalize by total pixels in overlap area to get a per-pixel average
                 avg_diff = total_diff / (overlap_count * TILE_DISPLAY_SIZE * TILE_DISPLAY_SIZE * 3)
-                if avg_diff < min_avg_diff:
-                    min_avg_diff = avg_diff
-                    best_offset = (r_offset, c_offset)
+                valid_offsets.append(((r_offset, c_offset), avg_diff, overlap_count))
 
-    return best_offset
+    # Sort by the average difference (second element) and return the full list
+    valid_offsets.sort(key=lambda item: item[1])
+    return valid_offsets
 
 def main(args):
     processor = FrameProcessor(args.video)
@@ -139,18 +143,32 @@ def main(args):
 
         if not global_map.tiles: # First frame
             best_offset = (0, 0)
+            print(f"Frame {frame_idx}: Initializing map.")
+            global_map.add_tiles_from_frame(frame_tiles, best_offset)
         else:
-            best_offset = find_best_offset(global_map, frame_tiles)
+            sorted_offsets = find_best_offset(global_map, frame_tiles)
 
-        global_map.add_tiles_from_frame(frame_tiles, best_offset)
-        global_map.current_pos = (
-            global_map.current_pos[0] + best_offset[0],
-            global_map.current_pos[1] + best_offset[1]
-        )
+            if sorted_offsets:
+                # A confident match was found
+                best_offset, _, _ = sorted_offsets[0]
+                global_map.add_tiles_from_frame(frame_tiles, best_offset)
+                global_map.current_pos = (
+                    global_map.current_pos[0] + best_offset[0],
+                    global_map.current_pos[1] + best_offset[1]
+                )
+                print(f"Frame {frame_idx}: Match found. New position: {global_map.current_pos}")
+                print("--- Top 5 Matches ---")
+                for (offset, avg_diff, overlap) in sorted_offsets[:5]:
+                    print(f"  Offset: {str(offset):>8s}, Overlap: {overlap:2d} tiles, Avg Diff: {avg_diff:.2f}")
+
+            else:
+                # No confident match found, do not update position or map
+                print(f"Frame {frame_idx}: No confident match found (overlap < 3 tiles). Position held at {global_map.current_pos}")
+
 
         map_vis = global_map.render_map()
         cv2.putText(map_vis, f"Frame: {frame_idx}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        cv2.putText(map_vis, f"Current Offset: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(map_vis, f"Current Position: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
         cv2.imshow(window_name, map_vis)
         
