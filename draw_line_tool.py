@@ -144,19 +144,24 @@ class App:
         """Starts the grid search in a new thread to avoid freezing the GUI."""
         self.search_button.config(state="disabled", text="Searching...")
         
+        # Get the metrics for the current line to set a baseline
+        current_rho = self.rho_var.get()
+        current_theta = self.theta_var.get()
+        _, initial_pixel_sum, _ = get_line_metrics(self.original_frame, current_rho, current_theta, self.args.num_samples)
+
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker)
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_pixel_sum,))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self):
+    def _grid_search_worker(self, initial_pixel_sum):
         """The long-running grid search task."""
         current_rho = self.rho_var.get()
         current_theta = self.theta_var.get()
 
         best_rho = current_rho
         best_theta = current_theta
-        min_pixel_sum = float('inf')
+        min_pixel_sum = initial_pixel_sum if initial_pixel_sum is not None else float('inf')
 
         # Define the search space
         rho_min = current_rho - self.args.search_range
