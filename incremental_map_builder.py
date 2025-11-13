@@ -42,6 +42,12 @@ class GlobalMap:
             x = (c - min_c) * TILE_DISPLAY_SIZE
             vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = tile_img
         
+        # Draw a dot for the current position
+        pos_r, pos_c = self.current_pos
+        dot_y = (pos_r - min_r) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
+        dot_x = (pos_c - min_c) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
+        cv2.circle(vis_map, (dot_x, dot_y), radius=10, color=(255, 0, 0), thickness=-1) # Blue dot
+
         return vis_map
 
 class FrameProcessor:
