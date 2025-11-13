@@ -184,16 +184,18 @@ class App:
         best_angle = center_angle
         min_pixel_sum = initial_pixel_sum if initial_pixel_sum is not None else float('inf')
 
-        total_iterations = len(self.args.search_ranges)
-        for iter_num, search_range in enumerate(self.args.search_ranges):
-            print(f"--- Iteration {iter_num + 1}/{total_iterations}, Search Range: {search_range} ---")
+        iterations = zip(self.args.position_ranges, self.args.angle_ranges, self.args.num_search_samples)
+        total_iterations = len(self.args.position_ranges)
+
+        for iter_num, (pos_range, angle_range, num_samples) in enumerate(iterations):
+            print(f"--- Iteration {iter_num + 1}/{total_iterations}: Pos Range={pos_range}, Angle Range={angle_range}, Samples={num_samples} ---")
             
             # Define the search space for the current iteration
-            cx_min, cx_max = center_cx - search_range, center_cx + search_range
-            cy_min, cy_max = center_cy - search_range, center_cy + search_range
-            angle_min, angle_max = center_angle - search_range, center_angle + search_range
+            cx_min, cx_max = center_cx - pos_range, center_cx + pos_range
+            cy_min, cy_max = center_cy - pos_range, center_cy + pos_range
+            angle_min, angle_max = center_angle - angle_range, center_angle + angle_range
 
-            for i in range(self.args.num_search_samples):
+            for i in range(num_samples):
                 cx = np.random.uniform(cx_min, cx_max)
                 cy = np.random.uniform(cy_min, cy_max)
                 angle = np.random.uniform(angle_min, angle_max)
@@ -212,8 +214,8 @@ class App:
                     best_angle = angle
 
                 # Print progress to the console periodically
-                if (i + 1) % 200 == 0 or (i + 1) == self.args.num_search_samples:
-                    progress = ((i + 1) / self.args.num_search_samples) * 100
+                if (i + 1) % 200 == 0 or (i + 1) == num_samples:
+                    progress = ((i + 1) / num_samples) * 100
                     print(f"  Search progress: {progress:.1f}%")
             
             # Update the center for the next iteration to be the best point found so far
@@ -303,6 +305,9 @@ class App:
         # Draw line
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
+        # Draw a green dot at the center point
+        cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
+
         # Calculate Std Dev
         std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
 
@@ -336,6 +341,10 @@ class App:
 
 def main(args):
     """Main function to load frame and launch the GUI."""
+    if not (len(args.position_ranges) == len(args.angle_ranges) == len(args.num_search_samples)):
+        print("Error: The number of arguments for --position-ranges, --angle-ranges, and --num-search-samples must be the same.")
+        return
+
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         print(f"Error: Could not open video file {args.video}")
@@ -367,8 +376,9 @@ def parse_args():
     parser.add_argument("--center-x", type=int, default=None, help="Initial X coordinate of the line's center point. Defaults to frame center.")
     parser.add_argument("--center-y", type=int, default=None, help="Initial Y coordinate of the line's center point. Defaults to frame center.")
     parser.add_argument("--num-samples", type=int, default=100, help="Number of samples for color std deviation.")
-    parser.add_argument("--search-ranges", type=float, nargs='+', default=[20.0, 10.0, 5.0], help="Search ranges for cx, cy (pixels) and angle (degrees) for iterative search.")
-    parser.add_argument("--num-search-samples", type=int, default=1000, help="Number of random samples for the darkest line search.")
+    parser.add_argument("--position-ranges", type=float, nargs='+', default=[20.0, 10.0, 5.0], help="Search ranges for cx and cy for each iteration.")
+    parser.add_argument("--angle-ranges", type=float, nargs='+', default=[180.0, 20.0, 5.0], help="Search ranges for the angle for each iteration.")
+    parser.add_argument("--num-search-samples", type=int, nargs='+', default=[1000, 1000, 500], help="Number of random samples for each iteration of the darkest line search.")
     return parser.parse_args()
 
 if __name__ == "__main__":
