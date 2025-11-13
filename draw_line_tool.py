@@ -4,6 +4,7 @@ import argparse
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+import threading
 
 # --- Core OpenCV Functions (Largely Unchanged) ---
 
@@ -25,10 +26,13 @@ def draw_hough_line(frame, rho, theta_deg):
     cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
     return frame
 
-def calculate_color_std_dev(frame, rho, theta_deg, num_samples):
-    """Calculates the standard deviation of colors along a line in the frame."""
+def get_line_metrics(frame, rho, theta_deg, num_samples):
+    """
+    Calculates metrics for a line.
+    Returns (std_dev, pixel_sum, pixel_values)
+    """
     if num_samples <= 0:
-        return None
+        return None, None, None
         
     h, w = frame.shape[:2]
     theta_rad = np.deg2rad(theta_deg)
@@ -54,9 +58,9 @@ def calculate_color_std_dev(frame, rho, theta_deg, num_samples):
         
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         pixel_values = gray_frame[y_coords, x_coords]
-        return np.std(pixel_values), pixel_values
+        return np.std(pixel_values), np.sum(pixel_values), pixel_values
     else:
-        return None, None
+        return None, None, None
 
 # --- New Tkinter GUI Application ---
 
@@ -128,9 +132,64 @@ class App:
         self.rho_label = ttk.Label(control_frame, text=f"{self.rho_var.get():.2f}", width=6)
         self.rho_label.grid(row=1, column=4, padx=5)
         
+        # --- Search Button ---
+        self.search_button = ttk.Button(control_frame, text="Find Darkest Line", command=self.start_darkest_line_search)
+        self.search_button.grid(row=0, column=5, rowspan=2, padx=10)
+
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
         self.update_image()
+    
+    def start_darkest_line_search(self):
+        """Starts the grid search in a new thread to avoid freezing the GUI."""
+        self.search_button.config(state="disabled", text="Searching...")
+        
+        # Run the actual search in a worker thread
+        search_thread = threading.Thread(target=self._grid_search_worker)
+        search_thread.daemon = True # Allows main program to exit even if thread is running
+        search_thread.start()
+
+    def _grid_search_worker(self):
+        """The long-running grid search task."""
+        current_rho = self.rho_var.get()
+        current_theta = self.theta_var.get()
+
+        best_rho = current_rho
+        best_theta = current_theta
+        min_pixel_sum = float('inf')
+
+        # Define the search space
+        rho_range = np.arange(current_rho - 5, current_rho + 5, 0.1)
+        theta_range = np.arange(current_theta - 5, current_theta + 5, 0.1)
+
+        total_rhos = len(rho_range)
+        print("Starting darkest line search...")
+
+        for i, rho in enumerate(rho_range):
+            for theta in theta_range:
+                _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta, self.args.num_samples)
+                if pixel_sum is not None and pixel_sum < min_pixel_sum:
+                    min_pixel_sum = pixel_sum
+                    best_rho = rho
+                    best_theta = theta
+            
+            # Print progress to the console periodically
+            if (i + 1) % 10 == 0 or (i + 1) == total_rhos:
+                progress = ((i + 1) / total_rhos) * 100
+                print(f"Search progress: {progress:.1f}%")
+        
+        # When done, schedule an update on the main GUI thread
+        self.root.after(0, self.finish_darkest_line_search, best_rho, best_theta)
+
+    def finish_darkest_line_search(self, best_rho, best_theta):
+        """Updates the GUI with the results from the search."""
+        self.rho_var.set(best_rho)
+        self.theta_var.set(best_theta)
+        
+        self.search_button.config(state="normal", text="Find Darkest Line")
+        
+        self.update_image()
+
 
     def draw_pixel_plot(self, pixel_values):
         self.plot_canvas.delete("all") # Clear previous plot
@@ -186,7 +245,7 @@ class App:
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
         # Calculate Std Dev
-        std_dev, pixel_values = calculate_color_std_dev(self.original_frame, rho, theta_deg, self.args.num_samples)
+        std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
