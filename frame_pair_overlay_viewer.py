@@ -101,11 +101,21 @@ class FrameCache:
 def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) -> np.ndarray:
     label_font = cv2.FONT_HERSHEY_SIMPLEX
     
+    # Determine max dimensions if both mosaics exist
+    max_h = 0
+    max_w = 0
+    if first["mosaic"] is not None and second["mosaic"] is not None:
+        max_h = max(first["mosaic"].shape[0], second["mosaic"].shape[0])
+        max_w = max(first["mosaic"].shape[1], second["mosaic"].shape[1])
+    
     mosaics = []
     
     # First unwarped mosaic
     if first["mosaic"] is not None:
         mosaic_a = first["mosaic"].copy()
+        if max_h > 0 and max_w > 0:
+            mosaic_a = pad_to_height(mosaic_a, max_h)
+            mosaic_a = pad_to_width(mosaic_a, max_w)
         cv2.putText(mosaic_a, f"Frame {frame_idx}", (20, 40), label_font, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
         mosaics.append(mosaic_a)
     else:
@@ -117,6 +127,9 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) ->
     # Second unwarped mosaic
     if second["mosaic"] is not None:
         mosaic_b = second["mosaic"].copy()
+        if max_h > 0 and max_w > 0:
+            mosaic_b = pad_to_height(mosaic_b, max_h)
+            mosaic_b = pad_to_width(mosaic_b, max_w)
         cv2.putText(mosaic_b, f"Frame {next_idx}", (20, 40), label_font, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
         mosaics.append(mosaic_b)
     else:
@@ -127,11 +140,14 @@ def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) ->
     
     # Overlay unwarped mosaic
     if first["mosaic"] is not None and second["mosaic"] is not None:
-        mosaic_a = first["mosaic"]
-        mosaic_b = second["mosaic"]
+        mosaic_a = first["mosaic"].copy()
+        mosaic_b = second["mosaic"].copy()
         
-        if mosaic_a.shape[:2] != mosaic_b.shape[:2]:
-            mosaic_b = cv2.resize(mosaic_b, (mosaic_a.shape[1], mosaic_a.shape[0]))
+        if max_h > 0 and max_w > 0:
+            mosaic_a = pad_to_height(mosaic_a, max_h)
+            mosaic_a = pad_to_width(mosaic_a, max_w)
+            mosaic_b = pad_to_height(mosaic_b, max_h)
+            mosaic_b = pad_to_width(mosaic_b, max_w)
         
         overlay = cv2.addWeighted(mosaic_a, 0.5, mosaic_b, 0.5, 0)
         cv2.putText(
@@ -168,6 +184,7 @@ def run_viewer(args: argparse.Namespace) -> None:
 
     window_name = "Frame Pair Overlay Viewer"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     pair_index = max(0, args.start_frame)
     if pair_index >= total_frames - 1:
@@ -216,13 +233,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-window-width",
         type=float,
-        default=1600,
+        default=2400,
         help="Maximum display window width in pixels (display is resized if wider)",
     )
     parser.add_argument(
         "--max-window-height",
         type=float,
-        default=900,
+        default=1350,
         help="Maximum display window height in pixels (display is resized if taller)",
     )
     return parser.parse_args()
