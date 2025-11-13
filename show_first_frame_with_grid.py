@@ -23,9 +23,9 @@ def line_intersection(rho1, theta1, rho2, theta2):
 
 
 def find_line_crossings(lines, frame_shape):
-    """Find all intersections between horizontal and vertical lines."""
+    """Find all intersections between horizontal and vertical lines with grid indices."""
     if len(lines) < 2:
-        return []
+        return [], []
 
     h, w = frame_shape[:2]
     crossings = []
@@ -45,17 +45,56 @@ def find_line_crossings(lines, frame_shape):
         else:
             vertical.append((rho, theta))
 
-    # Find all intersections between each horizontal and vertical line
-    for rho_h, theta_h in horizontal:
-        for rho_v, theta_v in vertical:
+    # Sort horizontal lines top-to-bottom
+    def get_y_intercept(line, width):
+        rho, theta = line
+        if np.sin(theta) != 0:
+            return (rho - (width / 2) * np.cos(theta)) / np.sin(theta)
+        return float('inf')
+
+    horizontal.sort(key=lambda line: get_y_intercept(line, w))
+
+    # Sort vertical lines left-to-right
+    def get_x_intercept(line, height):
+        rho, theta = line
+        if np.cos(theta) != 0:
+            return (rho - (height / 2) * np.sin(theta)) / np.cos(theta)
+        return float('inf')
+
+    vertical.sort(key=lambda line: get_x_intercept(line, h))
+
+    # Find all intersections with grid indices
+    grid_crossings = []
+    for i, (rho_h, theta_h) in enumerate(horizontal):
+        for j, (rho_v, theta_v) in enumerate(vertical):
             intersection = line_intersection(rho_h, theta_h, rho_v, theta_v)
             if intersection is not None:
                 x, y = intersection
                 # Only keep intersections within frame bounds
                 if 0 <= x < w and 0 <= y < h:
                     crossings.append((x, y))
+                    grid_crossings.append(((x, y), (i, j)))
 
-    return crossings
+    return crossings, grid_crossings
+
+
+def compute_unwarp_homography(grid_crossings, tile_size=100):
+    """Compute homography to unwarp perspective to top-down view."""
+    if len(grid_crossings) < 4:
+        return None
+
+    src_points = []
+    dst_points = []
+
+    for (x, y), (i, j) in grid_crossings:
+        src_points.append([x, y])
+        dst_points.append([j * tile_size, i * tile_size])
+
+    src_points = np.array(src_points, dtype=np.float32)
+    dst_points = np.array(dst_points, dtype=np.float32)
+
+    H, mask = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
+    return H
 
 
 def show_first_frame_with_grid(
@@ -63,6 +102,7 @@ def show_first_frame_with_grid(
     scale: float = 0.5,
     max_width: int = 1600,
     max_height: int = 900,
+    tile_size: int = 100,
 ) -> None:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -70,8 +110,10 @@ def show_first_frame_with_grid(
         return
 
     detector = LineDetector(scale=scale)
-    window_name = "Frame with Grid Lines"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    window_name_original = "Original with Grid"
+    window_name_unwarp = "Unwarped Top-Down"
+    cv2.namedWindow(window_name_original, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(window_name_unwarp, cv2.WINDOW_NORMAL)
 
     print("Controls: Right arrow → next frame, Left arrow → previous frame, q / Esc → quit")
 
@@ -88,9 +130,38 @@ def show_first_frame_with_grid(
         frame_with_grid, lines = detector.detect_lines(frame)
 
         # Find and draw crossings
-        crossings = find_line_crossings(lines, frame.shape[:2])
+        crossings, grid_crossings = find_line_crossings(lines, frame.shape[:2])
         for x, y in crossings:
             cv2.circle(frame_with_grid, (x, y), 8, (0, 255, 0), 2)
+
+        # Compute and apply homography for unwarp
+        H = compute_unwarp_homography(grid_crossings, tile_size=tile_size)
+        if H is not None and len(grid_crossings) > 0:
+            # Compute output size based on grid extent
+            max_i = max(i for (x, y), (i, j) in grid_crossings)
+            max_j = max(j for (x, y), (i, j) in grid_crossings)
+            output_width = (max_j + 1) * tile_size
+            output_height = (max_i + 1) * tile_size
+            unwarped = cv2.warpPerspective(frame, H, (output_width, output_height))
+            
+            # Draw grid on unwarped image for reference
+            for i in range(max_i + 2):
+                y_line = i * tile_size
+                cv2.line(unwarped, (0, y_line), (output_width, y_line), (255, 0, 0), 1)
+            for j in range(max_j + 2):
+                x_line = j * tile_size
+                cv2.line(unwarped, (x_line, 0), (x_line, output_height), (255, 0, 0), 1)
+        else:
+            unwarped = np.zeros((400, 400, 3), dtype=np.uint8)
+            cv2.putText(
+                unwarped,
+                "Not enough crossings",
+                (50, 200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2,
+            )
 
         frame_height, frame_width = frame_with_grid.shape[:2]
         _max_width = max_width if max_width > 0 else frame_width
@@ -113,9 +184,27 @@ def show_first_frame_with_grid(
         else:
             display_image = frame_with_grid
 
-        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
-            cv2.resizeWindow(window_name, display_width, display_height)
-        cv2.imshow(window_name, display_image)
+        # Display original with grid
+        if cv2.getWindowProperty(window_name_original, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.resizeWindow(window_name_original, display_width, display_height)
+        cv2.imshow(window_name_original, display_image)
+
+        # Display unwarped view
+        unwarp_height, unwarp_width = unwarped.shape[:2]
+        unwarp_scale = min(max_width / unwarp_width, max_height / unwarp_height) if unwarp_width > 0 and unwarp_height > 0 else 1.0
+        if unwarp_scale <= 0:
+            unwarp_scale = 1.0
+        unwarp_display_width = int(round(unwarp_width * unwarp_scale))
+        unwarp_display_height = int(round(unwarp_height * unwarp_scale))
+        
+        if unwarp_display_width > 0 and unwarp_display_height > 0 and unwarp_scale != 1.0:
+            unwarped_display = cv2.resize(unwarped, (unwarp_display_width, unwarp_display_height), interpolation=cv2.INTER_CUBIC)
+        else:
+            unwarped_display = unwarped
+
+        if cv2.getWindowProperty(window_name_unwarp, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.resizeWindow(window_name_unwarp, unwarp_display_width, unwarp_display_height)
+        cv2.imshow(window_name_unwarp, unwarped_display)
 
         key = cv2.waitKeyEx(0)
         if key == -1:
@@ -130,7 +219,8 @@ def show_first_frame_with_grid(
             frame_index = max(frame_index - 1, 0)
             continue
 
-    cv2.destroyWindow(window_name)
+    cv2.destroyWindow(window_name_original)
+    cv2.destroyWindow(window_name_unwarp)
     cap.release()
 
 
@@ -157,6 +247,12 @@ def parse_args() -> argparse.Namespace:
         default=900,
         help="Maximum display height while keeping aspect ratio (default=900)",
     )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=100,
+        help="Size of each tile in pixels for unwarped view (default=100)",
+    )
     return parser.parse_args()
 
 
@@ -167,5 +263,6 @@ if __name__ == "__main__":
         scale=args.scale,
         max_width=args.max_width,
         max_height=args.max_height,
+        tile_size=args.tile_size,
     )
 
