@@ -10,7 +10,7 @@ from typing import Optional, Dict, Tuple
 from frame_pair_overlay_viewer import FrameCache, compose_display, extract_crossings, TILE_DISPLAY_SIZE, calculate_diff_for_offset
 
 class VideoPlayer:
-    def __init__(self, root, video_path: str, max_width: int, max_height: int):
+    def __init__(self, root, video_path: str, max_width: int, max_height: int, start_frame: int = 0):
         self.root = root
         self.root.title("Frame Pair Overlay Viewer")
 
@@ -24,7 +24,7 @@ class VideoPlayer:
         if self.total_frames < 2:
             raise RuntimeError("Video must contain at least two frames.")
 
-        self.current_pair_index = 0
+        self.current_pair_index = start_frame if start_frame < self.total_frames - 1 else 0
         self.last_printed_index = -1  # Track last printed frame index
 
         # Create main frame
@@ -43,6 +43,7 @@ class VideoPlayer:
             orient=tk.HORIZONTAL,
             command=self.on_slider_move,
         )
+        self.slider.set(self.current_pair_index)
         self.slider.pack(fill=tk.X, padx=10, pady=5)
 
         # Add a label for pixel distance
@@ -197,12 +198,18 @@ def parse_args() -> argparse.Namespace:
         default=1350,
         help="Maximum display window height in pixels (display is resized if taller)",
     )
+    parser.add_argument(
+        "--start-frame",
+        type=int,
+        default=0,
+        help="Frame index to start the viewer on",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
     
     root = tk.Tk()
-    app = VideoPlayer(root, args.video, args.max_window_width, args.max_window_height)
+    app = VideoPlayer(root, args.video, args.max_window_width, args.max_window_height, args.start_frame)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
