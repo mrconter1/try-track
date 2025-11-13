@@ -238,38 +238,49 @@ class App:
         self.update_image()
 
 
-    def draw_pixel_plot(self, pixel_values):
+    def draw_pixel_plot(self, main_pixel_values, probe_pixel_values):
         self.plot_canvas.delete("all") # Clear previous plot
 
-        if pixel_values is None or len(pixel_values) == 0:
-            self.plot_canvas.create_text(10, 10, anchor="nw", text="Line is out of bounds.")
-            return
+        # --- Helper to draw a single plot ---
+        def _draw_plot(pixel_values, color):
+            if pixel_values is None or len(pixel_values) == 0:
+                return # Don't draw if there's no data
 
+            canvas_w = self.plot_canvas.winfo_width()
+            canvas_h = self.plot_canvas.winfo_height()
+
+            # Create points for the line graph
+            points = []
+            num_samples = len(pixel_values)
+            x_step = canvas_w / max(1, num_samples - 1)
+
+            for i, value in enumerate(pixel_values):
+                x = i * x_step
+                y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
+                points.extend([x, y])
+
+            if len(points) > 2:
+                self.plot_canvas.create_line(points, fill=color, width=2)
+
+        # --- Check canvas readiness and draw plots ---
         canvas_w = self.plot_canvas.winfo_width()
         canvas_h = self.plot_canvas.winfo_height()
-
         if canvas_w < 2 or canvas_h < 2: # Canvas not ready on first draw
-             self.root.after(50, lambda: self.draw_pixel_plot(pixel_values))
+             self.root.after(50, lambda: self.draw_pixel_plot(main_pixel_values, probe_pixel_values))
              return
 
-        # Create points for the line graph
-        points = []
-        num_samples = len(pixel_values)
-        x_step = canvas_w / max(1, num_samples - 1)
+        # Draw the plots
+        _draw_plot(main_pixel_values, "red")
+        _draw_plot(probe_pixel_values, "green")
 
-        for i, value in enumerate(pixel_values):
-            x = i * x_step
-            y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
-            points.extend([x, y])
-
-        if len(points) > 2:
-            self.plot_canvas.create_line(points, fill="blue", width=2)
-
-        # Draw Y-axis labels for context
-        self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
-        self.plot_canvas.create_line(0, 10, 10, 10)
-        self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10))
-        self.plot_canvas.create_line(0, canvas_h-10, 10, canvas_h-10)
+        # Draw Y-axis labels for context if any data was plotted
+        if main_pixel_values is not None or probe_pixel_values is not None:
+            self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
+            self.plot_canvas.create_line(0, 10, 10, 10)
+            self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10))
+            self.plot_canvas.create_line(0, canvas_h-10, 10, canvas_h-10)
+        else:
+            self.plot_canvas.create_text(10, 10, anchor="nw", text="Lines are out of bounds.")
 
 
     def adjust_angle(self, amount):
@@ -305,18 +316,20 @@ class App:
 
         frame_copy = self.original_frame.copy()
         
-        # Draw line
+        # Draw main line
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg, color=(0, 0, 255), thickness=2)
         
         # Draw probe line
         probe_offset = 20
-        frame_with_line = draw_hough_line(frame_with_line, rho + probe_offset, theta_deg, color=(0, 255, 0), thickness=2)
+        probe_rho = rho + probe_offset
+        frame_with_line = draw_hough_line(frame_with_line, probe_rho, theta_deg, color=(0, 255, 0), thickness=2)
 
         # Draw a green dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
 
-        # Calculate Std Dev
-        std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        # Get metrics for both lines
+        std_dev, _, main_pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        _, _, probe_pixel_values = get_line_metrics(self.original_frame, probe_rho, theta_deg, self.args.num_samples)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -328,7 +341,7 @@ class App:
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         # --- Update the pixel plot ---
-        self.draw_pixel_plot(pixel_values)
+        self.draw_pixel_plot(main_pixel_values, probe_pixel_values)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
