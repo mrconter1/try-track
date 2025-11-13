@@ -12,25 +12,38 @@ class GlobalMap:
     """Manages the state of the incrementally built global tile map."""
     def __init__(self):
         self.tiles: Dict[Tuple[int, int], np.ndarray] = {}
+        self.stable_tiles: Dict[Tuple[int, int], np.ndarray] = {}
         self.current_pos = (0, 0)
 
     def add_tiles_from_frame(self, frame_tiles: Dict[Tuple[int, int], np.ndarray], frame_offset: Tuple[int, int]):
-        """Adds new, unseen tiles from a frame to the global map."""
-        for (r, c), tile_img in frame_tiles.items():
+        """
+        Adds tiles from a frame to the global map.
+        - The primary `self.tiles` map is always updated with the latest tile.
+        - The `self.stable_tiles` map only updates if the new tile has a lower std deviation.
+        """
+        for (r, c), new_tile in frame_tiles.items():
             global_r = self.current_pos[0] + r + frame_offset[0]
             global_c = self.current_pos[1] + c + frame_offset[1]
-            self.tiles[(global_r, global_c)] = tile_img
+            global_pos = (global_r, global_c)
 
-    def render_map(self, 
-                   highlight_tiles: Optional[Dict[Tuple[int, int], np.ndarray]] = None,
-                   frame_offset: Optional[Tuple[int, int]] = (0,0)
-                  ) -> np.ndarray:
-        """Renders the current state of the global map into a single image."""
+            # Always update the main tile map with the latest view
+            self.tiles[global_pos] = new_tile
 
-        all_keys = list(self.tiles.keys())
+            # Update the stable map only if the new tile is "better" (lower std dev)
+            new_tile_std = np.std(new_tile)
+            if global_pos not in self.stable_tiles or new_tile_std < np.std(self.stable_tiles[global_pos]):
+                self.stable_tiles[global_pos] = new_tile
+
+    def _render_single_map(self, 
+                           tiles_to_render: Dict[Tuple[int, int], np.ndarray],
+                           highlight_tiles: Optional[Dict[Tuple[int, int], np.ndarray]] = None,
+                           frame_offset: Optional[Tuple[int, int]] = (0,0)
+                          ) -> np.ndarray:
+        """Helper function to render one version of the map."""
+        
+        all_keys = list(self.tiles.keys()) # Base size on the main map
         if highlight_tiles:
             for r, c in highlight_tiles.keys():
-                # Calculate the prospective global position for highlighting
                 global_r = self.current_pos[0] + r + frame_offset[0]
                 global_c = self.current_pos[1] + c + frame_offset[1]
                 all_keys.append((global_r, global_c))
@@ -48,39 +61,63 @@ class GlobalMap:
         
         vis_map = np.full((map_h, map_w, 3), 40, dtype=np.uint8)
 
-        for (r, c), tile_img in self.tiles.items():
+        for (r, c), tile_img in tiles_to_render.items():
+            if r < min_r or r > max_r or c < min_c or c > max_c:
+                continue
             y = (r - min_r) * TILE_DISPLAY_SIZE
             x = (c - min_c) * TILE_DISPLAY_SIZE
             vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = tile_img
         
-        # Draw highlighted tiles (the current frame's match)
-        if highlight_tiles and frame_offset:
+        # Highlight current frame on the main map only
+        if highlight_tiles and frame_offset and tiles_to_render is self.tiles:
             for (r, c), tile_img in highlight_tiles.items():
                 global_r = self.current_pos[0] + r + frame_offset[0]
                 global_c = self.current_pos[1] + c + frame_offset[1]
-                
+                if global_r < min_r or global_r > max_r or global_c < min_c or global_c > max_c:
+                    continue
                 y = (global_r - min_r) * TILE_DISPLAY_SIZE
                 x = (global_c - min_c) * TILE_DISPLAY_SIZE
-
-                # Blend the new tile with the background for visualization
                 if (global_r, global_c) in self.tiles:
-                    # If it overlaps, blend with existing tile
                     existing_tile = vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE]
                     vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = cv2.addWeighted(existing_tile, 0.5, tile_img, 0.5, 0)
                 else:
-                    # Otherwise, just place it
                     vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = tile_img
-
-                # Draw a bright green rectangle to highlight it
                 cv2.rectangle(vis_map, (x, y), (x + TILE_DISPLAY_SIZE - 1, y + TILE_DISPLAY_SIZE - 1), (0, 255, 0), 2)
-
-        # Draw a dot for the current position
+        
         pos_r, pos_c = self.current_pos
-        dot_y = (pos_r - min_r) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
-        dot_x = (pos_c - min_c) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
-        cv2.circle(vis_map, (dot_x, dot_y), radius=10, color=(255, 0, 0), thickness=-1) # Blue dot
-
+        if min_r <= pos_r <= max_r and min_c <= pos_c <= max_c:
+            dot_y = (pos_r - min_r) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
+            dot_x = (pos_c - min_c) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
+            cv2.circle(vis_map, (dot_x, dot_y), radius=10, color=(255, 0, 0), thickness=-1)
+        
         return vis_map
+
+    def render_map(self, 
+                   highlight_tiles: Optional[Dict[Tuple[int, int], np.ndarray]] = None,
+                   frame_offset: Optional[Tuple[int, int]] = (0,0)
+                  ) -> np.ndarray:
+        """Renders both the live and stable maps and stitches them side-by-side."""
+        
+        live_map_vis = self._render_single_map(self.tiles, highlight_tiles, frame_offset)
+        stable_map_vis = self._render_single_map(self.stable_tiles)
+
+        # Ensure both maps have the same height for clean stitching
+        h1, w1, _ = live_map_vis.shape
+        h2, w2, _ = stable_map_vis.shape
+        target_h = max(h1, h2)
+
+        if h1 < target_h:
+            live_map_vis = cv2.copyMakeBorder(live_map_vis, 0, target_h - h1, 0, 0, cv2.BORDER_CONSTANT, value=[40, 40, 40])
+        if h2 < target_h:
+            stable_map_vis = cv2.copyMakeBorder(stable_map_vis, 0, target_h - h2, 0, 0, cv2.BORDER_CONSTANT, value=[40, 40, 40])
+        
+        # Add labels to each map
+        cv2.putText(live_map_vis, "Live Map", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+        cv2.putText(stable_map_vis, "Stable Map (Lowest Std Dev)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+        # Stitch them together
+        combined_view = np.hstack((live_map_vis, stable_map_vis))
+        return combined_view
 
 class FrameProcessor:
     """Handles video loading and processing of individual frames."""
