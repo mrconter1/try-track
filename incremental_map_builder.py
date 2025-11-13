@@ -281,7 +281,7 @@ def main(args):
 
         cv2.imshow(window_name, final_canvas)
         
-        key = cv2.waitKey(0) & 0xFF
+        key = cv2.waitKey(1) & 0xFF
         if key in (27, ord('q')):
             break
         frame_idx += 1
