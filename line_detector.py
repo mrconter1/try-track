@@ -3,7 +3,7 @@ import numpy as np
 import time
 
 class LineDetector:
-    def __init__(self, canny_low=30, canny_high=100, hough_threshold=150, line_merge_dist=30, line_merge_angle=5, scale=0.5):
+    def __init__(self, canny_low=30, canny_high=100, hough_threshold=150, line_merge_dist=50, line_merge_angle=5, scale=0.5):
         """Initialize line detector for grid lines"""
         self.canny_low = canny_low
         self.canny_high = canny_high
@@ -15,20 +15,45 @@ class LineDetector:
     def detect_lines(self, frame):
         """Main pipeline: detect grid lines"""
         start_time = time.time()
+        h, w = frame.shape[:2]
         
         gray = self._preprocess(frame)
         edges = self._detect_edges(gray)
-        lines = self._detect_hough_lines(edges)
-        lines = self._merge_lines(lines)
+        raw_lines = self._detect_hough_lines(edges)
+
+        print("\n[LINE_DETECTOR] Raw Lines Detected:")
+        if not raw_lines:
+            print("  None")
+        else:
+            # Sort lines by theta for easier comparison
+            sorted_raw_lines = sorted(raw_lines, key=lambda l: l[1])
+            for i, (rho, theta) in enumerate(sorted_raw_lines):
+                rho_scaled = rho / self.scale if self.scale < 1.0 else rho
+                x1, y1, x2, y2 = self._line_to_frame_edges(rho_scaled, theta, w, h)
+                print(f"  - Raw Line {i:2d}: rho={rho:8.2f}, theta={np.rad2deg(theta):6.2f} deg | pts=({x1},{y1})->({x2},{y2})")
+
+        merged_lines = self._merge_lines(raw_lines)
+        
+        print("[LINE_DETECTOR] Merged Lines:")
+        if not merged_lines:
+            print("  None")
+        else:
+            sorted_merged_lines = sorted(merged_lines, key=lambda l: l[1])
+            for i, (rho, theta) in enumerate(sorted_merged_lines):
+                rho_scaled = rho / self.scale if self.scale < 1.0 else rho
+                # Note: Merged lines are already denormalized, so we can draw them directly
+                x1, y1, x2, y2 = self._line_to_frame_edges(rho_scaled, theta, w, h)
+                print(f"  - Merged Line {i:2d}: rho={rho:8.2f}, theta={np.rad2deg(theta):6.2f} deg | pts=({x1},{y1})->({x2},{y2})")
+        
         # Scale rho values back to original frame size
         if self.scale < 1.0:
-            lines = [(rho / self.scale, theta) for rho, theta in lines]
-        labeled_frame = self._draw_lines(frame.copy(), lines)
+            merged_lines = [(rho / self.scale, theta) for rho, theta in merged_lines]
+        labeled_frame = self._draw_lines(frame.copy(), merged_lines)
         
         elapsed_ms = (time.time() - start_time) * 1000
-        print(f"[LINE_DETECTOR] Frame processed in {elapsed_ms:.2f}ms | Lines detected: {len(lines)}")
+        print(f"[LINE_DETECTOR] Frame processed in {elapsed_ms:.2f}ms | Raw: {len(raw_lines)}, Merged: {len(merged_lines)}")
         
-        return labeled_frame, lines
+        return labeled_frame, merged_lines
     
     def _preprocess(self, frame):
         """Step 1: Convert to grayscale, blur, and downscale"""
@@ -68,41 +93,49 @@ class LineDetector:
         if not lines:
             return []
         
+        # Step 4a: Normalize angles to handle the 0/180 degree wrap-around.
+        # This brings all horizontal-ish lines into a consistent range near 0 degrees.
+        normalized_lines = []
+        for rho, theta in lines:
+            if np.rad2deg(theta) > 135.0:  # e.g., 179 deg
+                normalized_lines.append((-rho, theta - np.pi))  # Becomes -1 deg
+            else:
+                normalized_lines.append((rho, theta))
+
         merged = []
         used = set()
         
-        for i, (rho1, theta1) in enumerate(lines):
+        for i, (rho1, theta1) in enumerate(normalized_lines):
             if i in used:
                 continue
             
-            # Convert theta to degrees for comparison
-            theta1_deg = theta1 * 180 / np.pi
+            theta1_deg = np.rad2deg(theta1)
             
-            # Find all lines similar to this one
             similar = [(rho1, theta1)]
             used.add(i)
             
-            for j, (rho2, theta2) in enumerate(lines):
+            for j, (rho2, theta2) in enumerate(normalized_lines):
                 if j in used or i == j:
                     continue
                 
-                theta2_deg = theta2 * 180 / np.pi
+                theta2_deg = np.rad2deg(theta2)
                 
-                # Check if lines are parallel (similar angle)
-                angle_diff = min(abs(theta1_deg - theta2_deg), 180 - abs(theta1_deg - theta2_deg))
-                
-                # Check if lines are close in distance
+                # With normalized angles, a simple absolute difference works
+                angle_diff = abs(theta1_deg - theta2_deg)
                 rho_diff = abs(rho1 - rho2)
                 
-                # Merge if both angle and distance are similar
                 if angle_diff < self.line_merge_angle and rho_diff < self.line_merge_dist:
                     similar.append((rho2, theta2))
                     used.add(j)
             
-            # Average the similar lines
             avg_rho = np.mean([line[0] for line in similar])
             avg_theta = np.mean([line[1] for line in similar])
-            merged.append((avg_rho, avg_theta))
+            
+            # De-normalize the averaged line to bring it back to the standard 0-180 range
+            if avg_theta < 0:
+                merged.append((-avg_rho, avg_theta + np.pi))
+            else:
+                merged.append((avg_rho, avg_theta))
         
         return merged
     
