@@ -1,332 +1,167 @@
-import argparse
 import cv2
 import numpy as np
+import argparse
+from typing import Dict, Tuple, Optional, List
 
 from line_detector import LineDetector
+from auto_tile_detector import extract_grid_squares, extract_and_warp_square
 
+TILE_DISPLAY_SIZE = 80
 
-def line_intersection(rho1, theta1, rho2, theta2):
-    """Find intersection of two lines defined by (rho, theta)"""
-    a1 = np.cos(theta1)
-    b1 = np.sin(theta1)
-    a2 = np.cos(theta2)
-    b2 = np.sin(theta2)
+class GlobalMap:
+    """Manages the state of the incrementally built global tile map."""
+    def __init__(self):
+        self.tiles: Dict[Tuple[int, int], np.ndarray] = {}
+        self.current_pos = (0, 0)
 
-    denom = a1 * b2 - a2 * b1
-    if abs(denom) < 1e-6:
-        return None
+    def add_tiles_from_frame(self, frame_tiles: Dict[Tuple[int, int], np.ndarray], frame_offset: Tuple[int, int]):
+        """Adds new, unseen tiles from a frame to the global map."""
+        for (r, c), tile_img in frame_tiles.items():
+            global_r = self.current_pos[0] + r + frame_offset[0]
+            global_c = self.current_pos[1] + c + frame_offset[1]
+            if (global_r, global_c) not in self.tiles:
+                self.tiles[(global_r, global_c)] = tile_img
 
-    x = (rho1 * b2 - rho2 * b1) / denom
-    y = (a1 * rho2 - a2 * rho1) / denom
+    def render_map(self) -> np.ndarray:
+        """Renders the current state of the global map into a single image."""
+        if not self.tiles:
+            return np.full((400, 400, 3), 60, dtype=np.uint8)
 
-    return (int(x), int(y))
+        min_r = min(r for r, c in self.tiles.keys())
+        max_r = max(r for r, c in self.tiles.keys())
+        min_c = min(c for r, c in self.tiles.keys())
+        max_c = max(c for r, c in self.tiles.keys())
 
+        map_h = (max_r - min_r + 1) * TILE_DISPLAY_SIZE
+        map_w = (max_c - min_c + 1) * TILE_DISPLAY_SIZE
+        
+        vis_map = np.full((map_h, map_w, 3), 40, dtype=np.uint8)
 
-def find_line_crossings(lines, frame_shape):
-    """Find all intersections between horizontal and vertical lines with grid indices."""
-    if len(lines) < 2:
-        return [], []
+        for (r, c), tile_img in self.tiles.items():
+            y = (r - min_r) * TILE_DISPLAY_SIZE
+            x = (c - min_c) * TILE_DISPLAY_SIZE
+            vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = tile_img
+        
+        return vis_map
 
-    h, w = frame_shape[:2]
-    crossings = []
+class FrameProcessor:
+    """Handles video loading and processing of individual frames."""
+    def __init__(self, video_path: str):
+        self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open video {video_path}")
+        self.line_detector = LineDetector()
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Group lines into horizontal and vertical
-    horizontal = []
-    vertical = []
+    def get_frame(self, index: int) -> Optional[np.ndarray]:
+        if index < 0 or index >= self.total_frames:
+            return None
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ret, frame = self.cap.read()
+        return frame if ret else None
 
-    for rho, theta in lines:
-        theta_deg = theta * 180 / np.pi
-        theta_deg = theta_deg % 180
+    def extract_tiles(self, frame: np.ndarray) -> Dict[Tuple[int, int], np.ndarray]:
+        """Extracts warped tiles from a single frame."""
+        tiles = {}
+        try:
+            _, lines = self.line_detector.detect_lines(frame)
+            grid_map = extract_grid_squares(lines, frame.shape[:2]) if lines is not None else {}
+            for (r, c), square in grid_map.items():
+                warped = extract_and_warp_square(frame, square)
+                if warped is not None and warped.size > 0:
+                    resized = cv2.resize(warped, (TILE_DISPLAY_SIZE, TILE_DISPLAY_SIZE))
+                    tiles[(r, c)] = resized
+        except Exception:
+            pass # Ignore frames where detection fails
+        return tiles
 
-        # Angles close to 90 degrees are horizontal
-        if 45 < theta_deg < 135:
-            horizontal.append((rho, theta))
-        # Angles close to 0 or 180 degrees are vertical
-        else:
-            vertical.append((rho, theta))
+    def release(self):
+        self.cap.release()
 
-    # Sort horizontal lines top-to-bottom
-    def get_y_intercept(line, width):
-        rho, theta = line
-        if np.sin(theta) != 0:
-            return (rho - (width / 2) * np.cos(theta)) / np.sin(theta)
-        return float('inf')
+def find_best_offset(
+    global_map: GlobalMap,
+    frame_tiles: Dict[Tuple[int, int], np.ndarray],
+    search_range: int = 3
+) -> Tuple[int, int]:
+    """Finds the best offset for a new frame against the global map."""
+    best_offset = (0, 0)
+    min_avg_diff = float('inf')
 
-    horizontal.sort(key=lambda line: get_y_intercept(line, w))
+    for r_offset in range(-search_range, search_range + 1):
+        for c_offset in range(-search_range, search_range + 1):
+            
+            total_diff = 0
+            overlap_count = 0
 
-    # Sort vertical lines left-to-right
-    def get_x_intercept(line, height):
-        rho, theta = line
-        if np.cos(theta) != 0:
-            return (rho - (height / 2) * np.sin(theta)) / np.cos(theta)
-        return float('inf')
+            for (r, c), frame_tile in frame_tiles.items():
+                global_r = global_map.current_pos[0] + r + r_offset
+                global_c = global_map.current_pos[1] + c + c_offset
 
-    vertical.sort(key=lambda line: get_x_intercept(line, h))
+                if (global_r, global_c) in global_map.tiles:
+                    global_tile = global_map.tiles[(global_r, global_c)]
+                    diff = np.sum(np.abs(frame_tile.astype(np.float32) - global_tile.astype(np.float32)))
+                    total_diff += diff
+                    overlap_count += 1
+            
+            if overlap_count > 0:
+                avg_diff = total_diff / (overlap_count * TILE_DISPLAY_SIZE * TILE_DISPLAY_SIZE * 3)
+                if avg_diff < min_avg_diff:
+                    min_avg_diff = avg_diff
+                    best_offset = (r_offset, c_offset)
 
-    # Find all intersections with grid indices
-    grid_crossings = []
-    for i, (rho_h, theta_h) in enumerate(horizontal):
-        for j, (rho_v, theta_v) in enumerate(vertical):
-            intersection = line_intersection(rho_h, theta_h, rho_v, theta_v)
-            if intersection is not None:
-                x, y = intersection
-                # Only keep intersections within frame bounds
-                if 0 <= x < w and 0 <= y < h:
-                    crossings.append((x, y))
-                    grid_crossings.append(((x, y), (i, j)))
+    return best_offset
 
-    return crossings, grid_crossings
-
-
-def compute_unwarp_homography(grid_crossings, tile_size=100):
-    """Compute homography to unwarp perspective to top-down view."""
-    if len(grid_crossings) < 4:
-        return None
-
-    src_points = []
-    dst_points = []
-
-    for (x, y), (i, j) in grid_crossings:
-        src_points.append([x, y])
-        dst_points.append([j * tile_size, i * tile_size])
-
-    src_points = np.array(src_points, dtype=np.float32)
-    dst_points = np.array(dst_points, dtype=np.float32)
-
-    H, mask = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
-    return H
-
-
-def build_incremental_map(
-    video_path: str,
-    scale: float = 0.5,
-    tile_size: int = 100,
-    max_frames: int = None,
-    frame_step: int = 1,
-):
-    """Build global map incrementally: detect -> unwarp -> find offset -> composite."""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"Error: Could not open video '{video_path}'")
-        return
-
-    detector = LineDetector(scale=scale)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if max_frames is not None:
-        total_frames = min(total_frames, max_frames)
-    
-    print(f"Processing up to {total_frames} frames (step={frame_step})...")
-    
-    global_map = None
-    prev_unwarped = None
-    global_offset_x = 0
-    global_offset_y = 0
-    frame_index = 0
+def main(args):
+    processor = FrameProcessor(args.video)
+    global_map = GlobalMap()
     
     window_name = "Incremental Map Builder"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 1600, 900)
-    
-    while frame_index < total_frames:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-        ret, frame = cap.read()
-        if not ret or frame is None:
+
+    frame_idx = 0
+    while frame_idx < processor.total_frames:
+        frame = processor.get_frame(frame_idx)
+        if frame is None:
             break
-        
-        # Detect lines
-        import sys
-        from io import StringIO
-        old_stdout = sys.stdout
-        sys.stdout = StringIO()
-        _, lines = detector.detect_lines(frame)
-        sys.stdout = old_stdout
-        
-        # Find crossings and compute homography
-        crossings, grid_crossings = find_line_crossings(lines, frame.shape[:2])
-        H = compute_unwarp_homography(grid_crossings, tile_size=tile_size)
-        
-        if H is not None and len(grid_crossings) > 0:
-            # Compute output size
-            max_i = max(i for (x, y), (i, j) in grid_crossings)
-            max_j = max(j for (x, y), (i, j) in grid_crossings)
-            output_width = (max_j + 1) * tile_size
-            output_height = (max_i + 1) * tile_size
-            
-            # Unwarp
-            unwarped = cv2.warpPerspective(frame, H, (output_width, output_height))
-            
-            if global_map is None:
-                # First frame: initialize
-                global_map = unwarped.copy()
-                prev_unwarped = unwarped.copy()
-                global_offset_x = 0
-                global_offset_y = 0
-                print(f"Frame {frame_index}: initialized map {output_width}x{output_height}")
-            else:
-                # Find translation offset using phase correlation
-                prev_gray = cv2.cvtColor(prev_unwarped, cv2.COLOR_BGR2GRAY)
-                curr_gray = cv2.cvtColor(unwarped, cv2.COLOR_BGR2GRAY)
-                
-                if prev_gray.shape == curr_gray.shape:
-                    shift, response = cv2.phaseCorrelate(prev_gray.astype(np.float32), curr_gray.astype(np.float32))
-                    dx, dy = int(shift[0]), int(shift[1])
-                else:
-                    # Fallback: use ORB if sizes differ
-                    orb = cv2.ORB_create(500)
-                    kp1, des1 = orb.detectAndCompute(prev_gray, None)
-                    kp2, des2 = orb.detectAndCompute(curr_gray, None)
-                    
-                    if des1 is not None and des2 is not None and len(des1) > 10 and len(des2) > 10:
-                        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-                        matches = bf.match(des1, des2)
-                        matches = sorted(matches, key=lambda x: x.distance)
-                        
-                        if len(matches) > 10:
-                            pts1 = np.float32([kp1[m.queryIdx].pt for m in matches[:10]])
-                            pts2 = np.float32([kp2[m.trainIdx].pt for m in matches[:10]])
-                            offsets = pts1 - pts2
-                            dx, dy = int(np.median(offsets[:, 0])), int(np.median(offsets[:, 1]))
-                        else:
-                            dx, dy = 0, 0
-                    else:
-                        dx, dy = 0, 0
-                
-                # Calculate where current frame should be placed in global coordinates
-                paste_x = global_offset_x + dx
-                paste_y = global_offset_y + dy
-                
-                # Expand global map if needed
-                h_global, w_global = global_map.shape[:2]
-                h_curr, w_curr = unwarped.shape[:2]
-                
-                new_left = min(0, paste_x)
-                new_top = min(0, paste_y)
-                new_right = max(w_global, paste_x + w_curr)
-                new_bottom = max(h_global, paste_y + h_curr)
-                
-                new_width = new_right - new_left
-                new_height = new_bottom - new_top
-                
-                if new_width != w_global or new_height != h_global or new_left < 0 or new_top < 0:
-                    # Need to expand canvas
-                    expanded_map = np.zeros((new_height, new_width, 3), dtype=np.uint8)
-                    
-                    # Copy existing global map to expanded canvas
-                    offset_x_in_expanded = -new_left
-                    offset_y_in_expanded = -new_top
-                    expanded_map[offset_y_in_expanded:offset_y_in_expanded + h_global,
-                               offset_x_in_expanded:offset_x_in_expanded + w_global] = global_map
-                    
-                    global_map = expanded_map
-                    global_offset_x += offset_x_in_expanded
-                    global_offset_y += offset_y_in_expanded
-                    paste_x += offset_x_in_expanded
-                    paste_y += offset_y_in_expanded
-                
-                # Create mask for areas that are already filled in global map
-                global_gray = cv2.cvtColor(global_map, cv2.COLOR_BGR2GRAY)
-                filled_mask = (global_gray > 0).astype(np.uint8)
-                
-                # Paste current frame, only overwriting black (unfilled) areas
-                for y in range(h_curr):
-                    for x in range(w_curr):
-                        global_y = paste_y + y
-                        global_x = paste_x + x
-                        if 0 <= global_y < global_map.shape[0] and 0 <= global_x < global_map.shape[1]:
-                            if filled_mask[global_y, global_x] == 0:
-                                global_map[global_y, global_x] = unwarped[y, x]
-                
-                # Update cumulative offset for next frame
-                global_offset_x = paste_x
-                global_offset_y = paste_y
-                
-                print(f"Frame {frame_index}: offset=({dx},{dy}), map size={global_map.shape[1]}x{global_map.shape[0]}")
-                
-                prev_unwarped = unwarped.copy()
-            
-            # Display current global map (scaled to fit fixed window)
-            if global_map is not None:
-                h, w = global_map.shape[:2]
-                window_w, window_h = 1600, 900
-                scale_factor = min(window_w / w, window_h / h)
-                if scale_factor < 1.0:
-                    display = cv2.resize(global_map, (int(w * scale_factor), int(h * scale_factor)))
-                else:
-                    display = global_map
-                
-                cv2.imshow(window_name, display)
-                cv2.waitKey(1)
+
+        frame_tiles = processor.extract_tiles(frame)
+
+        if not frame_tiles:
+            print(f"Frame {frame_idx}: No tiles found, skipping.")
+            frame_idx += 1
+            continue
+
+        if not global_map.tiles: # First frame
+            best_offset = (0, 0)
         else:
-            print(f"Frame {frame_index}: insufficient crossings, skipping")
+            best_offset = find_best_offset(global_map, frame_tiles)
+
+        global_map.add_tiles_from_frame(frame_tiles, best_offset)
+        global_map.current_pos = (
+            global_map.current_pos[0] + best_offset[0],
+            global_map.current_pos[1] + best_offset[1]
+        )
+
+        map_vis = global_map.render_map()
+        cv2.putText(map_vis, f"Frame: {frame_idx}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(map_vis, f"Current Offset: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+        cv2.imshow(window_name, map_vis)
         
-        frame_index += frame_step
-    
-    cap.release()
-    
-    if global_map is None:
-        print("No valid frames to build map.")
-        cv2.destroyAllWindows()
-        return
-    
-    print(f"\nFinal map size: {global_map.shape[1]}x{global_map.shape[0]}")
-    cv2.imwrite("incremental_map.png", global_map)
-    print("Saved map to incremental_map.png")
-    
-    # Display final result
-    h, w = global_map.shape[:2]
-    max_display = 1600
-    if w > max_display or h > max_display:
-        scale_factor = min(max_display / w, max_display / h)
-        display = cv2.resize(global_map, (int(w * scale_factor), int(h * scale_factor)))
-    else:
-        display = global_map
-    
-    cv2.imshow(window_name, display)
-    print("Press any key to close...")
-    cv2.waitKey(0)
+        key = cv2.waitKey(0) & 0xFF
+        if key in (27, ord('q')):
+            break
+        frame_idx += 1
+
+    processor.release()
     cv2.destroyAllWindows()
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Build incremental map: detect grid -> unwarp -> find translation -> composite"
-    )
-    parser.add_argument("--video", type=str, default="video.mp4", help="Video file to process")
-    parser.add_argument(
-        "--scale",
-        type=float,
-        default=0.5,
-        help="Downscale factor for line detection (default=0.5)",
-    )
-    parser.add_argument(
-        "--tile-size",
-        type=int,
-        default=100,
-        help="Size of each tile in pixels for unwarped view (default=100)",
-    )
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=None,
-        help="Maximum number of frames to process (default=all)",
-    )
-    parser.add_argument(
-        "--frame-step",
-        type=int,
-        default=1,
-        help="Process every Nth frame (default=1, process all frames)",
-    )
+def parse_args():
+    parser = argparse.ArgumentParser(description="Incrementally build a map from video frames.")
+    parser.add_argument("--video", type=str, default="video.mp4", help="Path to input video file")
     return parser.parse_args()
-
 
 if __name__ == "__main__":
     args = parse_args()
-    build_incremental_map(
-        video_path=args.video,
-        scale=args.scale,
-        tile_size=args.tile_size,
-        max_frames=args.max_frames,
-        frame_step=args.frame_step,
-    )
+    main(args)
 
