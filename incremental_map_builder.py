@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import argparse
 from typing import Dict, Tuple, Optional, List
+import tkinter as tk
 
 from line_detector import LineDetector
 from auto_tile_detector import extract_grid_squares, extract_and_warp_square
@@ -197,6 +198,19 @@ def main(args):
     window_name = "Incremental Map Builder"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
+    # Get screen dimensions and set window to fullscreen
+    try:
+        root = tk.Tk()
+        root.withdraw() # Hide the main window
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        root.destroy()
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    except tk.TclError:
+        # Fallback for environments without a display
+        print("Warning: Could not get screen dimensions. Auto-zoom may not work as expected.")
+        screen_w, screen_h = 1920, 1080 # Default fallback
+
     frame_idx = 0
     while frame_idx < processor.total_frames:
         frame = processor.get_frame(frame_idx)
@@ -241,10 +255,31 @@ def main(args):
                 map_vis = global_map.render_map() # Render without highlights
 
 
-        cv2.putText(map_vis, f"Frame: {frame_idx}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        cv2.putText(map_vis, f"Current Position: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        # Auto-zoom and display logic
+        map_h, map_w, _ = map_vis.shape
+        display_img = map_vis
+        
+        # Scale down if map is larger than screen, preserving aspect ratio (with 5% padding)
+        scale_factor = min(screen_h / map_h, screen_w / map_w) * 0.95
+        if scale_factor < 1.0:
+            target_w = int(map_w * scale_factor)
+            target_h = int(map_h * scale_factor)
+            display_img = cv2.resize(map_vis, (target_w, target_h), interpolation=cv2.INTER_AREA)
 
-        cv2.imshow(window_name, map_vis)
+        # Create a black background the size of the screen
+        final_canvas = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
+
+        # Paste the (potentially scaled) map onto the center of the canvas
+        disp_h, disp_w, _ = display_img.shape
+        y_offset = (screen_h - disp_h) // 2
+        x_offset = (screen_w - disp_w) // 2
+        final_canvas[y_offset:y_offset+disp_h, x_offset:x_offset+disp_w] = display_img
+
+        # Add frame and position text to the final canvas, ensuring it's always visible
+        cv2.putText(final_canvas, f"Frame: {frame_idx}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(final_canvas, f"Current Position: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+        cv2.imshow(window_name, final_canvas)
         
         key = cv2.waitKey(0) & 0xFF
         if key in (27, ord('q')):
