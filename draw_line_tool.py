@@ -198,7 +198,8 @@ class App:
             for i in range(num_samples):
                 cx = np.random.uniform(cx_min, cx_max)
                 cy = np.random.uniform(cy_min, cy_max)
-                angle = np.random.uniform(angle_min, angle_max)
+                angle_raw = np.random.uniform(angle_min, angle_max)
+                angle = angle_raw % 180.0
 
                 # Convert to rho/theta for metrics calculation
                 theta_deg = (angle + 90) % 180
@@ -341,8 +342,19 @@ class App:
 
 def main(args):
     """Main function to load frame and launch the GUI."""
-    if not (len(args.position_ranges) == len(args.angle_ranges) == len(args.num_search_samples)):
-        print("Error: The number of arguments for --position-ranges, --angle-ranges, and --num-search-samples must be the same.")
+    num_pos_ranges = len(args.position_ranges)
+    num_angle_ranges = len(args.angle_ranges)
+    num_samples_list = len(args.num_search_samples)
+
+    if num_pos_ranges != num_angle_ranges:
+        print("Error: --position-ranges and --angle-ranges must have the same number of arguments.")
+        return
+
+    if num_samples_list == 1:
+        # If one sample count is given, repeat it for all iterations
+        args.num_search_samples = args.num_search_samples * num_pos_ranges
+    elif num_samples_list != num_pos_ranges:
+        print("Error: --num-search-samples must have either 1 argument, or the same number of arguments as the range lists.")
         return
 
     cap = cv2.VideoCapture(args.video)
