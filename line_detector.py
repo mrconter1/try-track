@@ -55,6 +55,28 @@ class LineDetector:
         
         return labeled_frame, merged_lines
     
+    def detect_lines_raw(self, frame):
+        """Detect grid lines but skip the line merging step"""
+        start_time = time.time()
+        h, w = frame.shape[:2]
+        
+        gray = self._preprocess(frame)
+        edges = self._detect_edges(gray)
+        raw_lines = self._detect_hough_lines(edges)
+        
+        # Scale rho values back to original frame size
+        if self.scale < 1.0:
+            final_lines = [(rho / self.scale, theta) for rho, theta in raw_lines]
+        else:
+            final_lines = raw_lines
+
+        labeled_frame = self._draw_lines(frame.copy(), final_lines)
+        
+        elapsed_ms = (time.time() - start_time) * 1000
+        # print(f"[LINE_DETECTOR_RAW] Frame processed in {elapsed_ms:.2f}ms | Raw: {len(raw_lines)}")
+        
+        return labeled_frame, raw_lines
+    
     def _preprocess(self, frame):
         """Step 1: Convert to grayscale, blur, and downscale"""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

@@ -38,7 +38,7 @@ def main(args):
         
         # We only care about the labeled frame and the raw lines for this debugger
         # The detect_lines function has been modified to return raw lines
-        labeled_frame, raw_lines = detector.detect_lines(frame)
+        labeled_frame, raw_lines = detector.detect_lines_raw(frame)
 
         if not raw_lines:
             print("No lines detected.")
