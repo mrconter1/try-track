@@ -22,15 +22,27 @@ class GlobalMap:
             if (global_r, global_c) not in self.tiles:
                 self.tiles[(global_r, global_c)] = tile_img
 
-    def render_map(self) -> np.ndarray:
+    def render_map(self, 
+                   highlight_tiles: Optional[Dict[Tuple[int, int], np.ndarray]] = None,
+                   frame_offset: Optional[Tuple[int, int]] = (0,0)
+                  ) -> np.ndarray:
         """Renders the current state of the global map into a single image."""
-        if not self.tiles:
+
+        all_keys = list(self.tiles.keys())
+        if highlight_tiles:
+            for r, c in highlight_tiles.keys():
+                # Calculate the prospective global position for highlighting
+                global_r = self.current_pos[0] + r + frame_offset[0]
+                global_c = self.current_pos[1] + c + frame_offset[1]
+                all_keys.append((global_r, global_c))
+
+        if not all_keys:
             return np.full((400, 400, 3), 60, dtype=np.uint8)
 
-        min_r = min(r for r, c in self.tiles.keys())
-        max_r = max(r for r, c in self.tiles.keys())
-        min_c = min(c for r, c in self.tiles.keys())
-        max_c = max(c for r, c in self.tiles.keys())
+        min_r = min(r for r, c in all_keys)
+        max_r = max(r for r, c in all_keys)
+        min_c = min(c for r, c in all_keys)
+        max_c = max(c for r, c in all_keys)
 
         map_h = (max_r - min_r + 1) * TILE_DISPLAY_SIZE
         map_w = (max_c - min_c + 1) * TILE_DISPLAY_SIZE
@@ -42,6 +54,27 @@ class GlobalMap:
             x = (c - min_c) * TILE_DISPLAY_SIZE
             vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = tile_img
         
+        # Draw highlighted tiles (the current frame's match)
+        if highlight_tiles and frame_offset:
+            for (r, c), tile_img in highlight_tiles.items():
+                global_r = self.current_pos[0] + r + frame_offset[0]
+                global_c = self.current_pos[1] + c + frame_offset[1]
+                
+                y = (global_r - min_r) * TILE_DISPLAY_SIZE
+                x = (global_c - min_c) * TILE_DISPLAY_SIZE
+
+                # Blend the new tile with the background for visualization
+                if (global_r, global_c) in self.tiles:
+                    # If it overlaps, blend with existing tile
+                    existing_tile = vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE]
+                    vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = cv2.addWeighted(existing_tile, 0.5, tile_img, 0.5, 0)
+                else:
+                    # Otherwise, just place it
+                    vis_map[y:y + TILE_DISPLAY_SIZE, x:x + TILE_DISPLAY_SIZE] = tile_img
+
+                # Draw a bright green rectangle to highlight it
+                cv2.rectangle(vis_map, (x, y), (x + TILE_DISPLAY_SIZE - 1, y + TILE_DISPLAY_SIZE - 1), (0, 255, 0), 2)
+
         # Draw a dot for the current position
         pos_r, pos_c = self.current_pos
         dot_y = (pos_r - min_r) * TILE_DISPLAY_SIZE + TILE_DISPLAY_SIZE // 2
@@ -144,6 +177,7 @@ def main(args):
         if not global_map.tiles: # First frame
             best_offset = (0, 0)
             print(f"Frame {frame_idx}: Initializing map.")
+            map_vis = global_map.render_map(highlight_tiles=frame_tiles, frame_offset=best_offset)
             global_map.add_tiles_from_frame(frame_tiles, best_offset)
         else:
             sorted_offsets = find_best_offset(global_map, frame_tiles)
@@ -151,6 +185,10 @@ def main(args):
             if sorted_offsets:
                 # A confident match was found
                 best_offset, _, _ = sorted_offsets[0]
+                
+                # Render the map WITH highlights before updating the map state
+                map_vis = global_map.render_map(highlight_tiles=frame_tiles, frame_offset=best_offset)
+
                 global_map.add_tiles_from_frame(frame_tiles, best_offset)
                 global_map.current_pos = (
                     global_map.current_pos[0] + best_offset[0],
@@ -164,9 +202,9 @@ def main(args):
             else:
                 # No confident match found, do not update position or map
                 print(f"Frame {frame_idx}: No confident match found (overlap < 3 tiles). Position held at {global_map.current_pos}")
+                map_vis = global_map.render_map() # Render without highlights
 
 
-        map_vis = global_map.render_map()
         cv2.putText(map_vis, f"Frame: {frame_idx}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         cv2.putText(map_vis, f"Current Position: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
