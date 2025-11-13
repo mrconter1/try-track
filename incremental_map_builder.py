@@ -128,6 +128,7 @@ class FrameProcessor:
             raise RuntimeError(f"Could not open video {video_path}")
         self.line_detector = LineDetector()
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
     def get_frame(self, index: int) -> Optional[np.ndarray]:
         if index < 0 or index >= self.total_frames:
@@ -275,9 +276,20 @@ def main(args):
         x_offset = (screen_w - disp_w) // 2
         final_canvas[y_offset:y_offset+disp_h, x_offset:x_offset+disp_w] = display_img
 
+        # Calculate timestamp for display
+        if processor.fps and processor.fps > 0:
+            timestamp_sec = frame_idx / processor.fps
+            minutes = int(timestamp_sec // 60)
+            seconds = int(timestamp_sec % 60)
+            milliseconds = int((timestamp_sec * 1000) % 1000)
+            timestamp_str = f"Time: {minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        else:
+            timestamp_str = "Time: N/A"
+
         # Add frame and position text to the final canvas, ensuring it's always visible
         cv2.putText(final_canvas, f"Frame: {frame_idx}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         cv2.putText(final_canvas, f"Current Position: {global_map.current_pos}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(final_canvas, timestamp_str, (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
         cv2.imshow(window_name, final_canvas)
         
