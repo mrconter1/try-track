@@ -114,6 +114,7 @@ class App:
         self.root = root
         self.args = args
         self.original_frame = initial_frame
+        self.probe_offset = 20
         
         self.root.title("Hough Line Control")
         
@@ -167,7 +168,7 @@ class App:
         self.cy_label.grid(row=2, column=4, padx=5)
         
         # --- Search Button ---
-        self.search_button = ttk.Button(control_frame, text="Find Darkest Line", command=self.start_darkest_line_search)
+        self.search_button = ttk.Button(control_frame, text="Find Max Difference", command=self.start_line_search)
         self.search_button.grid(row=0, column=5, rowspan=3, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
@@ -200,27 +201,27 @@ class App:
 
         self.update_image()
     
-    def start_darkest_line_search(self):
+    def start_line_search(self):
         """Starts the grid search in a new thread to avoid freezing the GUI."""
         self.search_button.config(state="disabled", text="Searching...")
         
-        # Get the metrics for the current line to set a baseline
+        # Get the current parameters
         angle_deg = self.angle_var.get()
         cx = self.cx_var.get()
         cy = self.cy_var.get()
         
-        theta_deg = (angle_deg + 90) % 180
-        theta_rad = np.deg2rad(theta_deg)
-        rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
-        
-        _, initial_pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        # Get the metrics for the current line to set a baseline
+        main_vals, probe_vals = get_parallel_line_pixel_values(
+            self.original_frame, cx, cy, angle_deg, self.probe_offset, self.args.num_samples
+        )
+        initial_diff_sum = np.nansum(probe_vals - main_vals)
 
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_pixel_sum,))
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_diff_sum,))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self, initial_pixel_sum):
+    def _grid_search_worker(self, initial_diff_sum):
         """The long-running grid search task."""
         center_cx = self.cx_var.get()
         center_cy = self.cy_var.get()
@@ -229,7 +230,7 @@ class App:
         best_cx = center_cx
         best_cy = center_cy
         best_angle = center_angle
-        min_pixel_sum = initial_pixel_sum if initial_pixel_sum is not None else float('inf')
+        max_diff_sum = initial_diff_sum if initial_diff_sum is not None else float('-inf')
 
         iterations = zip(self.args.position_ranges, self.args.angle_ranges, self.args.num_search_samples)
         total_iterations = len(self.args.position_ranges)
@@ -248,15 +249,14 @@ class App:
                 angle_raw = np.random.uniform(angle_min, angle_max)
                 angle = angle_raw % 180.0
 
-                # Convert to rho/theta for metrics calculation
-                theta_deg = (angle + 90) % 180
-                theta_rad = np.deg2rad(theta_deg)
-                rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
+                main_vals, probe_vals = get_parallel_line_pixel_values(
+                    self.original_frame, cx, cy, angle, self.probe_offset, self.args.num_samples
+                )
                 
-                _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+                current_diff_sum = np.nansum(probe_vals - main_vals)
                 
-                if pixel_sum is not None and pixel_sum < min_pixel_sum:
-                    min_pixel_sum = pixel_sum
+                if current_diff_sum > max_diff_sum:
+                    max_diff_sum = current_diff_sum
                     best_cx = cx
                     best_cy = cy
                     best_angle = angle
@@ -270,15 +270,15 @@ class App:
             center_cx, center_cy, center_angle = best_cx, best_cy, best_angle
         
         # When done, schedule an update on the main GUI thread
-        self.root.after(0, self.finish_darkest_line_search, best_cx, best_cy, best_angle)
+        self.root.after(0, self.finish_line_search, best_cx, best_cy, best_angle)
 
-    def finish_darkest_line_search(self, best_cx, best_cy, best_angle):
+    def finish_line_search(self, best_cx, best_cy, best_angle):
         """Updates the GUI with the results from the search."""
         self.cx_var.set(best_cx)
         self.cy_var.set(best_cy)
         self.angle_var.set(best_angle)
         
-        self.search_button.config(state="normal", text="Find Darkest Line")
+        self.search_button.config(state="normal", text="Find Max Difference")
         
         self.update_image()
 
@@ -405,8 +405,7 @@ class App:
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg, color=(0, 0, 255), thickness=2)
         
         # Draw probe line
-        probe_offset = 20
-        probe_rho = rho + probe_offset
+        probe_rho = rho + self.probe_offset
         frame_with_line = draw_hough_line(frame_with_line, probe_rho, theta_deg, color=(0, 255, 0), thickness=2)
 
         # Draw a green dot at the center point
@@ -414,7 +413,7 @@ class App:
 
         # Get metrics for both lines using the new corresponding sample method
         main_pixel_values, probe_pixel_values = get_parallel_line_pixel_values(
-            self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
+            self.original_frame, cx, cy, angle_deg, self.probe_offset, self.args.num_samples
         )
         
         # Calculate the difference
