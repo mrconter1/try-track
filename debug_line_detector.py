@@ -5,8 +5,8 @@ from line_detector import LineDetector
 
 def main(args):
     """
-    A simple script to step through video frames and visualize the raw output
-    of the LineDetector.
+    A script to step through video frames and visualize the raw output
+    of the LineDetector with real-time GUI controls for tuning.
     """
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -22,48 +22,79 @@ def main(args):
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
 
-    # Use the tuned parameters that were giving the best (though still imperfect) results
+    # Initial detector with default values that will be updated by sliders
     detector = LineDetector(
-        canny_low=args.canny_low,
-        canny_high=args.canny_high,
-        hough_threshold=args.hough_threshold,
+        canny_low=10,
+        canny_high=50,
+        hough_threshold=130,
         scale=args.scale
     )
 
+    # --- GUI Setup ---
     window_name = "Line Detector Debugger"
+    controls_window_name = "Controls"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(controls_window_name, cv2.WINDOW_NORMAL)
+
+    def nothing(x):
+        pass
+
+    # Create trackbars
+    cv2.createTrackbar("Hough Threshold", controls_window_name, 130, 500, nothing)
+    cv2.createTrackbar("Canny Low", controls_window_name, 10, 255, nothing)
+    cv2.createTrackbar("Canny High", controls_window_name, 50, 255, nothing)
+    
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Could not read the start frame.")
+        cap.release()
+        return
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("End of video.")
-            break
+        # --- Read GUI values ---
+        hough_threshold = cv2.getTrackbarPos("Hough Threshold", controls_window_name)
+        canny_low = cv2.getTrackbarPos("Canny Low", controls_window_name)
+        canny_high = cv2.getTrackbarPos("Canny High", controls_window_name)
 
-        print(f"\n--- Processing Frame {int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1} ---")
-        
-        # We only care about the labeled frame and the raw lines for this debugger
-        # The detect_lines function has been modified to return raw lines
-        labeled_frame, raw_lines = detector.detect_lines_raw(frame)
+        # Enforce Canny logic: low threshold cannot be higher than high threshold
+        canny_high = max(canny_high, canny_low + 1)
+        cv2.setTrackbarPos("Canny High", controls_window_name, canny_high)
 
-        if not raw_lines:
-            print("No lines detected.")
+        # --- Update detector ---
+        detector.hough_threshold = hough_threshold
+        detector.canny_low = canny_low
+        detector.canny_high = canny_high
+
+        # --- Process and Display ---
+        if frame is not None:
+            current_frame_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+            print(f"\rProcessing Frame: {current_frame_pos} | Hough: {hough_threshold}, Canny: {canny_low}/{canny_high}", end="")
+
+            labeled_frame, _ = detector.detect_lines_raw(frame.copy())
+            cv2.imshow(window_name, labeled_frame)
         else:
-            print("Raw detected lines (rho, theta):")
-            for i, (rho, theta) in enumerate(raw_lines):
-                print(f"  Line {i:02d}: rho={rho:8.2f}, theta={np.rad2deg(theta):7.2f} deg")
+            # Create a blank screen if no frame
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(blank_frame, "End of video", (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.imshow(window_name, blank_frame)
 
-        cv2.imshow(window_name, labeled_frame)
 
-        key = cv2.waitKey(0) & 0xFF
+        # --- Handle Keyboard Input ---
+        key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == 27:  # 'q' or ESC
             break
         elif key == ord('d'):  # 'd' for next frame
-            continue
+            ret, frame = cap.read()
+            if not ret:
+                print("\nEnd of video.")
+                frame = None
         elif key == ord('a'): # 'a' for previous frame
             current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-            # Subtract 2 because we want the frame before the *current* one, and the cap is already at the next frame
             prev_frame_idx = max(0, current_pos - 2)
             cap.set(cv2.CAP_PROP_POS_FRAMES, prev_frame_idx)
+            ret, frame = cap.read()
+            if not ret:
+                frame = None
 
 
     cap.release()
@@ -73,9 +104,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Debug the LineDetector on a video.")
     parser.add_argument("--video", type=str, default="video.mp4", help="Path to the video file.")
     parser.add_argument("--start-frame", type=int, default=0, help="Frame number to start processing from.")
-    parser.add_argument("--hough-threshold", type=int, default=275, help="Hough transform accumulator threshold.")
-    parser.add_argument("--canny-low", type=int, default=30, help="Lower Canny edge detection threshold.")
-    parser.add_argument("--canny-high", type=int, default=100, help="Higher Canny edge detection threshold.")
     parser.add_argument("--scale", type=float, default=0.5, help="Downscaling factor for processing.")
     return parser.parse_args()
 
