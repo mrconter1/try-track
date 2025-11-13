@@ -260,13 +260,18 @@ def show_first_frame_with_grid(
 
     detector = LineDetector(scale=scale)
     window_name = "Grid Detection & Unwarp"
+    window_name_global = "Global Map"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(window_name_global, cv2.WINDOW_NORMAL)
 
     print("Controls: Right arrow → next frame, Left arrow → previous frame, q / Esc → quit")
 
     frame_index = 0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     prev_unwarped = None
+    global_map = None
+    global_offset_x = 0
+    global_offset_y = 0
 
     while True:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
@@ -314,6 +319,64 @@ def show_first_frame_with_grid(
         # Find alignment between previous and current unwarped frames
         rotation, dx, dy, score, curr_aligned = find_best_alignment(prev_unwarped, unwarped)
         alignment_vis = create_alignment_visualization(prev_unwarped, curr_aligned, dx, dy, rotation, score)
+
+        # Update global map with current unwarped frame
+        if global_map is None:
+            # First frame: initialize global map
+            global_map = unwarped.copy()
+            global_offset_x = 0
+            global_offset_y = 0
+        else:
+            # Subsequent frames: composite only non-overlapping regions
+            h_curr, w_curr = unwarped.shape[:2]
+            
+            # Calculate where current frame should be placed in global coordinates
+            paste_x = global_offset_x + dx
+            paste_y = global_offset_y + dy
+            
+            # Expand global map if needed
+            h_global, w_global = global_map.shape[:2]
+            
+            new_left = min(0, paste_x)
+            new_top = min(0, paste_y)
+            new_right = max(w_global, paste_x + w_curr)
+            new_bottom = max(h_global, paste_y + h_curr)
+            
+            new_width = new_right - new_left
+            new_height = new_bottom - new_top
+            
+            if new_width != w_global or new_height != h_global or new_left < 0 or new_top < 0:
+                # Need to expand canvas
+                expanded_map = np.zeros((new_height, new_width, 3), dtype=np.uint8)
+                
+                # Copy existing global map to expanded canvas
+                offset_x_in_expanded = -new_left
+                offset_y_in_expanded = -new_top
+                expanded_map[offset_y_in_expanded:offset_y_in_expanded + h_global,
+                           offset_x_in_expanded:offset_x_in_expanded + w_global] = global_map
+                
+                global_map = expanded_map
+                global_offset_x += offset_x_in_expanded
+                global_offset_y += offset_y_in_expanded
+                paste_x += offset_x_in_expanded
+                paste_y += offset_y_in_expanded
+            
+            # Create mask for areas that are already filled in global map
+            global_gray = cv2.cvtColor(global_map, cv2.COLOR_BGR2GRAY)
+            filled_mask = (global_gray > 0).astype(np.uint8)
+            
+            # Paste current frame, only overwriting black (unfilled) areas
+            for y in range(h_curr):
+                for x in range(w_curr):
+                    global_y = paste_y + y
+                    global_x = paste_x + x
+                    if 0 <= global_y < global_map.shape[0] and 0 <= global_x < global_map.shape[1]:
+                        if filled_mask[global_y, global_x] == 0:
+                            global_map[global_y, global_x] = unwarped[y, x]
+            
+            # Update cumulative offset for next frame
+            global_offset_x = paste_x
+            global_offset_y = paste_y
 
         # Update previous frame
         prev_unwarped = unwarped.copy()
@@ -367,6 +430,24 @@ def show_first_frame_with_grid(
             cv2.resizeWindow(window_name, display_width, display_height)
         cv2.imshow(window_name, display_image)
 
+        # Display global map
+        if global_map is not None:
+            global_h, global_w = global_map.shape[:2]
+            global_scale = min(max_width / global_w, max_height / global_h) if global_w > 0 and global_h > 0 else 1.0
+            if global_scale <= 0:
+                global_scale = 1.0
+            global_display_w = int(round(global_w * global_scale))
+            global_display_h = int(round(global_h * global_scale))
+            
+            if global_display_w > 0 and global_display_h > 0 and global_scale != 1.0:
+                global_display = cv2.resize(global_map, (global_display_w, global_display_h), interpolation=cv2.INTER_CUBIC)
+            else:
+                global_display = global_map
+            
+            if cv2.getWindowProperty(window_name_global, cv2.WND_PROP_VISIBLE) >= 1:
+                cv2.resizeWindow(window_name_global, global_display_w, global_display_h)
+            cv2.imshow(window_name_global, global_display)
+
         key = cv2.waitKeyEx(0)
         if key == -1:
             continue
@@ -381,6 +462,7 @@ def show_first_frame_with_grid(
             continue
 
     cv2.destroyWindow(window_name)
+    cv2.destroyWindow(window_name_global)
     cap.release()
 
 
