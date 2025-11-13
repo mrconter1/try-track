@@ -8,7 +8,7 @@ import threading
 
 # --- Core OpenCV Functions (Largely Unchanged) ---
 
-def draw_hough_line(frame, rho, theta_deg):
+def draw_hough_line(frame, rho, theta_deg, color=(0, 0, 255), thickness=2):
     """Draws a line on a frame given rho and theta (in degrees)."""
     h, w = frame.shape[:2]
     theta_rad = np.deg2rad(theta_deg)
@@ -23,7 +23,7 @@ def draw_hough_line(frame, rho, theta_deg):
     x2 = int(x0 - 2000 * (-b))
     y2 = int(y0 - 2000 * (a))
     
-    cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+    cv2.line(frame, (x1, y1), (x2, y2), color, thickness)
     return frame
 
 def get_line_metrics(frame, rho, theta_deg, num_samples):
@@ -306,8 +306,12 @@ class App:
         frame_copy = self.original_frame.copy()
         
         # Draw line
-        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
+        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg, color=(0, 0, 255), thickness=2)
         
+        # Draw probe line
+        probe_offset = 20
+        frame_with_line = draw_hough_line(frame_with_line, rho + probe_offset, theta_deg, color=(0, 255, 0), thickness=2)
+
         # Draw a green dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
 
