@@ -7,7 +7,7 @@ import numpy as np
 from typing import Optional, Dict, Tuple
 
 # Assuming frame_pair_overlay_viewer.py is in the same directory
-from frame_pair_overlay_viewer import FrameCache, compose_display, extract_crossings, TILE_DISPLAY_SIZE
+from frame_pair_overlay_viewer import FrameCache, compose_display, extract_crossings, TILE_DISPLAY_SIZE, calculate_diff_for_offset
 
 class VideoPlayer:
     def __init__(self, root, video_path: str, max_width: int, max_height: int):
@@ -128,6 +128,14 @@ class VideoPlayer:
             print(f"Crossings ({len(crossings_first)}): {crossings_first}")
             print(f"\n--- Frame {self.current_pair_index + 1} ---")
             print(f"Crossings ({len(crossings_second)}): {crossings_second}")
+            
+            print("\n--- Pixel Distances for Offsets (+-3 tiles) ---")
+            for y_tile in range(-3, 4):
+                for x_tile in range(-3, 4):
+                    x_offset_px = x_tile * TILE_DISPLAY_SIZE
+                    y_offset_px = y_tile * TILE_DISPLAY_SIZE
+                    total_dist, norm_dist = calculate_diff_for_offset(first, second, x_offset_px, y_offset_px)
+                    print(f"Tile Offset ({x_tile:2d}, {y_tile:2d}): Sum={total_dist:12,.0f}, Avg={norm_dist:8,.2f}")
             
             self.last_printed_index = self.current_pair_index
 

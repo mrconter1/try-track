@@ -117,6 +117,79 @@ def extract_crossings(grid_map: Dict[Tuple[int, int], Tuple], frame_shape: Tuple
     return sorted(list(crossings))
 
 
+def calculate_diff_for_offset(
+    first: Dict, second: Dict, x_offset: int, y_offset: int
+) -> Tuple[float, float]:
+    """Calculates pixel difference for a given offset without composing the display image."""
+    all_coords = set()
+    if first.get("grid_map"):
+        all_coords.update(first["grid_map"].keys())
+    if second.get("grid_map"):
+        all_coords.update(second["grid_map"].keys())
+
+    if not all_coords:
+        return 0.0, 0.0
+
+    min_row = min(c[0] for c in all_coords)
+    max_row = max(c[0] for c in all_coords)
+    min_col = min(c[1] for c in all_coords)
+    max_col = max(c[1] for c in all_coords)
+
+    num_rows = max_row - min_row + 1
+    num_cols = max_col - min_col + 1
+    canvas_h = num_rows * TILE_DISPLAY_SIZE
+    canvas_w = num_cols * TILE_DISPLAY_SIZE
+
+    mosaic_a = np.full((canvas_h, canvas_w, 3), 40, dtype=np.uint8)
+    mosaic_b = np.full((canvas_h, canvas_w, 3), 40, dtype=np.uint8)
+
+    if first.get("grid_map"):
+        for (row, col), square in first["grid_map"].items():
+            try:
+                warped = extract_and_warp_square(first["frame"], square)
+                if warped is not None and warped.size > 0:
+                    resized = cv2.resize(warped, (TILE_DISPLAY_SIZE, TILE_DISPLAY_SIZE))
+                    y = (row - min_row) * TILE_DISPLAY_SIZE
+                    x = (col - min_col) * TILE_DISPLAY_SIZE
+                    mosaic_a[y : y + TILE_DISPLAY_SIZE, x : x + TILE_DISPLAY_SIZE] = resized
+            except Exception:
+                continue
+
+    if second.get("grid_map"):
+        for (row, col), square in second["grid_map"].items():
+            try:
+                warped = extract_and_warp_square(second["frame"], square)
+                if warped is not None and warped.size > 0:
+                    resized = cv2.resize(warped, (TILE_DISPLAY_SIZE, TILE_DISPLAY_SIZE))
+                    y = (row - min_row) * TILE_DISPLAY_SIZE
+                    x = (col - min_col) * TILE_DISPLAY_SIZE
+                    mosaic_b[y : y + TILE_DISPLAY_SIZE, x : x + TILE_DISPLAY_SIZE] = resized
+            except Exception:
+                continue
+
+    mosaic_b_shifted = mosaic_b
+    if x_offset != 0 or y_offset != 0:
+        M = np.float32([[1, 0, x_offset], [0, 1, y_offset]])
+        mosaic_b_shifted = cv2.warpAffine(
+            mosaic_b, M, (mosaic_b.shape[1], mosaic_b.shape[0]), borderValue=(40, 40, 40)
+        )
+
+    background_color = np.array([40, 40, 40], dtype=np.uint8)
+    mask_a = np.any(mosaic_a != background_color, axis=-1)
+    mask_b_shifted = np.any(mosaic_b_shifted != background_color, axis=-1)
+    overlap_mask = mask_a & mask_b_shifted
+
+    pixel_dist = 0.0
+    if np.any(overlap_mask):
+        diff = np.abs(mosaic_a.astype(np.float32) - mosaic_b_shifted.astype(np.float32))
+        pixel_dist = np.sum(diff[overlap_mask])
+
+    overlap_area = np.sum(overlap_mask)
+    normalized_dist = pixel_dist / overlap_area if overlap_area > 0 else 0.0
+
+    return pixel_dist, normalized_dist
+
+
 def compose_display(
     first: Dict, second: Dict, frame_idx: int, next_idx: int, x_offset: int = 0, y_offset: int = 0
 ) -> Tuple[np.ndarray, float, float]:
