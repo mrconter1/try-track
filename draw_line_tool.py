@@ -112,20 +112,20 @@ class App:
 
         # Theta Controls
         ttk.Label(control_frame, text="Theta:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_theta(-0.1)).grid(row=0, column=1)
-        self.theta_slider = tk.Scale(control_frame, from_=0, to=180, orient=tk.HORIZONTAL, variable=self.theta_var, command=self.update_image, resolution=0.1, showvalue=0)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_theta(-0.01)).grid(row=0, column=1)
+        self.theta_slider = tk.Scale(control_frame, from_=0, to=180, orient=tk.HORIZONTAL, variable=self.theta_var, command=self.update_image, resolution=0.01, showvalue=0)
         self.theta_slider.grid(row=0, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_theta(0.1)).grid(row=0, column=3)
-        self.theta_label = ttk.Label(control_frame, text=f"{self.theta_var.get():.1f}", width=5)
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_theta(0.01)).grid(row=0, column=3)
+        self.theta_label = ttk.Label(control_frame, text=f"{self.theta_var.get():.2f}", width=6)
         self.theta_label.grid(row=0, column=4, padx=5)
 
         # Rho Controls
         ttk.Label(control_frame, text="Rho:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_rho(-0.1)).grid(row=1, column=1)
-        self.rho_slider = tk.Scale(control_frame, from_=-self.max_rho, to=self.max_rho, orient=tk.HORIZONTAL, variable=self.rho_var, command=self.update_image, resolution=0.1, showvalue=0)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_rho(-0.01)).grid(row=1, column=1)
+        self.rho_slider = tk.Scale(control_frame, from_=-self.max_rho, to=self.max_rho, orient=tk.HORIZONTAL, variable=self.rho_var, command=self.update_image, resolution=0.01, showvalue=0)
         self.rho_slider.grid(row=1, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_rho(0.1)).grid(row=1, column=3)
-        self.rho_label = ttk.Label(control_frame, text=f"{self.rho_var.get():.1f}", width=5)
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_rho(0.01)).grid(row=1, column=3)
+        self.rho_label = ttk.Label(control_frame, text=f"{self.rho_var.get():.2f}", width=6)
         self.rho_label.grid(row=1, column=4, padx=5)
         
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
@@ -168,12 +168,12 @@ class App:
 
     def adjust_theta(self, amount):
         current_val = self.theta_var.get()
-        self.theta_var.set(round(current_val + amount, 1))
+        self.theta_var.set(round(current_val + amount, 2))
         self.update_image()
 
     def adjust_rho(self, amount):
         current_val = self.rho_var.get()
-        self.rho_var.set(round(current_val + amount, 1))
+        self.rho_var.set(round(current_val + amount, 2))
         self.update_image()
         
     def update_image(self, *args):
@@ -212,8 +212,8 @@ class App:
         self.image_label.configure(image=img_tk)
 
         # Update labels
-        self.theta_label.config(text=f"{theta_deg:.1f}")
-        self.rho_label.config(text=f"{rho:.1f}")
+        self.theta_label.config(text=f"{theta_deg:.2f}")
+        self.rho_label.config(text=f"{rho:.2f}")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
