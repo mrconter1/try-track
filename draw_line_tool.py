@@ -283,19 +283,18 @@ class App:
         self.update_image()
 
 
-    def draw_pixel_plot(self, main_pixel_values, probe_pixel_values):
+    def draw_pixel_plot(self, main_pixel_values, probe_pixel_values, diff_pixel_values):
         self.plot_canvas.delete("all") # Clear previous plot
 
-        # --- Helper to draw a single plot ---
-        def _draw_plot(pixel_values, color):
+        # --- Helper to draw an intensity plot (0-255 range) ---
+        def _draw_intensity_plot(pixel_values, color):
             if pixel_values is None or len(pixel_values) == 0:
-                return # Don't draw if there's no data
+                return
 
             canvas_w = self.plot_canvas.winfo_width()
             canvas_h = self.plot_canvas.winfo_height()
 
-            # Create points for the line graph, handling NaNs by creating separate line segments
-            points = []
+            # Create points, handling NaNs
             num_samples = len(pixel_values)
             x_step = canvas_w / max(1, num_samples - 1)
 
@@ -303,35 +302,68 @@ class App:
             for i, value in enumerate(pixel_values):
                 if not np.isnan(value):
                     x = i * x_step
-                    y = canvas_h - (value / 255.0) * canvas_h # Invert Y-axis for drawing
+                    y = canvas_h - (value / 255.0) * canvas_h
                     current_segment.extend([x, y])
                 else:
-                    if len(current_segment) > 2: # Need at least 2 points for a line
+                    if len(current_segment) > 2:
                         self.plot_canvas.create_line(current_segment, fill=color, width=2)
                     current_segment = []
-            
-            # Draw the last segment if it exists
             if len(current_segment) > 2:
                 self.plot_canvas.create_line(current_segment, fill=color, width=2)
 
+        # --- Helper to draw a difference plot (-255 to 255 range) ---
+        def _draw_difference_plot(pixel_values, color):
+            if pixel_values is None or len(pixel_values) == 0:
+                return
+
+            canvas_w = self.plot_canvas.winfo_width()
+            canvas_h = self.plot_canvas.winfo_height()
+
+            # Create points, handling NaNs
+            num_samples = len(pixel_values)
+            x_step = canvas_w / max(1, num_samples - 1)
+
+            current_segment = []
+            for i, value in enumerate(pixel_values):
+                if not np.isnan(value):
+                    x = i * x_step
+                    # Scale from -255 to 255, with 0 in the middle
+                    y = (canvas_h / 2) - (value / 255.0) * (canvas_h / 2)
+                    current_segment.extend([x, y])
+                else:
+                    if len(current_segment) > 2:
+                        self.plot_canvas.create_line(current_segment, fill=color, width=1)
+                    current_segment = []
+            if len(current_segment) > 2:
+                self.plot_canvas.create_line(current_segment, fill=color, width=1)
 
         # --- Check canvas readiness and draw plots ---
         canvas_w = self.plot_canvas.winfo_width()
         canvas_h = self.plot_canvas.winfo_height()
-        if canvas_w < 2 or canvas_h < 2: # Canvas not ready on first draw
-             self.root.after(50, lambda: self.draw_pixel_plot(main_pixel_values, probe_pixel_values))
+        if canvas_w < 2 or canvas_h < 2:
+             self.root.after(50, lambda: self.draw_pixel_plot(main_pixel_values, probe_pixel_values, diff_pixel_values))
              return
 
         # Draw the plots
-        _draw_plot(main_pixel_values, "red")
-        _draw_plot(probe_pixel_values, "green")
+        _draw_intensity_plot(main_pixel_values, "red")
+        _draw_intensity_plot(probe_pixel_values, "green")
+        _draw_difference_plot(diff_pixel_values, "blue")
 
-        # Draw Y-axis labels for context if any data was plotted
-        if main_pixel_values is not None or probe_pixel_values is not None:
-            self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
+        # Draw axis labels and lines for context
+        has_data = not (np.all(np.isnan(main_pixel_values)) and
+                        np.all(np.isnan(probe_pixel_values)))
+
+        if has_data:
+            # Intensity scale (left)
+            self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10), fill="black")
             self.plot_canvas.create_line(0, 10, 10, 10)
-            self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10))
-            self.plot_canvas.create_line(0, canvas_h-10, 10, canvas_h-10)
+            self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10), fill="black")
+            self.plot_canvas.create_line(0, canvas_h - 10, 10, canvas_h - 10)
+
+            # Difference scale (right)
+            self.plot_canvas.create_line(0, canvas_h/2, canvas_w, canvas_h/2, fill="lightblue", dash=(2, 4))
+            self.plot_canvas.create_text(canvas_w - 15, canvas_h/2, anchor="e", text="0", font=("Arial", 10), fill="blue")
+
         else:
             self.plot_canvas.create_text(10, 10, anchor="nw", text="Lines are out of bounds.")
 
@@ -385,6 +417,9 @@ class App:
             self.original_frame, cx, cy, angle_deg, probe_offset, self.args.num_samples
         )
         
+        # Calculate the difference
+        diff_pixel_values = probe_pixel_values - main_pixel_values # Green - Red
+
         # Calculate Std Dev only on the valid (non-NaN) pixels of the main line
         std_dev = np.nanstd(main_pixel_values) if not np.all(np.isnan(main_pixel_values)) else None
 
@@ -399,7 +434,7 @@ class App:
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         # --- Update the pixel plot ---
-        self.draw_pixel_plot(main_pixel_values, probe_pixel_values)
+        self.draw_pixel_plot(main_pixel_values, probe_pixel_values, diff_pixel_values)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
