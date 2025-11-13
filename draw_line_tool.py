@@ -68,16 +68,17 @@ class App:
         
         self.root.title("Hough Line Control")
         
-        # --- Set Display Size ---
+        # --- Set Display Size based on screen size for maximized window ---
+        max_width = root.winfo_screenwidth() - 40   # Padding for window borders
+        max_height = root.winfo_screenheight() - 180 # Padding for borders, taskbar, and controls
+        
         h, w = self.original_frame.shape[:2]
-        max_width = 1024
-        if w > max_width:
-            ratio = max_width / w
-            self.display_w = max_width
-            self.display_h = int(h * ratio)
-        else:
-            self.display_w = w
-            self.display_h = h
+        
+        # Calculate the best fit for the screen
+        ratio = min(max_width / w, max_height / h)
+        
+        self.display_w = int(w * ratio)
+        self.display_h = int(h * ratio)
 
         # --- Variables ---
         self.theta_var = tk.DoubleVar(value=self.args.theta)
@@ -192,6 +193,7 @@ def main(args):
         return
 
     root = tk.Tk()
+    root.state('zoomed') # Maximize the window
     app = App(root, args, frame)
     root.mainloop()
 
