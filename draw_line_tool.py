@@ -159,23 +159,27 @@ class App:
         min_pixel_sum = float('inf')
 
         # Define the search space
-        rho_range = np.arange(current_rho - self.args.search_range, current_rho + self.args.search_range, self.args.step_size)
-        theta_range = np.arange(current_theta - self.args.search_range, current_theta + self.args.search_range, self.args.step_size)
+        rho_min = current_rho - self.args.search_range
+        rho_max = current_rho + self.args.search_range
+        theta_min = current_theta - self.args.search_range
+        theta_max = current_theta + self.args.search_range
 
-        total_rhos = len(rho_range)
-        print("Starting darkest line search...")
+        print("Starting darkest line search with random sampling...")
 
-        for i, rho in enumerate(rho_range):
-            for theta in theta_range:
-                _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta, self.args.num_samples)
-                if pixel_sum is not None and pixel_sum < min_pixel_sum:
-                    min_pixel_sum = pixel_sum
-                    best_rho = rho
-                    best_theta = theta
+        for i in range(self.args.num_search_samples):
+            rho = np.random.uniform(rho_min, rho_max)
+            theta = np.random.uniform(theta_min, theta_max)
+
+            _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta, self.args.num_samples)
             
+            if pixel_sum is not None and pixel_sum < min_pixel_sum:
+                min_pixel_sum = pixel_sum
+                best_rho = rho
+                best_theta = theta
+
             # Print progress to the console periodically
-            if (i + 1) % 10 == 0 or (i + 1) == total_rhos:
-                progress = ((i + 1) / total_rhos) * 100
+            if (i + 1) % 100 == 0 or (i + 1) == self.args.num_search_samples:
+                progress = ((i + 1) / self.args.num_search_samples) * 100
                 print(f"Search progress: {progress:.1f}%")
         
         # When done, schedule an update on the main GUI thread
@@ -307,7 +311,7 @@ def parse_args():
     parser.add_argument("--theta", type=float, default=45.0, help="The initial 'theta' parameter of the line (in degrees).")
     parser.add_argument("--num-samples", type=int, default=100, help="Number of samples for color std deviation.")
     parser.add_argument("--search-range", type=float, default=5.0, help="Search range (+-) for rho and theta for darkest line search.")
-    parser.add_argument("--step-size", type=float, default=0.1, help="Step size for rho and theta for darkest line search.")
+    parser.add_argument("--num-search-samples", type=int, default=1000, help="Number of random samples for the darkest line search.")
     return parser.parse_args()
 
 if __name__ == "__main__":
