@@ -15,45 +15,64 @@ def show_first_frame_with_grid(
         print(f"Error: Could not open video '{video_path}'")
         return
 
-    ret, frame = cap.read()
-    cap.release()
-    if not ret or frame is None:
-        print("Error: Could not read the first frame from the video")
-        return
-
     detector = LineDetector(scale=scale)
-    frame_with_grid, _ = detector.detect_lines(frame)
-
-    frame_height, frame_width = frame_with_grid.shape[:2]
-    if max_width <= 0:
-        max_width = frame_width
-    if max_height <= 0:
-        max_height = frame_height
-
-    scale_factor = min(max_width / frame_width, max_height / frame_height)
-    if scale_factor <= 0:
-        scale_factor = 1.0
-
-    display_width = int(round(frame_width * scale_factor))
-    display_height = int(round(frame_height * scale_factor))
-
-    if display_width <= 0 or display_height <= 0:
-        display_width, display_height = frame_width, frame_height
-        display_image = frame_with_grid
-    elif scale_factor != 1.0:
-        display_image = cv2.resize(
-            frame_with_grid, (display_width, display_height), interpolation=cv2.INTER_CUBIC
-        )
-    else:
-        display_image = frame_with_grid
-
-    window_name = "First Frame with Grid Lines"
+    window_name = "Frame with Grid Lines"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, display_width, display_height)
-    cv2.imshow(window_name, display_image)
-    print("Press any key in the display window to close.")
-    cv2.waitKey(0)
+
+    print("Controls: Right arrow → next frame, Left arrow → previous frame, q / Esc → quit")
+
+    frame_index = 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    while True:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            print(f"Cannot read frame {frame_index}.")
+            break
+
+        frame_with_grid, _ = detector.detect_lines(frame)
+
+        frame_height, frame_width = frame_with_grid.shape[:2]
+        _max_width = max_width if max_width > 0 else frame_width
+        _max_height = max_height if max_height > 0 else frame_height
+
+        scale_factor = min(_max_width / frame_width, _max_height / frame_height)
+        if scale_factor <= 0:
+            scale_factor = 1.0
+
+        display_width = int(round(frame_width * scale_factor))
+        display_height = int(round(frame_height * scale_factor))
+
+        if display_width <= 0 or display_height <= 0:
+            display_image = frame_with_grid
+            display_width, display_height = frame_width, frame_height
+        elif scale_factor != 1.0:
+            display_image = cv2.resize(
+                frame_with_grid, (display_width, display_height), interpolation=cv2.INTER_CUBIC
+            )
+        else:
+            display_image = frame_with_grid
+
+        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.resizeWindow(window_name, display_width, display_height)
+        cv2.imshow(window_name, display_image)
+
+        key = cv2.waitKeyEx(0)
+        if key == -1:
+            continue
+
+        if key in (27, ord("q")):
+            break
+        if key in (2555904, 65363):  # Right arrow (Windows, Linux)
+            frame_index = min(frame_index + 1, total_frames - 1)
+            continue
+        if key in (2424832, 65361):  # Left arrow (Windows, Linux)
+            frame_index = max(frame_index - 1, 0)
+            continue
+
     cv2.destroyWindow(window_name)
+    cap.release()
 
 
 def parse_args() -> argparse.Namespace:
