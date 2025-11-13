@@ -130,13 +130,23 @@ class VideoPlayer:
             print(f"Crossings ({len(crossings_second)}): {crossings_second}")
             
             print("\n--- Pixel Distances for Offsets (+-3 tiles) ---")
+            results = []
             for y_tile in range(-3, 4):
                 for x_tile in range(-3, 4):
                     x_offset_px = x_tile * TILE_DISPLAY_SIZE
                     y_offset_px = y_tile * TILE_DISPLAY_SIZE
-                    total_dist, norm_dist = calculate_diff_for_offset(first, second, x_offset_px, y_offset_px)
-                    print(f"Tile Offset ({x_tile:2d}, {y_tile:2d}): Sum={total_dist:12,.0f}, Avg={norm_dist:8,.2f}")
+                    total_dist, norm_dist, area = calculate_diff_for_offset(
+                        first, second, x_offset_px, y_offset_px
+                    )
+                    if area > 0:
+                        results.append(((x_tile, y_tile), total_dist, norm_dist))
             
+            # Sort results by normalized distance (ascending)
+            results.sort(key=lambda item: item[2])
+            
+            for (x_tile, y_tile), total_dist, norm_dist in results:
+                print(f"Tile Offset ({x_tile:2d}, {y_tile:2d}): Sum={total_dist:12,.0f}, Avg={norm_dist:8,.2f}")
+
             self.last_printed_index = self.current_pair_index
 
         display_image, pixel_dist, norm_dist = compose_display(

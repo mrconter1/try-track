@@ -119,7 +119,7 @@ def extract_crossings(grid_map: Dict[Tuple[int, int], Tuple], frame_shape: Tuple
 
 def calculate_diff_for_offset(
     first: Dict, second: Dict, x_offset: int, y_offset: int
-) -> Tuple[float, float]:
+) -> Tuple[float, float, int]:
     """Calculates pixel difference for a given offset without composing the display image."""
     all_coords = set()
     if first.get("grid_map"):
@@ -128,7 +128,7 @@ def calculate_diff_for_offset(
         all_coords.update(second["grid_map"].keys())
 
     if not all_coords:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0
 
     min_row = min(c[0] for c in all_coords)
     max_row = max(c[0] for c in all_coords)
@@ -187,7 +187,7 @@ def calculate_diff_for_offset(
     overlap_area = np.sum(overlap_mask)
     normalized_dist = pixel_dist / overlap_area if overlap_area > 0 else 0.0
 
-    return pixel_dist, normalized_dist
+    return pixel_dist, normalized_dist, overlap_area
 
 
 def compose_display(
