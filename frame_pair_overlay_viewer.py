@@ -99,64 +99,64 @@ class FrameCache:
 
 
 def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) -> np.ndarray:
-    frame_a = first["frame"]
-    frame_b = second["frame"]
-
-    if frame_a.shape[:2] != frame_b.shape[:2]:
-        frame_b = cv2.resize(frame_b, (frame_a.shape[1], frame_a.shape[0]))
-
-    overlay = cv2.addWeighted(frame_a, 0.5, frame_b, 0.5, 0)
-
     label_font = cv2.FONT_HERSHEY_SIMPLEX
-    frame_a_label = frame_a.copy()
-    frame_b_label = frame_b.copy()
-    overlay_label = overlay.copy()
-
-    cv2.putText(frame_a_label, f"Frame {frame_idx}", (20, 40), label_font, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(frame_b_label, f"Frame {next_idx}", (20, 40), label_font, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.putText(
-        overlay_label,
-        f"Overlay {frame_idx} + {next_idx}",
-        (20, 40),
-        label_font,
-        0.9,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-
-    top_row = [frame_a_label, frame_b_label, overlay_label]
-    max_height_top = max(img.shape[0] for img in top_row)
-    top_row_padded = [pad_to_height(img, max_height_top) for img in top_row]
-    top_combined = np.hstack(top_row_padded)
-
+    
     mosaics = []
+    
+    # First unwarped mosaic
     if first["mosaic"] is not None:
         mosaic_a = first["mosaic"].copy()
-        cv2.putText(mosaic_a, f"Unwarped {frame_idx}", (20, 40), label_font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(mosaic_a, f"Frame {frame_idx}", (20, 40), label_font, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
         mosaics.append(mosaic_a)
     else:
-        mosaics.append(np.full((200, 200, 3), 60, dtype=np.uint8))
-        cv2.putText(mosaics[-1], "No grid", (30, 110), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-
+        blank = np.full((200, 200, 3), 60, dtype=np.uint8)
+        cv2.putText(blank, f"Frame {frame_idx}", (20, 40), label_font, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(blank, "No grid", (30, 110), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        mosaics.append(blank)
+    
+    # Second unwarped mosaic
     if second["mosaic"] is not None:
         mosaic_b = second["mosaic"].copy()
-        cv2.putText(mosaic_b, f"Unwarped {next_idx}", (20, 40), label_font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(mosaic_b, f"Frame {next_idx}", (20, 40), label_font, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
         mosaics.append(mosaic_b)
     else:
-        mosaics.append(np.full((200, 200, 3), 60, dtype=np.uint8))
-        cv2.putText(mosaics[-1], "No grid", (30, 110), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-
-    bottom_row = mosaics
-    max_height_bottom = max(img.shape[0] for img in bottom_row)
-    bottom_row_padded = [pad_to_height(img, max_height_bottom) for img in bottom_row]
-    bottom_combined = np.hstack(bottom_row_padded)
-
-    target_width = max(top_combined.shape[1], bottom_combined.shape[1])
-    top_resized = pad_to_width(top_combined, target_width)
-    bottom_resized = pad_to_width(bottom_combined, target_width)
-
-    return np.vstack([top_resized, bottom_resized])
+        blank = np.full((200, 200, 3), 60, dtype=np.uint8)
+        cv2.putText(blank, f"Frame {next_idx}", (20, 40), label_font, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(blank, "No grid", (30, 110), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        mosaics.append(blank)
+    
+    # Overlay unwarped mosaic
+    if first["mosaic"] is not None and second["mosaic"] is not None:
+        mosaic_a = first["mosaic"]
+        mosaic_b = second["mosaic"]
+        
+        if mosaic_a.shape[:2] != mosaic_b.shape[:2]:
+            mosaic_b = cv2.resize(mosaic_b, (mosaic_a.shape[1], mosaic_a.shape[0]))
+        
+        overlay = cv2.addWeighted(mosaic_a, 0.5, mosaic_b, 0.5, 0)
+        cv2.putText(
+            overlay,
+            f"Overlay {frame_idx} + {next_idx}",
+            (20, 40),
+            label_font,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        mosaics.append(overlay)
+    else:
+        blank = np.full((200, 200, 3), 60, dtype=np.uint8)
+        cv2.putText(blank, f"Overlay {frame_idx} + {next_idx}", (20, 40), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(blank, "No grid", (30, 110), label_font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        mosaics.append(blank)
+    
+    # Match heights and stack horizontally
+    max_height = max(img.shape[0] for img in mosaics)
+    mosaics_padded = [pad_to_height(img, max_height) for img in mosaics]
+    combined = np.hstack(mosaics_padded)
+    
+    return combined
 
 
 def run_viewer(args: argparse.Namespace) -> None:
