@@ -156,36 +156,42 @@ class App:
 
     def _grid_search_worker(self, initial_pixel_sum):
         """The long-running grid search task."""
-        current_rho = self.rho_var.get()
-        current_theta = self.theta_var.get()
+        center_rho = self.rho_var.get()
+        center_theta = self.theta_var.get()
 
-        best_rho = current_rho
-        best_theta = current_theta
+        best_rho = center_rho
+        best_theta = center_theta
         min_pixel_sum = initial_pixel_sum if initial_pixel_sum is not None else float('inf')
 
-        # Define the search space
-        rho_min = current_rho - self.args.search_range
-        rho_max = current_rho + self.args.search_range
-        theta_min = current_theta - self.args.search_range
-        theta_max = current_theta + self.args.search_range
-
-        print("Starting darkest line search with random sampling...")
-
-        for i in range(self.args.num_search_samples):
-            rho = np.random.uniform(rho_min, rho_max)
-            theta = np.random.uniform(theta_min, theta_max)
-
-            _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta, self.args.num_samples)
+        total_iterations = len(self.args.search_ranges)
+        for iter_num, search_range in enumerate(self.args.search_ranges):
+            print(f"--- Iteration {iter_num + 1}/{total_iterations}, Search Range: {search_range} ---")
             
-            if pixel_sum is not None and pixel_sum < min_pixel_sum:
-                min_pixel_sum = pixel_sum
-                best_rho = rho
-                best_theta = theta
+            # Define the search space for the current iteration
+            rho_min = center_rho - search_range
+            rho_max = center_rho + search_range
+            theta_min = center_theta - search_range
+            theta_max = center_theta + search_range
 
-            # Print progress to the console periodically
-            if (i + 1) % 100 == 0 or (i + 1) == self.args.num_search_samples:
-                progress = ((i + 1) / self.args.num_search_samples) * 100
-                print(f"Search progress: {progress:.1f}%")
+            for i in range(self.args.num_search_samples):
+                rho = np.random.uniform(rho_min, rho_max)
+                theta = np.random.uniform(theta_min, theta_max)
+
+                _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta, self.args.num_samples)
+                
+                if pixel_sum is not None and pixel_sum < min_pixel_sum:
+                    min_pixel_sum = pixel_sum
+                    best_rho = rho
+                    best_theta = theta
+
+                # Print progress to the console periodically
+                if (i + 1) % 200 == 0 or (i + 1) == self.args.num_search_samples:
+                    progress = ((i + 1) / self.args.num_search_samples) * 100
+                    print(f"  Search progress: {progress:.1f}%")
+            
+            # Update the center for the next iteration to be the best point found so far
+            center_rho = best_rho
+            center_theta = best_theta
         
         # When done, schedule an update on the main GUI thread
         self.root.after(0, self.finish_darkest_line_search, best_rho, best_theta)
@@ -315,7 +321,7 @@ def parse_args():
     parser.add_argument("--rho", type=float, default=100.0, help="The initial 'rho' parameter of the line.")
     parser.add_argument("--theta", type=float, default=45.0, help="The initial 'theta' parameter of the line (in degrees).")
     parser.add_argument("--num-samples", type=int, default=100, help="Number of samples for color std deviation.")
-    parser.add_argument("--search-range", type=float, default=5.0, help="Search range (+-) for rho and theta for darkest line search.")
+    parser.add_argument("--search-ranges", type=float, nargs='+', default=[5.0, 2.0, 0.5], help="One or more search ranges for iterative darkest line search.")
     parser.add_argument("--num-search-samples", type=int, default=1000, help="Number of random samples for the darkest line search.")
     return parser.parse_args()
 
