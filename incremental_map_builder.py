@@ -126,6 +126,7 @@ def build_incremental_map(
     
     window_name = "Incremental Map Builder"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 1600, 900)
     
     while frame_index < total_frames:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
@@ -244,12 +245,12 @@ def build_incremental_map(
                 
                 prev_unwarped = unwarped.copy()
             
-            # Display current global map
+            # Display current global map (scaled to fit fixed window)
             if global_map is not None:
                 h, w = global_map.shape[:2]
-                max_display = 1200
-                if w > max_display or h > max_display:
-                    scale_factor = min(max_display / w, max_display / h)
+                window_w, window_h = 1600, 900
+                scale_factor = min(window_w / w, window_h / h)
+                if scale_factor < 1.0:
                     display = cv2.resize(global_map, (int(w * scale_factor), int(h * scale_factor)))
                 else:
                     display = global_map
