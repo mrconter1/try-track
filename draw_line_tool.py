@@ -57,11 +57,10 @@ def calculate_color_std_dev(frame, rho, theta_deg, num_samples):
         # Get pixel values at sample points
         pixel_values = gray_frame[y_coords, x_coords]
         
-        # Calculate and print standard deviation
-        std_dev = np.std(pixel_values)
-        print(f"Standard deviation of colors along the line ({num_samples} samples): {std_dev:.2f}")
+        # Calculate and return standard deviation
+        return np.std(pixel_values)
     else:
-        print("Line is outside the frame viewport.")
+        return None
 
 def main(args):
     """Main function to load frame and draw the specified line."""
@@ -80,18 +79,43 @@ def main(args):
     if not ret:
         print(f"Error: Could not read frame {args.frame}.")
         return
-    
-    print(f"Drawing line with Rho = {args.rho} and Theta = {args.theta} degrees.")
-    
-    if args.num_samples > 0:
-        calculate_color_std_dev(frame, args.rho, args.theta, args.num_samples)
-    
-    frame_with_line = draw_hough_line(frame, args.rho, args.theta)
-    
+
     window_name = "Hough Line Viewer"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    
+
+    h, w = frame.shape[:2]
+    max_rho = int(np.sqrt(h**2 + w**2))
+
+    def on_trackbar(val):
+        pass
+
+    cv2.createTrackbar("Theta", window_name, int(args.theta), 180, on_trackbar)
+    cv2.createTrackbar("Rho", window_name, int(args.rho) + max_rho, 2 * max_rho, on_trackbar)
+
     while True:
+        frame_copy = frame.copy()
+
+        theta_deg = cv2.getTrackbarPos("Theta", window_name)
+        rho = cv2.getTrackbarPos("Rho", window_name) - max_rho
+
+        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
+
+        std_dev_text = ""
+        if args.num_samples > 0:
+            std_dev = calculate_color_std_dev(frame, rho, theta_deg, args.num_samples)
+            if std_dev is not None:
+                std_dev_text = f"Std Dev: {std_dev:.2f}"
+            else:
+                std_dev_text = "Std Dev: OOB"
+
+        # Display parameters on the frame
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text = f"Rho: {rho}, Theta: {theta_deg}"
+        cv2.putText(frame_with_line, text, (10, 30), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        if args.num_samples > 0:
+            cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+
         cv2.imshow(window_name, frame_with_line)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == 27:
