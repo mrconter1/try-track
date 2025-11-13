@@ -25,6 +25,7 @@ class VideoPlayer:
             raise RuntimeError("Video must contain at least two frames.")
 
         self.current_pair_index = start_frame if start_frame < self.total_frames - 1 else 0
+        self.previous_pair_index = -1
         self.last_printed_index = -1  # Track last printed frame index
 
         # Create main frame
@@ -114,11 +115,27 @@ class VideoPlayer:
         self.update_frame()
 
     def update_frame(self):
+        # Close the previous frame's external windows if the index has changed
+        if self.previous_pair_index != -1 and self.previous_pair_index != self.current_pair_index:
+            try:
+                cv2.destroyWindow(f"Source Frame: {self.previous_pair_index}")
+                cv2.destroyWindow(f"Target Frame: {self.previous_pair_index + 1}")
+            except cv2.error:
+                # This can happen if the user manually closes a window. It's safe to ignore.
+                pass
+
         first = self.frame_cache.get_frame_data(self.current_pair_index)
         second = self.frame_cache.get_frame_data(self.current_pair_index + 1)
 
         if first is None or second is None:
             return
+
+        # Create and show individual frame windows with grids
+        frame1_grid = self.draw_grid(first["frame"].copy(), first["grid_map"])
+        frame2_grid = self.draw_grid(second["frame"].copy(), second["grid_map"])
+        cv2.imshow(f"Source Frame: {self.current_pair_index}", frame1_grid)
+        cv2.imshow(f"Target Frame: {self.current_pair_index + 1}", frame2_grid)
+        cv2.waitKey(1) # Allow cv2 windows to process events
 
         # Only print crossings if the frame index has changed
         if self.current_pair_index != self.last_printed_index:
@@ -179,9 +196,24 @@ class VideoPlayer:
         self.image_label.imgtk = imgtk
         self.image_label.configure(image=imgtk)
 
+        # Update the previous index tracker for the next call
+        self.previous_pair_index = self.current_pair_index
+
+    def draw_grid(self, frame: np.ndarray, grid_map: Dict[Tuple[int, int], np.ndarray]) -> np.ndarray:
+        """Draws the grid lines on a frame using blue lines."""
+        if not grid_map:
+            return frame
+        
+        for square_coords in grid_map.values():
+            contour = np.array(square_coords, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(frame, [contour], isClosed=True, color=(255, 0, 0), thickness=2)
+            
+        return frame
+
     def on_closing(self):
         self.frame_cache.release()
         self.root.destroy()
+        cv2.destroyAllWindows()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="View consecutive frame pairs with overlay and unwarped tiles using Tkinter.")
