@@ -1,6 +1,11 @@
 import cv2
 import numpy as np
 import argparse
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+
+# --- Core OpenCV Functions (Largely Unchanged) ---
 
 def draw_hough_line(frame, rho, theta_deg):
     """Draws a line on a frame given rho and theta (in degrees)."""
@@ -12,8 +17,6 @@ def draw_hough_line(frame, rho, theta_deg):
     x0 = a * rho
     y0 = b * rho
     
-    # Derive two points on the line to draw it
-    # We create a line 2000 pixels long, which is enough to span any typical video frame
     x1 = int(x0 + 2000 * (-b))
     y1 = int(y0 + 2000 * (a))
     x2 = int(x0 - 2000 * (-b))
@@ -24,6 +27,9 @@ def draw_hough_line(frame, rho, theta_deg):
 
 def calculate_color_std_dev(frame, rho, theta_deg, num_samples):
     """Calculates the standard deviation of colors along a line in the frame."""
+    if num_samples <= 0:
+        return None
+        
     h, w = frame.shape[:2]
     theta_rad = np.deg2rad(theta_deg)
     
@@ -31,39 +37,142 @@ def calculate_color_std_dev(frame, rho, theta_deg, num_samples):
     b = np.sin(theta_rad)
     x0 = a * rho
     y0 = b * rho
-    
-    # Points far away to define the line
+
     x1 = int(x0 + 2000 * (-b))
     y1 = int(y0 + 2000 * (a))
     x2 = int(x0 - 2000 * (-b))
     y2 = int(y0 - 2000 * (a))
 
-    # Clip the line to the frame boundaries
     rect = (0, 0, w, h)
     inside, p1, p2 = cv2.clipLine(rect, (x1, y1), (x2, y2))
 
     if inside:
-        # Generate sample points along the clipped line
         x_coords = np.linspace(p1[0], p2[0], num_samples, dtype=int)
         y_coords = np.linspace(p1[1], p2[1], num_samples, dtype=int)
-
-        # Ensure coordinates are within frame bounds
         x_coords = np.clip(x_coords, 0, w - 1)
         y_coords = np.clip(y_coords, 0, h - 1)
         
-        # Convert frame to grayscale for simplicity
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Get pixel values at sample points
         pixel_values = gray_frame[y_coords, x_coords]
-        
-        # Calculate and return standard deviation
         return np.std(pixel_values)
     else:
         return None
 
+# --- New Tkinter GUI Application ---
+
+class App:
+    def __init__(self, root, args, initial_frame):
+        self.root = root
+        self.args = args
+        self.original_frame = initial_frame
+        
+        self.root.title("Hough Line Control")
+        
+        # --- Set Display Size ---
+        h, w = self.original_frame.shape[:2]
+        max_width = 1024
+        if w > max_width:
+            ratio = max_width / w
+            self.display_w = max_width
+            self.display_h = int(h * ratio)
+        else:
+            self.display_w = w
+            self.display_h = h
+
+        # --- Variables ---
+        self.theta_var = tk.DoubleVar(value=self.args.theta)
+        self.rho_var = tk.DoubleVar(value=self.args.rho)
+        
+        # --- GUI Layout ---
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        
+        # Image display
+        self.image_label = ttk.Label(main_frame)
+        self.image_label.grid(row=0, column=0, sticky="nsew")
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        # --- Controls Frame ---
+        control_frame = ttk.Frame(main_frame, padding="5")
+        control_frame.grid(row=1, column=0, sticky="ew")
+
+        # Controls
+        h, w = self.original_frame.shape[:2]
+        self.max_rho = int(np.sqrt(h**2 + w**2))
+
+        # Theta Controls
+        ttk.Label(control_frame, text="Theta:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_theta(-0.1)).grid(row=0, column=1)
+        self.theta_slider = tk.Scale(control_frame, from_=0, to=180, orient=tk.HORIZONTAL, variable=self.theta_var, command=self.update_image, resolution=0.1, showvalue=0)
+        self.theta_slider.grid(row=0, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_theta(0.1)).grid(row=0, column=3)
+        self.theta_label = ttk.Label(control_frame, text=f"{self.theta_var.get():.1f}", width=5)
+        self.theta_label.grid(row=0, column=4, padx=5)
+
+        # Rho Controls
+        ttk.Label(control_frame, text="Rho:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_rho(-0.1)).grid(row=1, column=1)
+        self.rho_slider = tk.Scale(control_frame, from_=-self.max_rho, to=self.max_rho, orient=tk.HORIZONTAL, variable=self.rho_var, command=self.update_image, resolution=0.1, showvalue=0)
+        self.rho_slider.grid(row=1, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_rho(0.1)).grid(row=1, column=3)
+        self.rho_label = ttk.Label(control_frame, text=f"{self.rho_var.get():.1f}", width=5)
+        self.rho_label.grid(row=1, column=4, padx=5)
+        
+        control_frame.columnconfigure(2, weight=1) # Make slider stretch
+
+        self.update_image()
+
+    def adjust_theta(self, amount):
+        current_val = self.theta_var.get()
+        self.theta_var.set(round(current_val + amount, 1))
+        self.update_image()
+
+    def adjust_rho(self, amount):
+        current_val = self.rho_var.get()
+        self.rho_var.set(round(current_val + amount, 1))
+        self.update_image()
+        
+    def update_image(self, *args):
+        theta_deg = self.theta_var.get()
+        rho = self.rho_var.get()
+
+        frame_copy = self.original_frame.copy()
+        
+        # Draw line
+        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
+        
+        # Calculate Std Dev
+        std_dev = calculate_color_std_dev(self.original_frame, rho, theta_deg, self.args.num_samples)
+
+        # Display text
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text = f"Rho: {rho:.1f}, Theta: {theta_deg:.1f}"
+        cv2.putText(frame_with_line, text, (10, 30), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        
+        if std_dev is not None:
+            std_dev_text = f"Std Dev: {std_dev:.2f}"
+            cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+        # --- Scale frame for display ---
+        display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
+
+        # Convert for Tkinter
+        img = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img)
+        img_tk = ImageTk.PhotoImage(image=img_pil)
+        
+        self.image_label.imgtk = img_tk
+        self.image_label.configure(image=img_tk)
+
+        # Update labels
+        self.theta_label.config(text=f"{theta_deg:.1f}")
+        self.rho_label.config(text=f"{rho:.1f}")
+
 def main(args):
-    """Main function to load frame and draw the specified line."""
+    """Main function to load frame and launch the GUI."""
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         print(f"Error: Could not open video file {args.video}")
@@ -72,65 +181,27 @@ def main(args):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if args.frame >= total_frames:
         print(f"Error: Frame {args.frame} is out of bounds. Video has {total_frames} frames.")
+        cap.release()
         return
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
     ret, frame = cap.read()
+    cap.release()
     if not ret:
         print(f"Error: Could not read frame {args.frame}.")
         return
 
-    window_name = "Hough Line Viewer"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-
-    h, w = frame.shape[:2]
-    max_rho = int(np.sqrt(h**2 + w**2))
-
-    def on_trackbar(val):
-        pass
-
-    cv2.createTrackbar("Theta", window_name, int(args.theta), 180, on_trackbar)
-    cv2.createTrackbar("Rho", window_name, int(args.rho) + max_rho, 2 * max_rho, on_trackbar)
-
-    while True:
-        frame_copy = frame.copy()
-
-        theta_deg = cv2.getTrackbarPos("Theta", window_name)
-        rho = cv2.getTrackbarPos("Rho", window_name) - max_rho
-
-        frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
-
-        std_dev_text = ""
-        if args.num_samples > 0:
-            std_dev = calculate_color_std_dev(frame, rho, theta_deg, args.num_samples)
-            if std_dev is not None:
-                std_dev_text = f"Std Dev: {std_dev:.2f}"
-            else:
-                std_dev_text = "Std Dev: OOB"
-
-        # Display parameters on the frame
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        text = f"Rho: {rho}, Theta: {theta_deg}"
-        cv2.putText(frame_with_line, text, (10, 30), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-        if args.num_samples > 0:
-            cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-
-
-        cv2.imshow(window_name, frame_with_line)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q') or key == 27:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+    root = tk.Tk()
+    app = App(root, args, frame)
+    root.mainloop()
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Draw a single Hough line on a video frame.")
+    parser = argparse.ArgumentParser(description="Draw a single Hough line on a video frame interactively.")
     parser.add_argument("--video", type=str, default="video.mp4", help="Path to the video file.")
     parser.add_argument("--frame", type=int, default=2000, help="Frame number to load.")
-    parser.add_argument("--rho", type=float, default=100.0, help="The 'rho' parameter of the line (distance from origin).")
-    parser.add_argument("--theta", type=float, default=45.0, help="The 'theta' parameter of the line (angle in degrees).")
-    parser.add_argument("--num-samples", type=int, default=100, help="Number of samples along the line to calculate color std deviation.")
+    parser.add_argument("--rho", type=float, default=100.0, help="The initial 'rho' parameter of the line.")
+    parser.add_argument("--theta", type=float, default=45.0, help="The initial 'theta' parameter of the line (in degrees).")
+    parser.add_argument("--num-samples", type=int, default=100, help="Number of samples for color std deviation.")
     return parser.parse_args()
 
 if __name__ == "__main__":
