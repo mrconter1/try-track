@@ -98,6 +98,24 @@ class FrameCache:
         self.cap.release()
 
 
+def extract_crossings(grid_map: Dict[Tuple[int, int], Tuple], frame_shape: Tuple[int, int]) -> list:
+    """Extract crossing points (tile corners) from grid_map in frame coordinates."""
+    if not grid_map:
+        return []
+    
+    crossings = set()
+    for (row, col), square in grid_map.items():
+        if square is None or len(square) < 4:
+            continue
+        pts = square
+        # Each square has 4 corner points
+        for pt in pts:
+            x, y = int(pt[0]), int(pt[1])
+            crossings.add((x, y))
+    
+    return sorted(list(crossings))
+
+
 def compose_display(first: Dict, second: Dict, frame_idx: int, next_idx: int) -> np.ndarray:
     label_font = cv2.FONT_HERSHEY_SIMPLEX
     

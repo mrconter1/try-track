@@ -7,7 +7,7 @@ import numpy as np
 from typing import Optional, Dict, Tuple
 
 # Assuming frame_pair_overlay_viewer.py is in the same directory
-from frame_pair_overlay_viewer import FrameCache, compose_display
+from frame_pair_overlay_viewer import FrameCache, compose_display, extract_crossings
 
 class VideoPlayer:
     def __init__(self, root, video_path: str, max_width: int, max_height: int):
@@ -23,6 +23,7 @@ class VideoPlayer:
             raise RuntimeError("Video must contain at least two frames.")
 
         self.current_pair_index = 0
+        self.last_printed_index = -1  # Track last printed frame index
 
         # Create main frame
         main_frame = ttk.Frame(self.root)
@@ -91,6 +92,18 @@ class VideoPlayer:
 
         if first is None or second is None:
             return
+
+        # Only print crossings if the frame index has changed
+        if self.current_pair_index != self.last_printed_index:
+            crossings_first = extract_crossings(first["grid_map"], first["frame"].shape[:2])
+            crossings_second = extract_crossings(second["grid_map"], second["frame"].shape[:2])
+            
+            print(f"\n--- Frame {self.current_pair_index} ---")
+            print(f"Crossings ({len(crossings_first)}): {crossings_first}")
+            print(f"\n--- Frame {self.current_pair_index + 1} ---")
+            print(f"Crossings ({len(crossings_second)}): {crossings_second}")
+            
+            self.last_printed_index = self.current_pair_index
 
         display_image = compose_display(first, second, self.current_pair_index, self.current_pair_index + 1)
 
