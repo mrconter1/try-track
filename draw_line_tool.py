@@ -316,6 +316,22 @@ class App:
             
             if len(probe_points) > 2:
                 self.plot_canvas.create_line(probe_points, fill="green", width=2)
+            
+            # Draw difference line (main - probe)
+            diff_points = []
+            for i, (main_val, probe_val) in enumerate(zip(pixel_values, probe_pixel_values)):
+                diff = int(main_val) - int(probe_val)
+                # Center the difference at canvas_h/2 and scale it
+                x = i * x_step
+                y = canvas_h / 2 - (diff / 255.0) * (canvas_h / 2)
+                diff_points.extend([x, y])
+            
+            if len(diff_points) > 2:
+                self.plot_canvas.create_line(diff_points, fill="purple", width=2)
+            
+            # Draw zero difference line (center)
+            center_y = canvas_h / 2
+            self.plot_canvas.create_line(0, center_y, canvas_w, center_y, fill="purple", width=1, dash=(2, 2))
 
         # Calculate and draw median line (for main line only)
         median_value = np.median(pixel_values)
@@ -346,6 +362,10 @@ class App:
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="green", width=2)
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Probe", font=("Arial", 8))
+        
+        legend_y += 15
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="purple", width=2)
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Diff", font=("Arial", 8))
         
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="orange", width=2, dash=(4, 4))
