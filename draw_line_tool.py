@@ -609,9 +609,6 @@ class App:
         rho_probe2 = rho - probe_distance
         frame_with_line = draw_hough_line(frame_with_line, rho_probe2, theta_deg, color=(0, 255, 255), thickness=2)
         
-        # Draw a blue dot at the center point
-        cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (255, 0, 0), -1)
-
         # Get number of samples
         num_samples = self.num_samples_var.get()
 
@@ -639,6 +636,9 @@ class App:
                 # Get corresponding second probe point by perpendicular offset
                 probe2_x, probe2_y = get_perpendicular_offset_point(x, y, theta_deg, -probe_distance)
                 cv2.circle(frame_with_line, (probe2_x, probe2_y), 5, (0, 255, 255), -1) # Yellow circles for probe 2
+
+        # Draw a blue dot at the center point last so it remains visible
+        cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (255, 0, 0), -1)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
