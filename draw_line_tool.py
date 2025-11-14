@@ -149,7 +149,7 @@ class App:
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
         self.frame_num_var = tk.IntVar(value=self.current_frame_num)
-        self.probe_distance_var = tk.IntVar(value=10)
+        self.probe_distance_var = tk.IntVar(value=15)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
