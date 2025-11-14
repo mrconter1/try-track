@@ -88,6 +88,7 @@ class App:
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
         self.frame_num_var = tk.IntVar(value=self.current_frame_num)
+        self.probe_distance_var = tk.IntVar(value=10)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -158,10 +159,19 @@ class App:
         self.clahe_clip_slider.grid(row=5, column=3, sticky="ew")
         self.clahe_clip_label = ttk.Label(control_frame, text=f"{self.clahe_clip_limit.get():.1f}", width=5)
         self.clahe_clip_label.grid(row=5, column=4, padx=5)
+
+        # Probe Distance Controls
+        ttk.Label(control_frame, text="Probe Dist:").grid(row=6, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_probe_distance(-1)).grid(row=6, column=1)
+        self.probe_distance_slider = tk.Scale(control_frame, from_=1, to=50, orient=tk.HORIZONTAL, variable=self.probe_distance_var, command=self.update_image, resolution=1, showvalue=0)
+        self.probe_distance_slider.grid(row=6, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_probe_distance(1)).grid(row=6, column=3)
+        self.probe_distance_label = ttk.Label(control_frame, text=f"{self.probe_distance_var.get()}", width=5)
+        self.probe_distance_label.grid(row=6, column=4, padx=5)
         
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Best Fit", command=self.start_best_fit_search)
-        self.search_button.grid(row=0, column=5, rowspan=6, padx=10, sticky="ns")
+        self.search_button.grid(row=0, column=5, rowspan=7, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -400,6 +410,11 @@ class App:
         self.num_samples_var.set(max(10, current_val + amount))
         self.update_image()
 
+    def adjust_probe_distance(self, amount):
+        current_val = self.probe_distance_var.get()
+        self.probe_distance_var.set(max(1, min(50, current_val + amount)))
+        self.update_image()
+
     def apply_clahe(self, frame):
         """Apply CLAHE to even out shadows and lighting."""
         if not self.clahe_enabled.get():
@@ -458,8 +473,9 @@ class App:
         # Draw line
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
-        # Draw parallel probe line 10 pixels away
-        rho_probe = rho + 10
+        # Draw parallel probe line at configurable distance
+        probe_distance = self.probe_distance_var.get()
+        rho_probe = rho + probe_distance
         frame_with_line = draw_hough_line(frame_with_line, rho_probe, theta_deg, color=(0, 255, 0), thickness=2)
         
         # Draw a green dot at the center point
@@ -503,6 +519,7 @@ class App:
         self.cy_label.config(text=f"{cy:.1f}")
         self.num_samples_label.config(text=f"{num_samples}")
         self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}")
+        self.probe_distance_label.config(text=f"{self.probe_distance_var.get()}")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
