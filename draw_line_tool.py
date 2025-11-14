@@ -271,10 +271,10 @@ class App:
         self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="red", width=2, dash=(4, 4))
 
         # Draw Y-axis labels for context
-        self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
-        self.plot_canvas.create_line(0, 10, 10, 10)
-        self.plot_canvas.create_text(15, canvas_h - 10, anchor="sw", text="0", font=("Arial", 10))
-        self.plot_canvas.create_line(0, canvas_h-10, 10, canvas_h-10)
+        for val in range(0, 256, 50):
+            y = canvas_h - (val / 255.0) * canvas_h
+            self.plot_canvas.create_text(15, y, anchor="w", text=str(val), font=("Arial", 9))
+            self.plot_canvas.create_line(0, y, 10, y)
 
 
     def adjust_angle(self, amount):
