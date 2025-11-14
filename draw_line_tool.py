@@ -387,22 +387,6 @@ class App:
             
             if len(probe_points) > 2:
                 self.plot_canvas.create_line(probe_points, fill="green", width=2)
-            
-            # Draw difference line (main - probe)
-            diff_points = []
-            for i, (main_val, probe_val) in enumerate(zip(pixel_values, probe_pixel_values)):
-                diff = int(main_val) - int(probe_val)
-                # Center the difference at canvas_h/2 and scale it
-                x = i * x_step
-                y = canvas_h / 2 - (diff / 255.0) * (canvas_h / 2)
-                diff_points.extend([x, y])
-            
-            if len(diff_points) > 2:
-                self.plot_canvas.create_line(diff_points, fill="purple", width=2)
-            
-            # Draw zero difference line (center)
-            center_y = canvas_h / 2
-            self.plot_canvas.create_line(0, center_y, canvas_w, center_y, fill="purple", width=1, dash=(2, 2))
 
         # Draw second probe line if available
         if probe2_pixel_values is not None and len(probe2_pixel_values) > 0:
@@ -414,6 +398,27 @@ class App:
             
             if len(probe2_points) > 2:
                 self.plot_canvas.create_line(probe2_points, fill="yellow", width=2)
+
+        # Draw Symmetric Difference line (main - avg(probe1, probe2))
+        if probe_pixel_values is not None and probe2_pixel_values is not None and \
+           len(pixel_values) == len(probe_pixel_values) and len(pixel_values) == len(probe2_pixel_values):
+            
+            diff_points = []
+            for i, (main_val, probe1_val, probe2_val) in enumerate(zip(pixel_values, probe_pixel_values, probe2_pixel_values)):
+                avg_probe = (float(probe1_val) + float(probe2_val)) / 2.0
+                diff = float(main_val) - avg_probe
+                
+                # Center the difference at canvas_h/2 and scale it
+                x = i * x_step
+                y = canvas_h / 2 - (diff / 255.0) * (canvas_h / 2)
+                diff_points.extend([x, y])
+            
+            if len(diff_points) > 2:
+                self.plot_canvas.create_line(diff_points, fill="purple", width=2)
+            
+            # Draw zero difference line (center)
+            center_y = canvas_h / 2
+            self.plot_canvas.create_line(0, center_y, canvas_w, center_y, fill="purple", width=1, dash=(2, 2))
 
         # Calculate and draw median line (for main line only)
         median_value = np.median(pixel_values)
