@@ -81,6 +81,9 @@ class App:
         self.cx_var = tk.DoubleVar(value=initial_cx)
         self.cy_var = tk.DoubleVar(value=initial_cy)
         self.num_samples_var = tk.IntVar(value=self.args.num_samples)
+        self.clahe_enabled = tk.BooleanVar(value=False)
+        self.clahe_clip_limit = tk.DoubleVar(value=2.0)
+        self.clahe_tile_size = tk.IntVar(value=8)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -130,10 +133,22 @@ class App:
         ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_num_samples(5)).grid(row=3, column=3)
         self.num_samples_label = ttk.Label(control_frame, text=f"{self.num_samples_var.get()}", width=7)
         self.num_samples_label.grid(row=3, column=4, padx=5)
+
+        # CLAHE Enable/Disable
+        ttk.Label(control_frame, text="CLAHE:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.clahe_checkbox = ttk.Checkbutton(control_frame, variable=self.clahe_enabled, command=self.update_image)
+        self.clahe_checkbox.grid(row=4, column=1, sticky=tk.W)
+        
+        # CLAHE Clip Limit
+        ttk.Label(control_frame, text="Clip:").grid(row=4, column=2, sticky=tk.W, padx=(10, 0))
+        self.clahe_clip_slider = tk.Scale(control_frame, from_=1.0, to=10.0, orient=tk.HORIZONTAL, variable=self.clahe_clip_limit, command=self.update_image, resolution=0.5, showvalue=0)
+        self.clahe_clip_slider.grid(row=4, column=3, sticky="ew")
+        self.clahe_clip_label = ttk.Label(control_frame, text=f"{self.clahe_clip_limit.get():.1f}", width=5)
+        self.clahe_clip_label.grid(row=4, column=4, padx=5)
         
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Best Fit", command=self.start_best_fit_search)
-        self.search_button.grid(row=0, column=5, rowspan=4, padx=10, sticky="ns")
+        self.search_button.grid(row=0, column=5, rowspan=5, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -336,6 +351,18 @@ class App:
         current_val = self.num_samples_var.get()
         self.num_samples_var.set(max(10, current_val + amount))
         self.update_image()
+
+    def apply_clahe(self, frame):
+        """Apply CLAHE to even out shadows and lighting."""
+        if not self.clahe_enabled.get():
+            return frame
+        
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=self.clahe_clip_limit.get(), tileGridSize=(self.clahe_tile_size.get(), self.clahe_tile_size.get()))
+        gray_clahe = clahe.apply(gray)
+        
+        # Merge the CLAHE-processed gray channel back to BGR
+        return cv2.cvtColor(gray_clahe, cv2.COLOR_GRAY2BGR)
         
     def update_image(self, *args):
         # Get user-friendly parameters from the GUI
@@ -354,6 +381,9 @@ class App:
         rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
 
         frame_copy = self.original_frame.copy()
+        
+        # Apply CLAHE if enabled
+        frame_copy = self.apply_clahe(frame_copy)
         
         # Draw line
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
@@ -395,6 +425,7 @@ class App:
         self.cx_label.config(text=f"{cx:.1f}")
         self.cy_label.config(text=f"{cy:.1f}")
         self.num_samples_label.config(text=f"{num_samples}")
+        self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
