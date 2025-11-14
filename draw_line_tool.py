@@ -278,6 +278,11 @@ class App:
         max_y = canvas_h - (max_value / 255.0) * canvas_h
         self.plot_canvas.create_line(0, max_y, canvas_w, max_y, fill="green", width=2, dash=(2, 2))
 
+        # Calculate and draw 95th percentile line
+        percentile_95 = np.percentile(pixel_values, 95)
+        percentile_95_y = canvas_h - (percentile_95 / 255.0) * canvas_h
+        self.plot_canvas.create_line(0, percentile_95_y, canvas_w, percentile_95_y, fill="orange", width=2, dash=(2, 4))
+
         # Draw Y-axis labels for context
         for val in range(0, 256, 25):
             y = canvas_h - (val / 255.0) * canvas_h
@@ -296,6 +301,10 @@ class App:
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="green", width=2, dash=(2, 2))
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Max", font=("Arial", 8))
+        
+        legend_y += 15
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="orange", width=2, dash=(2, 4))
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="95th %ile", font=("Arial", 8))
 
 
     def adjust_angle(self, amount):
