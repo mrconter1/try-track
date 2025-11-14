@@ -168,14 +168,15 @@ class App:
         theta_rad = np.deg2rad(theta_deg)
         rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
         
-        _, initial_pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        _, _, initial_pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        initial_median = np.median(initial_pixel_values) if initial_pixel_values is not None else float('inf')
 
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_pixel_sum,))
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_median,))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self, initial_pixel_sum):
+    def _grid_search_worker(self, initial_median):
         """The long-running grid search task."""
         center_cx = self.cx_var.get()
         center_cy = self.cy_var.get()
@@ -184,7 +185,7 @@ class App:
         best_cx = center_cx
         best_cy = center_cy
         best_angle = center_angle
-        min_pixel_sum = initial_pixel_sum if initial_pixel_sum is not None else float('inf')
+        min_median = initial_median if initial_median is not None else float('inf')
 
         iterations = zip(self.args.position_ranges, self.args.angle_ranges, self.args.num_search_samples)
         total_iterations = len(self.args.position_ranges)
@@ -208,13 +209,15 @@ class App:
                 theta_rad = np.deg2rad(theta_deg)
                 rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
                 
-                _, pixel_sum, _ = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+                _, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
                 
-                if pixel_sum is not None and pixel_sum < min_pixel_sum:
-                    min_pixel_sum = pixel_sum
-                    best_cx = cx
-                    best_cy = cy
-                    best_angle = angle
+                if pixel_values is not None:
+                    median = np.median(pixel_values)
+                    if median < min_median:
+                        min_median = median
+                        best_cx = cx
+                        best_cy = cy
+                        best_angle = angle
 
                 # Print progress to the console periodically
                 if (i + 1) % 200 == 0 or (i + 1) == num_samples:
