@@ -279,7 +279,7 @@ class App:
         self.update_image()
 
 
-    def draw_pixel_plot(self, pixel_values):
+    def draw_pixel_plot(self, pixel_values, probe_pixel_values=None):
         self.plot_canvas.delete("all") # Clear previous plot
 
         if pixel_values is None or len(pixel_values) == 0:
@@ -290,10 +290,10 @@ class App:
         canvas_h = self.plot_canvas.winfo_height()
 
         if canvas_w < 2 or canvas_h < 2: # Canvas not ready on first draw
-             self.root.after(50, lambda: self.draw_pixel_plot(pixel_values))
+             self.root.after(50, lambda: self.draw_pixel_plot(pixel_values, probe_pixel_values))
              return
 
-        # Create points for the line graph
+        # Create points for the main line graph
         points = []
         num_samples = len(pixel_values)
         x_step = canvas_w / max(1, num_samples - 1)
@@ -306,17 +306,28 @@ class App:
         if len(points) > 2:
             self.plot_canvas.create_line(points, fill="blue", width=2)
 
-        # Calculate and draw median line
+        # Draw probe line if available
+        if probe_pixel_values is not None and len(probe_pixel_values) > 0:
+            probe_points = []
+            for i, value in enumerate(probe_pixel_values):
+                x = i * x_step
+                y = canvas_h - (value / 255.0) * canvas_h
+                probe_points.extend([x, y])
+            
+            if len(probe_points) > 2:
+                self.plot_canvas.create_line(probe_points, fill="green", width=2)
+
+        # Calculate and draw median line (for main line only)
         median_value = np.median(pixel_values)
         median_y = canvas_h - (median_value / 255.0) * canvas_h
         self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="red", width=2, dash=(4, 4))
 
-        # Calculate and draw max line
+        # Calculate and draw max line (for main line only)
         max_value = np.max(pixel_values)
         max_y = canvas_h - (max_value / 255.0) * canvas_h
-        self.plot_canvas.create_line(0, max_y, canvas_w, max_y, fill="green", width=2, dash=(2, 2))
+        self.plot_canvas.create_line(0, max_y, canvas_w, max_y, fill="cyan", width=2, dash=(2, 2))
 
-        # Calculate and draw 95th percentile line
+        # Calculate and draw 95th percentile line (for main line only)
         percentile_95 = np.percentile(pixel_values, 95)
         percentile_95_y = canvas_h - (percentile_95 / 255.0) * canvas_h
         self.plot_canvas.create_line(0, percentile_95_y, canvas_w, percentile_95_y, fill="orange", width=2, dash=(2, 4))
@@ -330,14 +341,18 @@ class App:
         # Draw legend
         legend_y = 10
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="blue", width=2)
-        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Values", font=("Arial", 8))
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Main", font=("Arial", 8))
+        
+        legend_y += 15
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="green", width=2)
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Probe", font=("Arial", 8))
         
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="red", width=2, dash=(4, 4))
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Median", font=("Arial", 8))
         
         legend_y += 15
-        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="green", width=2, dash=(2, 2))
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="cyan", width=2, dash=(2, 2))
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Max", font=("Arial", 8))
         
         legend_y += 15
@@ -433,8 +448,11 @@ class App:
         # Get number of samples
         num_samples = self.num_samples_var.get()
 
-        # Calculate Std Dev
+        # Calculate Std Dev for main line
         std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, num_samples)
+
+        # Get pixel values for probe line
+        _, _, probe_pixel_values = get_line_metrics(self.original_frame, rho_probe, theta_deg, num_samples)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -446,7 +464,7 @@ class App:
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         # --- Update the pixel plot ---
-        self.draw_pixel_plot(pixel_values)
+        self.draw_pixel_plot(pixel_values, probe_pixel_values)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
