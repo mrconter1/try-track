@@ -169,14 +169,14 @@ class App:
         rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
         
         _, _, initial_pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
-        initial_median = np.median(initial_pixel_values) if initial_pixel_values is not None else float('inf')
+        initial_percentile_95 = np.percentile(initial_pixel_values, 95) if initial_pixel_values is not None else float('inf')
 
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_median,))
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_percentile_95,))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self, initial_median):
+    def _grid_search_worker(self, initial_percentile_95):
         """The long-running grid search task."""
         center_cx = self.cx_var.get()
         center_cy = self.cy_var.get()
@@ -185,7 +185,7 @@ class App:
         best_cx = center_cx
         best_cy = center_cy
         best_angle = center_angle
-        min_median = initial_median if initial_median is not None else float('inf')
+        min_percentile_95 = initial_percentile_95 if initial_percentile_95 is not None else float('inf')
 
         iterations = zip(self.args.position_ranges, self.args.angle_ranges, self.args.num_search_samples)
         total_iterations = len(self.args.position_ranges)
@@ -212,9 +212,9 @@ class App:
                 _, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
                 
                 if pixel_values is not None:
-                    median = np.median(pixel_values)
-                    if median < min_median:
-                        min_median = median
+                    percentile_95 = np.percentile(pixel_values, 95)
+                    if percentile_95 < min_percentile_95:
+                        min_percentile_95 = percentile_95
                         best_cx = cx
                         best_cy = cy
                         best_angle = angle
