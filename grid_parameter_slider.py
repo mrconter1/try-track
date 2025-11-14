@@ -11,7 +11,8 @@ from PIL import Image, ImageTk
 WINDOW_TITLE = "Square Grid (6-DOF)"
 
 
-STEP_SIZE = 0.1
+STEP_COARSE = 0.1
+STEP_FINE = 0.01
 
 SLIDERS = [
     {"name": "Grid X", "min": -20.0, "max": 20.0, "initial": 0.0, "unit": "tiles"},
@@ -219,15 +220,23 @@ class App:
             var = tk.DoubleVar(value=slider["initial"])
             self.slider_vars[slider["name"]] = var
             row_offset = idx * 3
-            ttk.Label(control_frame, text=slider["name"]).grid(row=row_offset, column=0, columnspan=4, sticky="w")
+            ttk.Label(control_frame, text=slider["name"]).grid(row=row_offset, column=0, columnspan=6, sticky="w")
+
+            fine_minus_btn = ttk.Button(
+                control_frame,
+                text="-0.01",
+                width=5,
+                command=lambda name=slider["name"]: self.adjust_slider(name, -STEP_FINE),
+            )
+            fine_minus_btn.grid(row=row_offset + 1, column=0, sticky="w")
 
             minus_btn = ttk.Button(
                 control_frame,
                 text="-",
                 width=3,
-                command=lambda name=slider["name"]: self.adjust_slider(name, -STEP_SIZE),
+                command=lambda name=slider["name"]: self.adjust_slider(name, -STEP_COARSE),
             )
-            minus_btn.grid(row=row_offset + 1, column=0, sticky="w")
+            minus_btn.grid(row=row_offset + 1, column=1, sticky="w", padx=(4, 0))
 
             scale = ttk.Scale(
                 control_frame,
@@ -237,25 +246,33 @@ class App:
                 variable=var,
                 command=self._on_slider_changed,
             )
-            scale.grid(row=row_offset + 1, column=1, sticky="ew", padx=(6, 6))
+            scale.grid(row=row_offset + 1, column=2, sticky="ew", padx=6)
 
             plus_btn = ttk.Button(
                 control_frame,
                 text="+",
                 width=3,
-                command=lambda name=slider["name"]: self.adjust_slider(name, STEP_SIZE),
+                command=lambda name=slider["name"]: self.adjust_slider(name, STEP_COARSE),
             )
-            plus_btn.grid(row=row_offset + 1, column=2, sticky="e")
+            plus_btn.grid(row=row_offset + 1, column=3, sticky="e", padx=(0, 4))
+
+            fine_plus_btn = ttk.Button(
+                control_frame,
+                text="+0.01",
+                width=5,
+                command=lambda name=slider["name"]: self.adjust_slider(name, STEP_FINE),
+            )
+            fine_plus_btn.grid(row=row_offset + 1, column=4, sticky="e")
 
             val_label = ttk.Label(control_frame, text=self._format_value(slider["name"], slider["unit"], var.get()))
-            val_label.grid(row=row_offset + 1, column=3, sticky="w")
+            val_label.grid(row=row_offset + 1, column=5, sticky="w", padx=(6, 0))
             self.value_labels[slider["name"]] = val_label
             control_frame.grid_rowconfigure(row_offset + 2, minsize=6)
 
-        control_frame.columnconfigure(1, weight=1)
+        control_frame.columnconfigure(2, weight=1)
 
         button_frame = ttk.Frame(control_frame, padding=(0, 10))
-        button_frame.grid(row=len(SLIDERS) * 3, column=0, columnspan=4, sticky="ew")
+        button_frame.grid(row=len(SLIDERS) * 3, column=0, columnspan=6, sticky="ew")
         ttk.Button(button_frame, text="Reset", command=self.reset_sliders).grid(row=0, column=0, sticky="ew")
         ttk.Button(button_frame, text="Close", command=self.root.destroy).grid(row=0, column=1, sticky="ew", padx=(6, 0))
         button_frame.columnconfigure(0, weight=1)
