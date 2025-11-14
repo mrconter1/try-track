@@ -11,6 +11,8 @@ from PIL import Image, ImageTk
 WINDOW_TITLE = "Square Grid (6-DOF)"
 
 
+STEP_SIZE = 0.1
+
 SLIDERS = [
     {"name": "Grid X", "min": -20.0, "max": 20.0, "initial": 0.0, "unit": "tiles"},
     {"name": "Grid Y", "min": -20.0, "max": 20.0, "initial": 0.0, "unit": "tiles"},
@@ -211,11 +213,22 @@ class App:
 
         self.slider_vars: dict[str, tk.DoubleVar] = {}
         self.value_labels: dict[str, ttk.Label] = {}
+        self.slider_configs = {slider["name"]: slider for slider in SLIDERS}
 
         for idx, slider in enumerate(SLIDERS):
             var = tk.DoubleVar(value=slider["initial"])
             self.slider_vars[slider["name"]] = var
-            ttk.Label(control_frame, text=slider["name"]).grid(row=idx * 2, column=0, sticky="w")
+            row_offset = idx * 3
+            ttk.Label(control_frame, text=slider["name"]).grid(row=row_offset, column=0, columnspan=4, sticky="w")
+
+            minus_btn = ttk.Button(
+                control_frame,
+                text="-",
+                width=3,
+                command=lambda name=slider["name"]: self.adjust_slider(name, -STEP_SIZE),
+            )
+            minus_btn.grid(row=row_offset + 1, column=0, sticky="w")
+
             scale = ttk.Scale(
                 control_frame,
                 from_=slider["min"],
@@ -224,13 +237,25 @@ class App:
                 variable=var,
                 command=self._on_slider_changed,
             )
-            scale.grid(row=idx * 2 + 1, column=0, sticky="ew", pady=(0, 4))
+            scale.grid(row=row_offset + 1, column=1, sticky="ew", padx=(6, 6))
+
+            plus_btn = ttk.Button(
+                control_frame,
+                text="+",
+                width=3,
+                command=lambda name=slider["name"]: self.adjust_slider(name, STEP_SIZE),
+            )
+            plus_btn.grid(row=row_offset + 1, column=2, sticky="e")
+
             val_label = ttk.Label(control_frame, text=self._format_value(slider["name"], slider["unit"], var.get()))
-            val_label.grid(row=idx * 2 + 1, column=1, sticky="w", padx=(6, 0))
+            val_label.grid(row=row_offset + 1, column=3, sticky="w")
             self.value_labels[slider["name"]] = val_label
+            control_frame.grid_rowconfigure(row_offset + 2, minsize=6)
+
+        control_frame.columnconfigure(1, weight=1)
 
         button_frame = ttk.Frame(control_frame, padding=(0, 10))
-        button_frame.grid(row=len(SLIDERS) * 2, column=0, columnspan=2, sticky="ew")
+        button_frame.grid(row=len(SLIDERS) * 3, column=0, columnspan=4, sticky="ew")
         ttk.Button(button_frame, text="Reset", command=self.reset_sliders).grid(row=0, column=0, sticky="ew")
         ttk.Button(button_frame, text="Close", command=self.root.destroy).grid(row=0, column=1, sticky="ew", padx=(6, 0))
         button_frame.columnconfigure(0, weight=1)
@@ -247,9 +272,7 @@ class App:
 
     def _on_slider_changed(self, _value: str):
         self._update_value_labels()
-        if self._pending_job is not None:
-            self.root.after_cancel(self._pending_job)
-        self._pending_job = self.root.after(10, self.update_image)
+        self._schedule_update()
 
     def reset_sliders(self):
         for slider in SLIDERS:
@@ -257,15 +280,32 @@ class App:
         self._update_value_labels()
         self.update_image()
 
+    def adjust_slider(self, slider_name: str, delta: float):
+        config = self.slider_configs[slider_name]
+        var = self.slider_vars[slider_name]
+        new_value = np.clip(var.get() + delta, config["min"], config["max"])
+        var.set(float(new_value))
+        self._update_value_label(slider_name)
+        self._schedule_update()
+
     def read_params(self) -> dict[str, float]:
         return {name: var.get() for name, var in self.slider_vars.items()}
 
     def _update_value_labels(self):
         for slider in SLIDERS:
-            current = self.slider_vars[slider["name"]].get()
-            self.value_labels[slider["name"]].config(
-                text=self._format_value(slider["name"], slider["unit"], current)
-            )
+            self._update_value_label(slider["name"])
+
+    def _update_value_label(self, slider_name: str):
+        slider = self.slider_configs[slider_name]
+        current = self.slider_vars[slider_name].get()
+        self.value_labels[slider_name].config(
+            text=self._format_value(slider_name, slider["unit"], current)
+        )
+
+    def _schedule_update(self):
+        if self._pending_job is not None:
+            self.root.after_cancel(self._pending_job)
+        self._pending_job = self.root.after(10, self.update_image)
 
     def update_image(self):
         self._pending_job = None
