@@ -265,6 +265,11 @@ class App:
         if len(points) > 2:
             self.plot_canvas.create_line(points, fill="blue", width=2)
 
+        # Calculate and draw median line
+        median_value = np.median(pixel_values)
+        median_y = canvas_h - (median_value / 255.0) * canvas_h
+        self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="red", width=2, dash=(4, 4))
+
         # Draw Y-axis labels for context
         self.plot_canvas.create_text(15, 10, anchor="nw", text="255", font=("Arial", 10))
         self.plot_canvas.create_line(0, 10, 10, 10)
