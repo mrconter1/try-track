@@ -81,7 +81,7 @@ class App:
         self.cx_var = tk.DoubleVar(value=initial_cx)
         self.cy_var = tk.DoubleVar(value=initial_cy)
         self.num_samples_var = tk.IntVar(value=self.args.num_samples)
-        self.clahe_enabled = tk.BooleanVar(value=False)
+        self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
         
