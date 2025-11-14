@@ -17,7 +17,6 @@ SLIDERS = [
     {"name": "Grid Rot", "min": -90.0, "max": 90.0, "initial": 0.0, "unit": "deg"},
     {"name": "Scale", "min": 0.10, "max": 5.0, "initial": 1.0, "unit": "x"},
     {"name": "Pitch", "min": -60.0, "max": 60.0, "initial": 0.0, "unit": "deg"},
-    {"name": "Roll", "min": -45.0, "max": 45.0, "initial": 0.0, "unit": "deg"},
 ]
 
 
@@ -69,17 +68,10 @@ def rotation_matrix_y(angle_rad: float) -> np.ndarray:
     return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=np.float64)
 
 
-def rotation_matrix_z(angle_rad: float) -> np.ndarray:
-    c = np.cos(angle_rad)
-    s = np.sin(angle_rad)
-    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
-
-
-def build_camera_rotation(pitch_rad: float, roll_rad: float) -> np.ndarray:
+def build_camera_rotation(pitch_rad: float) -> np.ndarray:
     r_base = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=np.float64)
     r_pitch = rotation_matrix_x(pitch_rad)
-    r_roll = rotation_matrix_z(roll_rad)
-    return r_roll @ r_pitch @ r_base
+    return r_pitch @ r_base
 
 
 def generate_plane_lines(tile_radius: int, samples: int) -> list[np.ndarray]:
@@ -164,10 +156,7 @@ def draw_grid_overlay(
 ):
     camera_height = 1.0
     camera_pos = np.array([0.0, camera_height, 0.0], dtype=np.float64)
-    camera_rotation = build_camera_rotation(
-        np.deg2rad(params["Pitch"]),
-        np.deg2rad(params["Roll"]),
-    )
+    camera_rotation = build_camera_rotation(np.deg2rad(params["Pitch"]))
     grid_rotation = rotation_matrix_y(np.deg2rad(params["Grid Rot"]))
 
     for plane_line in lines:
