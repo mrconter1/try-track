@@ -62,6 +62,40 @@ def get_line_metrics(frame, rho, theta_deg, num_samples):
     else:
         return None, None, None
 
+def get_line_sample_points(rho, theta_deg, num_samples, frame_shape):
+    """
+    Returns the (x, y) coordinates of sample points along a line.
+    Returns list of (x, y) tuples or None if line is out of bounds.
+    """
+    if num_samples <= 0:
+        return None
+    
+    h, w = frame_shape[:2]
+    theta_rad = np.deg2rad(theta_deg)
+    
+    a = np.cos(theta_rad)
+    b = np.sin(theta_rad)
+    x0 = a * rho
+    y0 = b * rho
+
+    x1 = int(x0 + 2000 * (-b))
+    y1 = int(y0 + 2000 * (a))
+    x2 = int(x0 - 2000 * (-b))
+    y2 = int(y0 - 2000 * (a))
+
+    rect = (0, 0, w, h)
+    inside, p1, p2 = cv2.clipLine(rect, (x1, y1), (x2, y2))
+
+    if inside:
+        x_coords = np.linspace(p1[0], p2[0], num_samples, dtype=int)
+        y_coords = np.linspace(p1[1], p2[1], num_samples, dtype=int)
+        x_coords = np.clip(x_coords, 0, w - 1)
+        y_coords = np.clip(y_coords, 0, h - 1)
+        
+        return list(zip(x_coords, y_coords))
+    else:
+        return None
+
 # --- New Tkinter GUI Application ---
 
 class App:
@@ -489,6 +523,19 @@ class App:
 
         # Get pixel values for probe line
         _, _, probe_pixel_values = get_line_metrics(self.original_frame, rho_probe, theta_deg, num_samples)
+
+        # Get sample point coordinates for visualization
+        main_sample_points = get_line_sample_points(rho, theta_deg, num_samples, self.original_frame.shape)
+        probe_sample_points = get_line_sample_points(rho_probe, theta_deg, num_samples, self.original_frame.shape)
+
+        # Draw sample points on the frame
+        if main_sample_points:
+            for x, y in main_sample_points:
+                cv2.circle(frame_with_line, (x, y), 5, (0, 0, 255), -1)  # Red circles for main
+        
+        if probe_sample_points:
+            for x, y in probe_sample_points:
+                cv2.circle(frame_with_line, (x, y), 5, (0, 255, 0), -1)  # Green circles for probe
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
