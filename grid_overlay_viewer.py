@@ -61,11 +61,12 @@ def draw_grid(
     rotation = R_roll @ R_pitch @ R_base
     camera_center = np.array([0.0, camera_height, 0.0], dtype=np.float64)
 
-    grid_half_width = grid_size * 20
+    max_dim = max(w, h)
+    grid_half_width = max_dim * 4.0
     depth_near = max(grid_size * 0.5, 1.0)
-    depth_far = grid_size * 40
-    num_width_lines = 20
-    num_depth_lines = 40
+    depth_far = max_dim * 8.0
+    num_width_lines = int(grid_half_width // grid_size) + 1
+    num_depth_lines = int((depth_far - depth_near) // grid_size) + 1
 
     def plane_to_world(u, v):
         x_local = u * cos_o - v * sin_o
