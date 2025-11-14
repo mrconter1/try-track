@@ -62,10 +62,11 @@ def get_line_metrics(frame, rho, theta_deg, num_samples):
     else:
         return None, None, None
 
-def get_line_sample_points(rho, theta_deg, num_samples, frame_shape):
+def get_parametric_line_samples(rho, theta_deg, num_samples, frame_shape):
     """
-    Returns the (x, y) coordinates of sample points along a line.
-    Returns list of (x, y) tuples or None if line is out of bounds.
+    Returns parametric sample points along a line using Parametric Line with Normal Offset.
+    Each sample includes (x, y) on the line and a parameter t in [0, 1].
+    Returns list of (x, y, t) tuples or None if line is out of bounds.
     """
     if num_samples <= 0:
         return None
@@ -73,28 +74,54 @@ def get_line_sample_points(rho, theta_deg, num_samples, frame_shape):
     h, w = frame_shape[:2]
     theta_rad = np.deg2rad(theta_deg)
     
-    a = np.cos(theta_rad)
-    b = np.sin(theta_rad)
-    x0 = a * rho
-    y0 = b * rho
-
-    x1 = int(x0 + 2000 * (-b))
-    y1 = int(y0 + 2000 * (a))
-    x2 = int(x0 - 2000 * (-b))
-    y2 = int(y0 - 2000 * (a))
-
+    # Normal vector (perpendicular to line, pointing in +rho direction)
+    normal_x = np.cos(theta_rad)
+    normal_y = np.sin(theta_rad)
+    
+    # Direction vector along the line (perpendicular to normal)
+    dir_x = -np.sin(theta_rad)
+    dir_y = np.cos(theta_rad)
+    
+    # Point on the line at distance rho from origin
+    start_x = rho * normal_x
+    start_y = rho * normal_y
+    
+    # Extend in both directions to find endpoints
+    x1 = int(start_x + 2000 * dir_x)
+    y1 = int(start_y + 2000 * dir_y)
+    x2 = int(start_x - 2000 * dir_x)
+    y2 = int(start_y - 2000 * dir_y)
+    
     rect = (0, 0, w, h)
     inside, p1, p2 = cv2.clipLine(rect, (x1, y1), (x2, y2))
 
     if inside:
-        x_coords = np.linspace(p1[0], p2[0], num_samples, dtype=int)
-        y_coords = np.linspace(p1[1], p2[1], num_samples, dtype=int)
-        x_coords = np.clip(x_coords, 0, w - 1)
-        y_coords = np.clip(y_coords, 0, h - 1)
-        
-        return list(zip(x_coords, y_coords))
+        samples = []
+        for i in range(num_samples):
+            t = i / max(1, num_samples - 1)
+            x = int(p1[0] + t * (p2[0] - p1[0]))
+            y = int(p1[1] + t * (p2[1] - p1[1]))
+            x = np.clip(x, 0, w - 1)
+            y = np.clip(y, 0, h - 1)
+            samples.append((x, y, t))
+        return samples
     else:
         return None
+
+def get_perpendicular_offset_point(x, y, theta_deg, offset_distance):
+    """
+    Given a point (x, y) on a line, return the corresponding point offset
+    perpendicular to the line by offset_distance.
+    The offset is in the direction of the normal vector.
+    """
+    theta_rad = np.deg2rad(theta_deg)
+    normal_x = np.cos(theta_rad)
+    normal_y = np.sin(theta_rad)
+    
+    offset_x = int(x + offset_distance * normal_x)
+    offset_y = int(y + offset_distance * normal_y)
+    
+    return (offset_x, offset_y)
 
 # --- New Tkinter GUI Application ---
 
@@ -512,8 +539,8 @@ class App:
         rho_probe = rho + probe_distance
         frame_with_line = draw_hough_line(frame_with_line, rho_probe, theta_deg, color=(0, 255, 0), thickness=2)
         
-        # Draw a green dot at the center point
-        cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
+        # Draw a blue dot at the center point
+        cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (255, 0, 0), -1)
 
         # Get number of samples
         num_samples = self.num_samples_var.get()
@@ -524,18 +551,17 @@ class App:
         # Get pixel values for probe line
         _, _, probe_pixel_values = get_line_metrics(self.original_frame, rho_probe, theta_deg, num_samples)
 
-        # Get sample point coordinates for visualization
-        main_sample_points = get_line_sample_points(rho, theta_deg, num_samples, self.original_frame.shape)
-        probe_sample_points = get_line_sample_points(rho_probe, theta_deg, num_samples, self.original_frame.shape)
+        # Get parametric sample points for main line
+        main_sample_points = get_parametric_line_samples(rho, theta_deg, num_samples, self.original_frame.shape)
 
-        # Draw sample points on the frame
+        # Draw sample points on the frame with perpendicular correspondences
         if main_sample_points:
-            for x, y in main_sample_points:
+            for x, y, t in main_sample_points:
                 cv2.circle(frame_with_line, (x, y), 5, (0, 0, 255), -1)  # Red circles for main
-        
-        if probe_sample_points:
-            for x, y in probe_sample_points:
-                cv2.circle(frame_with_line, (x, y), 5, (0, 255, 0), -1)  # Green circles for probe
+                
+                # Get corresponding probe point by perpendicular offset
+                probe_x, probe_y = get_perpendicular_offset_point(x, y, theta_deg, probe_distance)
+                cv2.circle(frame_with_line, (probe_x, probe_y), 5, (0, 255, 0), -1)  # Green circles for probe
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
