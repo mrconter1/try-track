@@ -304,7 +304,7 @@ class App:
             points.extend([x, y])
 
         if len(points) > 2:
-            self.plot_canvas.create_line(points, fill="blue", width=2)
+            self.plot_canvas.create_line(points, fill="red", width=2)
 
         # Draw probe line if available
         if probe_pixel_values is not None and len(probe_pixel_values) > 0:
@@ -320,7 +320,7 @@ class App:
         # Calculate and draw median line (for main line only)
         median_value = np.median(pixel_values)
         median_y = canvas_h - (median_value / 255.0) * canvas_h
-        self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="red", width=2, dash=(4, 4))
+        self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="orange", width=2, dash=(4, 4))
 
         # Calculate and draw max line (for main line only)
         max_value = np.max(pixel_values)
@@ -340,7 +340,7 @@ class App:
 
         # Draw legend
         legend_y = 10
-        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="blue", width=2)
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="red", width=2)
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Main", font=("Arial", 8))
         
         legend_y += 15
@@ -348,7 +348,7 @@ class App:
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Probe", font=("Arial", 8))
         
         legend_y += 15
-        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="red", width=2, dash=(4, 4))
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="orange", width=2, dash=(4, 4))
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Median", font=("Arial", 8))
         
         legend_y += 15
