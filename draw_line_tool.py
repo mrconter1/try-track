@@ -350,7 +350,7 @@ class App:
         self.update_image()
 
 
-    def draw_pixel_plot(self, pixel_values, probe_pixel_values=None):
+    def draw_pixel_plot(self, pixel_values, probe_pixel_values=None, probe2_pixel_values=None):
         self.plot_canvas.delete("all") # Clear previous plot
 
         if pixel_values is None or len(pixel_values) == 0:
@@ -404,6 +404,17 @@ class App:
             center_y = canvas_h / 2
             self.plot_canvas.create_line(0, center_y, canvas_w, center_y, fill="purple", width=1, dash=(2, 2))
 
+        # Draw second probe line if available
+        if probe2_pixel_values is not None and len(probe2_pixel_values) > 0:
+            probe2_points = []
+            for i, value in enumerate(probe2_pixel_values):
+                x = i * x_step
+                y = canvas_h - (value / 255.0) * canvas_h
+                probe2_points.extend([x, y])
+            
+            if len(probe2_points) > 2:
+                self.plot_canvas.create_line(probe2_points, fill="yellow", width=2)
+
         # Calculate and draw median line (for main line only)
         median_value = np.median(pixel_values)
         median_y = canvas_h - (median_value / 255.0) * canvas_h
@@ -433,6 +444,10 @@ class App:
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="green", width=2)
         self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Probe", font=("Arial", 8))
+        
+        legend_y += 15
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="yellow", width=2)
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Probe 2", font=("Arial", 8))
         
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="purple", width=2)
@@ -538,6 +553,10 @@ class App:
         probe_distance = self.probe_distance_var.get()
         rho_probe = rho + probe_distance
         frame_with_line = draw_hough_line(frame_with_line, rho_probe, theta_deg, color=(0, 255, 0), thickness=2)
+
+        # Draw second probe line on the other side
+        rho_probe2 = rho - probe_distance
+        frame_with_line = draw_hough_line(frame_with_line, rho_probe2, theta_deg, color=(0, 255, 255), thickness=2)
         
         # Draw a blue dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (255, 0, 0), -1)
@@ -551,6 +570,9 @@ class App:
         # Get pixel values for probe line
         _, _, probe_pixel_values = get_line_metrics(self.original_frame, rho_probe, theta_deg, num_samples)
 
+        # Get pixel values for second probe line
+        _, _, probe2_pixel_values = get_line_metrics(self.original_frame, rho_probe2, theta_deg, num_samples)
+
         # Get parametric sample points for main line
         main_sample_points = get_parametric_line_samples(rho, theta_deg, num_samples, self.original_frame.shape)
 
@@ -563,6 +585,10 @@ class App:
                 probe_x, probe_y = get_perpendicular_offset_point(x, y, theta_deg, probe_distance)
                 cv2.circle(frame_with_line, (probe_x, probe_y), 5, (0, 255, 0), -1)  # Green circles for probe
 
+                # Get corresponding second probe point by perpendicular offset
+                probe2_x, probe2_y = get_perpendicular_offset_point(x, y, theta_deg, -probe_distance)
+                cv2.circle(frame_with_line, (probe2_x, probe2_y), 5, (0, 255, 255), -1) # Yellow circles for probe 2
+
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
         text = f"Angle: {angle_deg:.1f}, Center: ({cx:.0f}, {cy:.0f})"
@@ -573,7 +599,7 @@ class App:
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         # --- Update the pixel plot ---
-        self.draw_pixel_plot(pixel_values, probe_pixel_values)
+        self.draw_pixel_plot(pixel_values, probe_pixel_values, probe2_pixel_values)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
