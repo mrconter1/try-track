@@ -80,6 +80,7 @@ class App:
         self.angle_var = tk.DoubleVar(value=self.args.angle)
         self.cx_var = tk.DoubleVar(value=initial_cx)
         self.cy_var = tk.DoubleVar(value=initial_cy)
+        self.num_samples_var = tk.IntVar(value=self.args.num_samples)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -120,10 +121,19 @@ class App:
         ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_cy(1)).grid(row=2, column=3)
         self.cy_label = ttk.Label(control_frame, text=f"{self.cy_var.get():.1f}", width=7)
         self.cy_label.grid(row=2, column=4, padx=5)
+
+        # Num Samples Controls
+        ttk.Label(control_frame, text="Samples:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_num_samples(-5)).grid(row=3, column=1)
+        self.num_samples_slider = tk.Scale(control_frame, from_=10, to=500, orient=tk.HORIZONTAL, variable=self.num_samples_var, command=self.update_image, resolution=1, showvalue=0)
+        self.num_samples_slider.grid(row=3, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_num_samples(5)).grid(row=3, column=3)
+        self.num_samples_label = ttk.Label(control_frame, text=f"{self.num_samples_var.get()}", width=7)
+        self.num_samples_label.grid(row=3, column=4, padx=5)
         
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Best Fit", command=self.start_best_fit_search)
-        self.search_button.grid(row=0, column=5, rowspan=3, padx=10, sticky="ns")
+        self.search_button.grid(row=0, column=5, rowspan=4, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -321,6 +331,11 @@ class App:
         current_val = self.cy_var.get()
         self.cy_var.set(round(current_val + amount, 1))
         self.update_image()
+
+    def adjust_num_samples(self, amount):
+        current_val = self.num_samples_var.get()
+        self.num_samples_var.set(max(10, current_val + amount))
+        self.update_image()
         
     def update_image(self, *args):
         # Get user-friendly parameters from the GUI
@@ -346,8 +361,11 @@ class App:
         # Draw a green dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
 
+        # Get number of samples
+        num_samples = self.num_samples_var.get()
+
         # Calculate Std Dev
-        std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, num_samples)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -376,6 +394,7 @@ class App:
         self.angle_label.config(text=f"{angle_deg:.2f}")
         self.cx_label.config(text=f"{cx:.1f}")
         self.cy_label.config(text=f"{cy:.1f}")
+        self.num_samples_label.config(text=f"{num_samples}")
 
 def main(args):
     """Main function to load frame and launch the GUI."""
