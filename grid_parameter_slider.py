@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -195,13 +196,19 @@ class App:
         self.root = root
         self.args = args
         self.base_frame = frame.copy()
+        self.gray_frame = cv2.cvtColor(self.base_frame, cv2.COLOR_BGR2GRAY)
         self.lines = generate_plane_lines(args.tile_radius, args.samples_per_line)
+        self.search_lines = generate_plane_lines(args.tile_radius, 50)
         self.height, self.width = self.base_frame.shape[:2]
         self.fx = self.fy = max(self.width, self.height)
         self.cx = self.width / 2.0
         self.cy = self.height / 2.0
         self.color = parse_color(args.color)
         self._pending_job: str | None = None
+        self.searching = False
+        self.status_var = tk.StringVar(value="")
+        self.camera_height = 1.0
+        self.camera_pos = np.array([0.0, self.camera_height, 0.0], dtype=np.float64)
 
         max_w = 960
         max_h = 720
@@ -280,9 +287,15 @@ class App:
         button_frame = ttk.Frame(control_frame, padding=(0, 10))
         button_frame.grid(row=len(SLIDERS) * 3, column=0, columnspan=TOTAL_CONTROL_COLUMNS, sticky="ew")
         ttk.Button(button_frame, text="Reset", command=self.reset_sliders).grid(row=0, column=0, sticky="ew")
-        ttk.Button(button_frame, text="Close", command=self.root.destroy).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Button(button_frame, text="Close", command=self.root.destroy).grid(row=0, column=1, sticky="ew", padx=(6, 4))
+        self.find_button = ttk.Button(button_frame, text="Find Best Grid", command=self.start_bruteforce)
+        self.find_button.grid(row=0, column=2, sticky="ew")
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
+        button_frame.columnconfigure(2, weight=2)
+
+        status_label = ttk.Label(button_frame, textvariable=self.status_var, anchor="w")
+        status_label.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
         self.update_image()
 
@@ -351,6 +364,128 @@ class App:
         image_tk = ImageTk.PhotoImage(image=image_pil)
         self.image_label.configure(image=image_tk)
         self.image_label.image = image_tk
+
+    def start_bruteforce(self):
+        if self.searching:
+            return
+        self.searching = True
+        self.find_button.config(state=tk.DISABLED)
+        self.status_var.set("Searching for best grid...")
+        print("[BruteForce] Search started", flush=True)
+        thread = threading.Thread(target=self._bruteforce_search, daemon=True)
+        thread.start()
+
+    def _bruteforce_search(self):
+        ranges = {
+            "Grid X": self._frange(-1.0, 1.0, 0.2),
+            "Grid Y": self._frange(-1.0, 1.0, 0.2),
+            "Grid Rot": self._frange(-5.0, 5.0, 1.0),
+            "Scale": self._frange(0.15, 0.25, 0.01),
+            "Pitch": self._frange(-20.0, -10.0, 1.0),
+        }
+
+        best_score = float("inf")
+        best_params = None
+        total = (
+            len(ranges["Grid X"])
+            * len(ranges["Grid Y"])
+            * len(ranges["Grid Rot"])
+            * len(ranges["Scale"])
+            * len(ranges["Pitch"])
+        )
+        checked = 0
+
+        for grid_x in ranges["Grid X"]:
+            for grid_y in ranges["Grid Y"]:
+                for grid_rot in ranges["Grid Rot"]:
+                    for scale in ranges["Scale"]:
+                        for pitch in ranges["Pitch"]:
+                            params = {
+                                "Grid X": grid_x,
+                                "Grid Y": grid_y,
+                                "Grid Rot": grid_rot,
+                                "Scale": scale,
+                                "Pitch": pitch,
+                            }
+                            score = self.compute_grid_brightness(params)
+                            if score < best_score:
+                                best_score = score
+                                best_params = params.copy()
+                            checked += 1
+                            if checked % 500 == 0:
+                                progress_text = f"Searching... {checked:,}/{total:,} (best={best_score:.2f})"
+                                self._queue_status(progress_text)
+                                print(f"[BruteForce] {progress_text}", flush=True)
+
+        self.root.after(0, lambda: self._apply_search_result(best_params, best_score))
+
+    def _apply_search_result(self, best_params: dict[str, float] | None, best_score: float):
+        self.searching = False
+        self.find_button.config(state=tk.NORMAL)
+        if not best_params:
+            final_text = "Search finished: no valid grid found."
+            self.status_var.set(final_text)
+            print(f"[BruteForce] {final_text}", flush=True)
+            return
+
+        for name, value in best_params.items():
+            self.slider_vars[name].set(value)
+        self._update_value_labels()
+        self.update_image()
+        final_text = f"Best brightness: {best_score:.2f}"
+        self.status_var.set(final_text)
+        print(f"[BruteForce] {final_text}", flush=True)
+
+    def compute_grid_brightness(self, params: dict[str, float]) -> float:
+        grid_rotation = rotation_matrix_y(np.deg2rad(params["Grid Rot"]))
+        camera_rotation = build_camera_rotation(np.deg2rad(params["Pitch"]))
+        total = 0.0
+        for plane_line in self.search_lines:
+            world_pts = plane_points_to_world(
+                plane_line,
+                grid_x=params["Grid X"],
+                grid_y=params["Grid Y"],
+                rotation_matrix=grid_rotation,
+                scale=params["Scale"],
+            )
+            xs, ys, valid = self._project_world_points(world_pts, camera_rotation)
+            total += self._sample_brightness(xs, ys, valid)
+        return total
+
+    def _project_world_points(
+        self,
+        world_points: np.ndarray,
+        camera_rotation: np.ndarray,
+        z_epsilon: float = 1e-4,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        rel = world_points - self.camera_pos
+        cam_pts = (camera_rotation @ rel.T).T
+        zs = cam_pts[:, 2]
+        xs = np.zeros_like(zs)
+        ys = np.zeros_like(zs)
+        valid = zs > z_epsilon
+        if np.any(valid):
+            xs[valid] = self.fx * (cam_pts[valid, 0] / zs[valid]) + self.cx
+            ys[valid] = self.fy * (cam_pts[valid, 1] / zs[valid]) + self.cy
+        return xs, ys, valid
+
+    def _sample_brightness(self, xs: np.ndarray, ys: np.ndarray, valid: np.ndarray) -> float:
+        h, w = self.gray_frame.shape
+        inside = valid & (xs >= 0.0) & (xs < w) & (ys >= 0.0) & (ys < h)
+        if not np.any(inside):
+            return 0.0
+        xs_idx = np.clip(np.round(xs[inside]).astype(int), 0, w - 1)
+        ys_idx = np.clip(np.round(ys[inside]).astype(int), 0, h - 1)
+        return float(np.sum(self.gray_frame[ys_idx, xs_idx]))
+
+    @staticmethod
+    def _frange(start: float, end: float, step: float) -> list[float]:
+        count = int(round((end - start) / step))
+        values = [round(start + i * step, 6) for i in range(count + 1)]
+        return values
+
+    def _queue_status(self, text: str):
+        self.root.after(0, lambda: self.status_var.set(text))
 
 
 def main():
