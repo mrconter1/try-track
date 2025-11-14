@@ -273,11 +273,29 @@ class App:
         median_y = canvas_h - (median_value / 255.0) * canvas_h
         self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="red", width=2, dash=(4, 4))
 
+        # Calculate and draw max line
+        max_value = np.max(pixel_values)
+        max_y = canvas_h - (max_value / 255.0) * canvas_h
+        self.plot_canvas.create_line(0, max_y, canvas_w, max_y, fill="green", width=2, dash=(2, 2))
+
         # Draw Y-axis labels for context
         for val in range(0, 256, 25):
             y = canvas_h - (val / 255.0) * canvas_h
             self.plot_canvas.create_text(15, y, anchor="w", text=str(val), font=("Arial", 9))
             self.plot_canvas.create_line(0, y, 10, y)
+
+        # Draw legend
+        legend_y = 10
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="blue", width=2)
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Values", font=("Arial", 8))
+        
+        legend_y += 15
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="red", width=2, dash=(4, 4))
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Median", font=("Arial", 8))
+        
+        legend_y += 15
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="green", width=2, dash=(2, 2))
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Max", font=("Arial", 8))
 
 
     def adjust_angle(self, amount):
