@@ -65,10 +65,13 @@ def get_line_metrics(frame, rho, theta_deg, num_samples):
 # --- New Tkinter GUI Application ---
 
 class App:
-    def __init__(self, root, args, initial_frame):
+    def __init__(self, root, args, initial_frame, video_path, total_frames):
         self.root = root
         self.args = args
         self.original_frame = initial_frame
+        self.video_path = video_path
+        self.total_frames = total_frames
+        self.current_frame_num = args.frame
         
         self.root.title("Hough Line Control")
         
@@ -84,6 +87,7 @@ class App:
         self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
+        self.frame_num_var = tk.IntVar(value=self.current_frame_num)
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -98,57 +102,66 @@ class App:
         # Controls
         h, w = self.original_frame.shape[:2]
         
+        # Frame Number Controls
+        ttk.Label(control_frame, text="Frame:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_frame(-10)).grid(row=0, column=1)
+        self.frame_slider = tk.Scale(control_frame, from_=0, to=self.total_frames-1, orient=tk.HORIZONTAL, variable=self.frame_num_var, command=self.load_frame, resolution=1, showvalue=0)
+        self.frame_slider.grid(row=0, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_frame(10)).grid(row=0, column=3)
+        self.frame_label = ttk.Label(control_frame, text=f"{self.frame_num_var.get()}", width=7)
+        self.frame_label.grid(row=0, column=4, padx=5)
+
         # Angle Controls
-        ttk.Label(control_frame, text="Angle:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_angle(-0.1)).grid(row=0, column=1)
+        ttk.Label(control_frame, text="Angle:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_angle(-0.1)).grid(row=1, column=1)
         self.angle_slider = tk.Scale(control_frame, from_=0, to=180, orient=tk.HORIZONTAL, variable=self.angle_var, command=self.update_image, resolution=0.01, showvalue=0)
-        self.angle_slider.grid(row=0, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_angle(0.1)).grid(row=0, column=3)
+        self.angle_slider.grid(row=1, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_angle(0.1)).grid(row=1, column=3)
         self.angle_label = ttk.Label(control_frame, text=f"{self.angle_var.get():.2f}", width=7)
-        self.angle_label.grid(row=0, column=4, padx=5)
+        self.angle_label.grid(row=1, column=4, padx=5)
 
         # Center X Controls
-        ttk.Label(control_frame, text="Center X:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_cx(-1)).grid(row=1, column=1)
+        ttk.Label(control_frame, text="Center X:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_cx(-1)).grid(row=2, column=1)
         self.cx_slider = tk.Scale(control_frame, from_=0, to=w, orient=tk.HORIZONTAL, variable=self.cx_var, command=self.update_image, resolution=0.1, showvalue=0)
-        self.cx_slider.grid(row=1, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_cx(1)).grid(row=1, column=3)
+        self.cx_slider.grid(row=2, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_cx(1)).grid(row=2, column=3)
         self.cx_label = ttk.Label(control_frame, text=f"{self.cx_var.get():.1f}", width=7)
-        self.cx_label.grid(row=1, column=4, padx=5)
+        self.cx_label.grid(row=2, column=4, padx=5)
 
         # Center Y Controls
-        ttk.Label(control_frame, text="Center Y:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_cy(-1)).grid(row=2, column=1)
+        ttk.Label(control_frame, text="Center Y:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_cy(-1)).grid(row=3, column=1)
         self.cy_slider = tk.Scale(control_frame, from_=0, to=h, orient=tk.HORIZONTAL, variable=self.cy_var, command=self.update_image, resolution=0.1, showvalue=0)
-        self.cy_slider.grid(row=2, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_cy(1)).grid(row=2, column=3)
+        self.cy_slider.grid(row=3, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_cy(1)).grid(row=3, column=3)
         self.cy_label = ttk.Label(control_frame, text=f"{self.cy_var.get():.1f}", width=7)
-        self.cy_label.grid(row=2, column=4, padx=5)
+        self.cy_label.grid(row=3, column=4, padx=5)
 
         # Num Samples Controls
-        ttk.Label(control_frame, text="Samples:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_num_samples(-5)).grid(row=3, column=1)
+        ttk.Label(control_frame, text="Samples:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_num_samples(-5)).grid(row=4, column=1)
         self.num_samples_slider = tk.Scale(control_frame, from_=10, to=500, orient=tk.HORIZONTAL, variable=self.num_samples_var, command=self.update_image, resolution=1, showvalue=0)
-        self.num_samples_slider.grid(row=3, column=2, sticky="ew")
-        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_num_samples(5)).grid(row=3, column=3)
+        self.num_samples_slider.grid(row=4, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_num_samples(5)).grid(row=4, column=3)
         self.num_samples_label = ttk.Label(control_frame, text=f"{self.num_samples_var.get()}", width=7)
-        self.num_samples_label.grid(row=3, column=4, padx=5)
+        self.num_samples_label.grid(row=4, column=4, padx=5)
 
         # CLAHE Enable/Disable
-        ttk.Label(control_frame, text="CLAHE:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ttk.Label(control_frame, text="CLAHE:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.clahe_checkbox = ttk.Checkbutton(control_frame, variable=self.clahe_enabled, command=self.update_image)
-        self.clahe_checkbox.grid(row=4, column=1, sticky=tk.W)
+        self.clahe_checkbox.grid(row=5, column=1, sticky=tk.W)
         
         # CLAHE Clip Limit
-        ttk.Label(control_frame, text="Clip:").grid(row=4, column=2, sticky=tk.W, padx=(10, 0))
+        ttk.Label(control_frame, text="Clip:").grid(row=5, column=2, sticky=tk.W, padx=(10, 0))
         self.clahe_clip_slider = tk.Scale(control_frame, from_=1.0, to=10.0, orient=tk.HORIZONTAL, variable=self.clahe_clip_limit, command=self.update_image, resolution=0.5, showvalue=0)
-        self.clahe_clip_slider.grid(row=4, column=3, sticky="ew")
+        self.clahe_clip_slider.grid(row=5, column=3, sticky="ew")
         self.clahe_clip_label = ttk.Label(control_frame, text=f"{self.clahe_clip_limit.get():.1f}", width=5)
-        self.clahe_clip_label.grid(row=4, column=4, padx=5)
+        self.clahe_clip_label.grid(row=5, column=4, padx=5)
         
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Best Fit", command=self.start_best_fit_search)
-        self.search_button.grid(row=0, column=5, rowspan=5, padx=10, sticky="ns")
+        self.search_button.grid(row=0, column=5, rowspan=6, padx=10, sticky="ns")
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -363,6 +376,28 @@ class App:
         
         # Merge the CLAHE-processed gray channel back to BGR
         return cv2.cvtColor(gray_clahe, cv2.COLOR_GRAY2BGR)
+
+    def adjust_frame(self, amount):
+        """Adjust frame number by a given amount."""
+        current_frame = self.frame_num_var.get()
+        new_frame = max(0, min(self.total_frames - 1, current_frame + amount))
+        self.frame_num_var.set(new_frame)
+        self.load_frame(str(new_frame))
+
+    def load_frame(self, frame_num_str):
+        """Load a specific frame from the video."""
+        frame_num = int(float(frame_num_str))
+        self.current_frame_num = frame_num
+        
+        cap = cv2.VideoCapture(self.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if ret:
+            self.original_frame = frame
+            self.frame_label.config(text=f"{frame_num}")
+            self.update_image()
         
     def update_image(self, *args):
         # Get user-friendly parameters from the GUI
@@ -468,7 +503,7 @@ def main(args):
 
     root = tk.Tk()
     root.state('zoomed') # Maximize the window
-    app = App(root, args, frame)
+    app = App(root, args, frame, args.video, total_frames)
     root.mainloop()
 
 def parse_args():
