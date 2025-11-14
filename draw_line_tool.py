@@ -277,15 +277,26 @@ class App:
         theta_rad = np.deg2rad(theta_deg)
         rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
         
-        _, _, initial_pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
-        initial_percentile_95 = np.percentile(initial_pixel_values, 95) if initial_pixel_values is not None else float('inf')
+        # Calculate initial symmetric difference metric
+        probe_distance = self.probe_distance_var.get()
+        rho_probe = rho + probe_distance
+        rho_probe2 = rho - probe_distance
+        _, _, p_main = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+        _, _, p_probe1 = get_line_metrics(self.original_frame, rho_probe, theta_deg, self.args.num_samples)
+        _, _, p_probe2 = get_line_metrics(self.original_frame, rho_probe2, theta_deg, self.args.num_samples)
+
+        initial_metric = float('inf')
+        if p_main is not None and p_probe1 is not None and p_probe2 is not None and len(p_main) == len(p_probe1) and len(p_main) == len(p_probe2):
+            diff_values = (p_main.astype(float) - (p_probe1.astype(float) + p_probe2.astype(float)) / 2.0)
+            if diff_values.size > 0:
+                initial_metric = np.percentile(diff_values, 5)
 
         # Run the actual search in a worker thread
-        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_percentile_95,))
+        search_thread = threading.Thread(target=self._grid_search_worker, args=(initial_metric,))
         search_thread.daemon = True # Allows main program to exit even if thread is running
         search_thread.start()
 
-    def _grid_search_worker(self, initial_percentile_95):
+    def _grid_search_worker(self, initial_metric):
         """The long-running grid search task."""
         center_cx = self.cx_var.get()
         center_cy = self.cy_var.get()
@@ -294,7 +305,10 @@ class App:
         best_cx = center_cx
         best_cy = center_cy
         best_angle = center_angle
-        min_percentile_95 = initial_percentile_95 if initial_percentile_95 is not None else float('inf')
+        min_metric = initial_metric if initial_metric is not None else float('inf')
+
+        # Get probe distance once for the search loop
+        probe_distance = self.probe_distance_var.get()
 
         iterations = zip(self.args.position_ranges, self.args.angle_ranges, self.args.num_search_samples)
         total_iterations = len(self.args.position_ranges)
@@ -318,15 +332,24 @@ class App:
                 theta_rad = np.deg2rad(theta_deg)
                 rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
                 
-                _, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+                # Calculate symmetric difference metric
+                rho_probe = rho + probe_distance
+                rho_probe2 = rho - probe_distance
                 
-                if pixel_values is not None:
-                    percentile_95 = np.percentile(pixel_values, 95)
-                    if percentile_95 < min_percentile_95:
-                        min_percentile_95 = percentile_95
-                        best_cx = cx
-                        best_cy = cy
-                        best_angle = angle
+                _, _, p_main = get_line_metrics(self.original_frame, rho, theta_deg, self.args.num_samples)
+                _, _, p_probe1 = get_line_metrics(self.original_frame, rho_probe, theta_deg, self.args.num_samples)
+                _, _, p_probe2 = get_line_metrics(self.original_frame, rho_probe2, theta_deg, self.args.num_samples)
+
+                if p_main is not None and p_probe1 is not None and p_probe2 is not None and len(p_main) == len(p_probe1) and len(p_main) == len(p_probe2):
+                    diff_values = (p_main.astype(float) - (p_probe1.astype(float) + p_probe2.astype(float)) / 2.0)
+                    
+                    if diff_values.size > 0:
+                        current_metric = np.percentile(diff_values, 5)
+                        if current_metric < min_metric:
+                            min_metric = current_metric
+                            best_cx = cx
+                            best_cy = cy
+                            best_angle = angle
 
                 # Print progress to the console periodically
                 if (i + 1) % 200 == 0 or (i + 1) == num_samples:
