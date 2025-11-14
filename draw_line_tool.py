@@ -133,7 +133,7 @@ class App:
 
         # --- Now, dynamically set Display Size based on remaining space ---
         max_width = root.winfo_screenwidth() - 40   # Padding for window borders
-        max_height = root.winfo_screenheight() - control_height - 100 # Padding for borders and taskbar
+        max_height = root.winfo_screenheight() - control_height - 150 # Padding for borders, taskbar, and margins
         
         h_orig, w_orig = self.original_frame.shape[:2]
         ratio = min(max_width / w_orig, max_height / h_orig)
@@ -146,7 +146,7 @@ class App:
         self.image_label.grid(row=0, column=0, sticky="nsew")
         
         # Pixel Plot Canvas
-        self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200)
+        self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200, height=self.display_h)
         self.plot_canvas.grid(row=0, column=1, sticky="nsew")
 
         main_frame.rowconfigure(0, weight=1)
