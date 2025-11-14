@@ -388,6 +388,10 @@ class App:
         # Draw line
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
+        # Draw parallel probe line 10 pixels away
+        rho_probe = rho + 10
+        frame_with_line = draw_hough_line(frame_with_line, rho_probe, theta_deg, color=(0, 255, 0), thickness=2)
+        
         # Draw a green dot at the center point
         cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (0, 255, 0), -1)
 
