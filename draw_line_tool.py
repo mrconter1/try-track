@@ -404,9 +404,11 @@ class App:
            len(pixel_values) == len(probe_pixel_values) and len(pixel_values) == len(probe2_pixel_values):
             
             diff_points = []
+            diff_values = []
             for i, (main_val, probe1_val, probe2_val) in enumerate(zip(pixel_values, probe_pixel_values, probe2_pixel_values)):
                 avg_probe = (float(probe1_val) + float(probe2_val)) / 2.0
                 diff = float(main_val) - avg_probe
+                diff_values.append(diff)
                 
                 # Center the difference at canvas_h/2 and scale it
                 x = i * x_step
@@ -419,21 +421,42 @@ class App:
             # Draw zero difference line (center)
             center_y = canvas_h / 2
             self.plot_canvas.create_line(0, center_y, canvas_w, center_y, fill="purple", width=1, dash=(2, 2))
+            
+            # --- Calculate and draw stats for the Symmetric Difference ---
+            
+            # Median
+            median_diff = np.median(diff_values)
+            median_y = canvas_h / 2 - (median_diff / 255.0) * (canvas_h / 2)
+            self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="orange", width=2, dash=(4, 4))
 
-        # Calculate and draw median line (for main line only)
-        median_value = np.median(pixel_values)
-        median_y = canvas_h - (median_value / 255.0) * canvas_h
-        self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="orange", width=2, dash=(4, 4))
+            # Min
+            min_diff = np.min(diff_values)
+            min_y = canvas_h / 2 - (min_diff / 255.0) * (canvas_h / 2)
+            self.plot_canvas.create_line(0, min_y, canvas_w, min_y, fill="cyan", width=2, dash=(2, 2))
 
-        # Calculate and draw max line (for main line only)
-        max_value = np.max(pixel_values)
-        max_y = canvas_h - (max_value / 255.0) * canvas_h
-        self.plot_canvas.create_line(0, max_y, canvas_w, max_y, fill="cyan", width=2, dash=(2, 2))
+            # 5th Percentile
+            percentile_5_diff = np.percentile(diff_values, 5)
+            percentile_5_y = canvas_h / 2 - (percentile_5_diff / 255.0) * (canvas_h / 2)
+            self.plot_canvas.create_line(0, percentile_5_y, canvas_w, percentile_5_y, fill="magenta", width=2, dash=(2, 4))
+            
+        else:
+            # --- Fallback to drawing stats for the main line if no probe data ---
+            
+            # Calculate and draw median line (for main line only)
+            median_value = np.median(pixel_values)
+            median_y = canvas_h - (median_value / 255.0) * canvas_h
+            self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="orange", width=2, dash=(4, 4))
 
-        # Calculate and draw 95th percentile line (for main line only)
-        percentile_95 = np.percentile(pixel_values, 95)
-        percentile_95_y = canvas_h - (percentile_95 / 255.0) * canvas_h
-        self.plot_canvas.create_line(0, percentile_95_y, canvas_w, percentile_95_y, fill="orange", width=2, dash=(2, 4))
+            # Calculate and draw min line (for main line only)
+            min_value = np.min(pixel_values)
+            min_y = canvas_h - (min_value / 255.0) * canvas_h
+            self.plot_canvas.create_line(0, min_y, canvas_w, min_y, fill="cyan", width=2, dash=(2, 2))
+
+            # Calculate and draw 5th percentile line (for main line only)
+            percentile_5 = np.percentile(pixel_values, 5)
+            percentile_5_y = canvas_h - (percentile_5 / 255.0) * canvas_h
+            self.plot_canvas.create_line(0, percentile_5_y, canvas_w, percentile_5_y, fill="magenta", width=2, dash=(2, 4))
+
 
         # Draw Y-axis labels for context
         for val in range(0, 256, 25):
@@ -464,11 +487,11 @@ class App:
         
         legend_y += 15
         self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="cyan", width=2, dash=(2, 2))
-        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Max", font=("Arial", 8))
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="Min", font=("Arial", 8))
         
         legend_y += 15
-        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="orange", width=2, dash=(2, 4))
-        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="95th %ile", font=("Arial", 8))
+        self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill="magenta", width=2, dash=(2, 4))
+        self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text="5th %ile", font=("Arial", 8))
 
 
     def adjust_angle(self, amount):
