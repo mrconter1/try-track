@@ -271,7 +271,7 @@ class App:
         self.plot_canvas.create_line(0, median_y, canvas_w, median_y, fill="red", width=2, dash=(4, 4))
 
         # Draw Y-axis labels for context
-        for val in range(0, 256, 50):
+        for val in range(0, 256, 25):
             y = canvas_h - (val / 255.0) * canvas_h
             self.plot_canvas.create_text(15, y, anchor="w", text=str(val), font=("Arial", 9))
             self.plot_canvas.create_line(0, y, 10, y)
