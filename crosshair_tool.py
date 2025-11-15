@@ -494,10 +494,10 @@ class App:
             stage_params = best_params.copy()
 
             for _ in range(int(samples)):
-                cx_min = max(0, best_params["cx"] - pos_range)
-                cx_max = min(w, best_params["cx"] + pos_range)
-                cy_min = max(0, best_params["cy"] - pos_range)
-                cy_max = min(h, best_params["cy"] + pos_range)
+                cx_min = max(100, best_params["cx"] - pos_range)
+                cx_max = min(w - 100, best_params["cx"] + pos_range)
+                cy_min = max(100, best_params["cy"] - pos_range)
+                cy_max = min(h - 100, best_params["cy"] + pos_range)
 
                 candidate = {
                     "cx": rng.uniform(cx_min, cx_max),
@@ -527,8 +527,9 @@ class App:
         """Apply best parameters and re-enable button."""
         if not self.angle_gap_ok(params["v_angle"], params["h_angle"]):
             params["h_angle"] = (params["v_angle"] + MIN_ANGLE_DIFF) % 180
-        self.cx_var.set(params["cx"])
-        self.cy_var.set(params["cy"])
+        h, w = self.original_frame.shape[:2]
+        self.cx_var.set(np.clip(params["cx"], 100, w - 100))
+        self.cy_var.set(np.clip(params["cy"], 100, h - 100))
         self.v_angle_var.set(params["v_angle"] % 180)
         self.h_angle_var.set(params["h_angle"] % 180)
         self.search_rect = (params["cx"], params["cy"], search_range)
@@ -575,12 +576,16 @@ class App:
 
     def adjust_cx(self, amount):
         current_val = self.cx_var.get()
-        self.cx_var.set(round(current_val + amount, 1))
+        h, w = self.original_frame.shape[:2]
+        new_val = np.clip(current_val + amount, 100, w - 100)
+        self.cx_var.set(round(new_val, 1))
         self.update_image()
 
     def adjust_cy(self, amount):
         current_val = self.cy_var.get()
-        self.cy_var.set(round(current_val + amount, 1))
+        h, w = self.original_frame.shape[:2]
+        new_val = np.clip(current_val + amount, 100, h - 100)
+        self.cy_var.set(round(new_val, 1))
         self.update_image()
 
     def adjust_v_angle(self, amount):
