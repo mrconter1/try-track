@@ -161,6 +161,8 @@ class App:
         self.image_canvas.bind("<Button-1>", self.on_image_click)
         self.image_canvas.bind("<B1-Motion>", self.on_image_drag)
         self.image_canvas.bind("<ButtonRelease-1>", self.on_image_release)
+        self.image_canvas.bind("<Motion>", self.on_mouse_move)
+        self.image_canvas.bind("<Leave>", self.on_mouse_leave)
 
         self.update_image()
     
@@ -349,6 +351,40 @@ class App:
     def on_image_release(self, event):
         """Handle mouse release."""
         self.dragging_endpoint = None
+
+    def on_mouse_move(self, event):
+        """Display pixel color under the cursor when not dragging."""
+        # Ignore updates while dragging (mouse button held down)
+        if event.state & 0x0100:  # Left mouse button bitmask
+            return
+
+        h_orig, w_orig = self.original_frame.shape[:2]
+        self.scale_factor = self.display_w / w_orig
+
+        frame_x = int(event.x / self.scale_factor)
+        frame_y = int(event.y / self.scale_factor)
+
+        frame_x = np.clip(frame_x, 0, w_orig - 1)
+        frame_y = np.clip(frame_y, 0, h_orig - 1)
+
+        b, g, r = self.original_frame[frame_y, frame_x]
+        brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
+        info_text = f"Pos: ({frame_x}, {frame_y})  Brightness: {brightness}"
+
+        self.image_canvas.delete("pixel_info")
+        self.image_canvas.delete("pixel_info_bg")
+        self.image_canvas.create_rectangle(
+            5, 45, 5 + 260, 70, fill="black", stipple="gray25", outline="", tags="pixel_info_bg"
+        )
+        self.image_canvas.create_text(
+            10, 50, anchor="nw", text=info_text, fill="white",
+            font=("Arial", 10), tags="pixel_info"
+        )
+
+    def on_mouse_leave(self, event):
+        """Clear pixel info when cursor leaves the image."""
+        self.image_canvas.delete("pixel_info")
+        self.image_canvas.delete("pixel_info_bg")
 
     def adjust_cx(self, amount):
         current_val = self.cx_var.get()
