@@ -38,6 +38,7 @@ class App:
         self.clahe_tile_size = tk.IntVar(value=8)
         self.frame_num_var = tk.IntVar(value=self.current_frame_num)
         self._optimizing = False
+        self.search_rect = None
         self.processed_frame = self.original_frame.copy()
         
         # --- GUI Layout ---
@@ -474,30 +475,55 @@ class App:
             **best_params,
         )
 
-        iterations = 300
+        diag = max(w, h)
+        search_configs = [
+            (diag / 2, 90, 2500),
+            (diag / 4, 60, 2000),
+            (diag / 8, 30, 1500),
+            (diag / 16, 15, 1000),
+            (diag / 32, 8, 700),
+        ]
         rng = np.random.default_rng()
-        for _ in range(iterations):
-            candidate = {
-                "cx": rng.uniform(0, w),
-                "cy": rng.uniform(0, h),
-                "v_angle": rng.uniform(0, 180),
-                "h_angle": rng.uniform(0, 180),
-            }
-            if not self.angle_gap_ok(candidate["v_angle"], candidate["h_angle"]):
-                continue
-            score = self.evaluate_contrast_metric(
-                line_length=line_length,
-                inner_gap=inner_gap,
-                num_samples=num_samples,
-                **candidate,
-            )
-            if score > best_score:
-                best_score = score
-                best_params = candidate
+        final_rect_range = max(5, search_configs[-1][0])
 
-        self.root.after(0, self._finish_optimization, best_params)
+        for pos_range, angle_range, samples in search_configs:
+            pos_range = max(5, pos_range)
+            angle_range = max(5, angle_range)
 
-    def _finish_optimization(self, params):
+            stage_best = best_score
+            stage_params = best_params.copy()
+
+            for _ in range(int(samples)):
+                cx_min = max(0, best_params["cx"] - pos_range)
+                cx_max = min(w, best_params["cx"] + pos_range)
+                cy_min = max(0, best_params["cy"] - pos_range)
+                cy_max = min(h, best_params["cy"] + pos_range)
+
+                candidate = {
+                    "cx": rng.uniform(cx_min, cx_max),
+                    "cy": rng.uniform(cy_min, cy_max),
+                    "v_angle": (best_params["v_angle"] + rng.uniform(-angle_range, angle_range)) % 180,
+                    "h_angle": (best_params["h_angle"] + rng.uniform(-angle_range, angle_range)) % 180,
+                }
+                if not self.angle_gap_ok(candidate["v_angle"], candidate["h_angle"]):
+                    continue
+
+                score = self.evaluate_contrast_metric(
+                    line_length=line_length,
+                    inner_gap=inner_gap,
+                    num_samples=num_samples,
+                    **candidate,
+                )
+                if score > stage_best:
+                    stage_best = score
+                    stage_params = candidate
+
+            best_score = stage_best
+            best_params = stage_params
+
+        self.root.after(0, self._finish_optimization, best_params, final_rect_range)
+
+    def _finish_optimization(self, params, search_range):
         """Apply best parameters and re-enable button."""
         if not self.angle_gap_ok(params["v_angle"], params["h_angle"]):
             params["h_angle"] = (params["v_angle"] + MIN_ANGLE_DIFF) % 180
@@ -505,6 +531,7 @@ class App:
         self.cy_var.set(params["cy"])
         self.v_angle_var.set(params["v_angle"] % 180)
         self.h_angle_var.set(params["h_angle"] % 180)
+        self.search_rect = (params["cx"], params["cy"], search_range)
         self.update_image()
         self.optimize_button.config(state="normal", text="Optimize Contrast")
         self._optimizing = False
@@ -702,6 +729,22 @@ class App:
                 (150, 150, 150),
                 1,
                 lineType=cv2.LINE_AA
+            )
+        
+        # Visualize last search rectangle if available
+        if self.search_rect:
+            rect_cx, rect_cy, rect_range = self.search_rect
+            x1 = int(np.clip(rect_cx - rect_range, 0, w - 1))
+            x2 = int(np.clip(rect_cx + rect_range, 0, w - 1))
+            y1 = int(np.clip(rect_cy - rect_range, 0, h - 1))
+            y2 = int(np.clip(rect_cy + rect_range, 0, h - 1))
+            cv2.rectangle(
+                frame_copy,
+                (x1, y1),
+                (x2, y2),
+                (200, 200, 50),
+                1,
+                cv2.LINE_AA
             )
         
         # Draw endpoint circles for red and blue lines (draggable)
