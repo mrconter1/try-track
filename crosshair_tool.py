@@ -33,6 +33,7 @@ class App:
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
         self.frame_num_var = tk.IntVar(value=self.current_frame_num)
+        self.processed_frame = self.original_frame.copy()
         
         # --- GUI Layout ---
         main_frame = ttk.Frame(self.root, padding="10")
@@ -201,7 +202,8 @@ class App:
         x_coords = np.linspace(x1, x2, num_samples, dtype=int)
         y_coords = np.linspace(y1, y2, num_samples, dtype=int)
         
-        gray_frame = cv2.cvtColor(self.original_frame, cv2.COLOR_BGR2GRAY)
+        source_frame = self.processed_frame if self.processed_frame is not None else self.original_frame
+        gray_frame = cv2.cvtColor(source_frame, cv2.COLOR_BGR2GRAY)
         pixel_values = gray_frame[y_coords, x_coords]
         return pixel_values
     
@@ -367,7 +369,8 @@ class App:
         frame_x = np.clip(frame_x, 0, w_orig - 1)
         frame_y = np.clip(frame_y, 0, h_orig - 1)
 
-        b, g, r = self.original_frame[frame_y, frame_x]
+        source_frame = self.processed_frame if self.processed_frame is not None else self.original_frame
+        b, g, r = source_frame[frame_y, frame_x]
         brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
         info_text = f"Pos: ({frame_x}, {frame_y})  Brightness: {brightness}"
 
@@ -451,8 +454,9 @@ class App:
         h_angle = self.h_angle_var.get()
         line_length = self.line_length_var.get()
 
-        # Apply CLAHE
+        # Apply CLAHE and store processed frame
         frame_copy = self.apply_clahe(frame_copy)
+        self.processed_frame = frame_copy.copy()
 
         # Draw crosshair with angled lines
         h, w = frame_copy.shape[:2]
