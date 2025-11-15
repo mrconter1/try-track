@@ -259,10 +259,22 @@ class App:
         draw_line(h_pixels, "blue")    # Blue line (H-angle)
         draw_line(mid1_pixels, "green")  # Green line (Mid1)
         draw_line(mid2_pixels, "cyan")   # Cyan line (Mid2)
+
+        # Draw combined 95th percentile line for mid lines
+        combined_mid = []
+        if mid1_pixels is not None:
+            combined_mid.extend(mid1_pixels.tolist())
+        if mid2_pixels is not None:
+            combined_mid.extend(mid2_pixels.tolist())
+        if combined_mid:
+            p95 = np.percentile(combined_mid, 95)
+            y_p95 = canvas_h - (p95 / 255.0) * canvas_h
+            self.plot_canvas.create_line(0, y_p95, canvas_w, y_p95, fill="magenta", dash=(4, 4), width=2)
+            self.plot_canvas.create_text(5, y_p95 - 12, anchor="nw", text="Mid 95%", fill="magenta", font=("Arial", 8))
         
         # Draw legend
         legend_y = 10
-        colors = [("red", "V-Line"), ("blue", "H-Line"), ("green", "Mid1"), ("cyan", "Mid2")]
+        colors = [("red", "V-Line"), ("blue", "H-Line"), ("green", "Mid1"), ("cyan", "Mid2"), ("magenta", "Mid 95%")]
         for color, label in colors:
             self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill=color, width=2)
             self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text=label, font=("Arial", 8))
