@@ -29,6 +29,7 @@ class App:
         self.h_angle_var = tk.DoubleVar(value=90.0)  # Second line angle (perpendicular)
         self.line_length_var = tk.IntVar(value=100)  # Line length for both
         self.num_samples_var = tk.IntVar(value=10)   # Number of sample points per line
+        self.inner_exclusion_var = tk.DoubleVar(value=10.0)  # Inner radius for adjacent lines
         self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
@@ -111,17 +112,26 @@ class App:
         self.num_samples_label = ttk.Label(control_frame, text=f"{self.num_samples_var.get()}", width=7)
         self.num_samples_label.grid(row=6, column=4, padx=5)
 
+        # Inner Gap Controls
+        ttk.Label(control_frame, text="Inner Gap:").grid(row=7, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_inner_gap(-1)).grid(row=7, column=1)
+        self.inner_gap_slider = tk.Scale(control_frame, from_=0, to=150, orient=tk.HORIZONTAL, variable=self.inner_exclusion_var, command=self.update_image, resolution=1, showvalue=0)
+        self.inner_gap_slider.grid(row=7, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_inner_gap(1)).grid(row=7, column=3)
+        self.inner_gap_label = ttk.Label(control_frame, text=f"{self.inner_exclusion_var.get():.0f}", width=7)
+        self.inner_gap_label.grid(row=7, column=4, padx=5)
+
         # CLAHE Enable/Disable
-        ttk.Label(control_frame, text="CLAHE:").grid(row=7, column=0, sticky=tk.W, pady=2)
+        ttk.Label(control_frame, text="CLAHE:").grid(row=8, column=0, sticky=tk.W, pady=2)
         self.clahe_checkbox = ttk.Checkbutton(control_frame, variable=self.clahe_enabled, command=self.update_image)
-        self.clahe_checkbox.grid(row=7, column=1, sticky=tk.W)
+        self.clahe_checkbox.grid(row=8, column=1, sticky=tk.W)
         
         # CLAHE Clip Limit
-        ttk.Label(control_frame, text="Clip:").grid(row=7, column=2, sticky=tk.W, padx=(10, 0))
+        ttk.Label(control_frame, text="Clip:").grid(row=8, column=2, sticky=tk.W, padx=(10, 0))
         self.clahe_clip_slider = tk.Scale(control_frame, from_=1.0, to=10.0, orient=tk.HORIZONTAL, variable=self.clahe_clip_limit, command=self.update_image, resolution=0.5, showvalue=0)
-        self.clahe_clip_slider.grid(row=7, column=3, sticky="ew")
+        self.clahe_clip_slider.grid(row=8, column=3, sticky="ew")
         self.clahe_clip_label = ttk.Label(control_frame, text=f"{self.clahe_clip_limit.get():.1f}", width=5)
-        self.clahe_clip_label.grid(row=7, column=4, padx=5)
+        self.clahe_clip_label.grid(row=8, column=4, padx=5)
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -181,31 +191,39 @@ class App:
     
     def get_line_samples(self, cx, cy, angle, line_length, num_samples=10):
         """Sample pixel values along a line and return them."""
+        return self.get_line_samples_with_radius(cx, cy, angle, line_length, num_samples)[0]
+
+    def compute_sample_points(self, cx, cy, angle, line_length, num_samples, inner_radius):
+        """Compute discrete sample points along a line excluding inner radius."""
         h, w = self.original_frame.shape[:2]
-        cx_int = int(cx)
-        cy_int = int(cy)
-        
         angle_rad = np.deg2rad(angle)
         dx = line_length * np.cos(angle_rad)
         dy = line_length * np.sin(angle_rad)
-        
-        x1 = int(cx_int - dx)
-        y1 = int(cy_int - dy)
-        x2 = int(cx_int + dx)
-        y2 = int(cy_int + dy)
-        
-        x1 = np.clip(x1, 0, w - 1)
-        y1 = np.clip(y1, 0, h - 1)
-        x2 = np.clip(x2, 0, w - 1)
-        y2 = np.clip(y2, 0, h - 1)
-        
-        x_coords = np.linspace(x1, x2, num_samples, dtype=int)
-        y_coords = np.linspace(y1, y2, num_samples, dtype=int)
-        
+        t_vals = np.linspace(-1, 1, num_samples)
+        x_vals = cx + t_vals * dx
+        y_vals = cy + t_vals * dy
+        distances = np.sqrt((x_vals - cx)**2 + (y_vals - cy)**2)
+        mask = distances >= inner_radius
+        if not np.any(mask):
+            # Ensure at least first and last sample
+            mask[0] = True
+            mask[-1] = True
+        x_vals = np.clip(x_vals[mask], 0, w - 1).astype(int)
+        y_vals = np.clip(y_vals[mask], 0, h - 1).astype(int)
+        return list(zip(x_vals, y_vals))
+
+    def get_line_samples_with_radius(self, cx, cy, angle, line_length, num_samples=10, inner_radius=0):
+        """Return (pixel_values, points) for a line respecting inner radius."""
+        h, w = self.original_frame.shape[:2]
+        points = self.compute_sample_points(cx, cy, angle, line_length, num_samples, inner_radius)
+        if not points:
+            return np.array([]), []
+        xs = np.array([pt[0] for pt in points])
+        ys = np.array([pt[1] for pt in points])
         source_frame = self.processed_frame if self.processed_frame is not None else self.original_frame
         gray_frame = cv2.cvtColor(source_frame, cv2.COLOR_BGR2GRAY)
-        pixel_values = gray_frame[y_coords, x_coords]
-        return pixel_values
+        pixel_values = gray_frame[ys, xs]
+        return pixel_values, points
     
     def draw_pixel_plot(self, v_pixels, h_pixels, mid1_pixels, mid2_pixels):
         """Draw a plot of pixel values for all four lines."""
@@ -423,6 +441,12 @@ class App:
         self.num_samples_var.set(new_val)
         self.update_image()
 
+    def adjust_inner_gap(self, amount):
+        current_val = self.inner_exclusion_var.get()
+        new_val = max(0, min(150, current_val + amount))
+        self.inner_exclusion_var.set(new_val)
+        self.update_image()
+
     def adjust_frame(self, amount):
         """Adjust frame number by a given amount."""
         current_frame = self.frame_num_var.get()
@@ -457,6 +481,9 @@ class App:
         # Apply CLAHE and store processed frame
         frame_copy = self.apply_clahe(frame_copy)
         self.processed_frame = frame_copy.copy()
+
+        num_samples = self.num_samples_var.get()
+        inner_gap = self.inner_exclusion_var.get()
 
         # Draw crosshair with angled lines
         h, w = frame_copy.shape[:2]
@@ -525,60 +552,39 @@ class App:
         
         # Draw a red dot at center
         cv2.circle(frame_copy, (cx_int, cy_int), 5, (0, 0, 255), -1)
+
+        # Visualize inner exclusion circle if enabled
+        if inner_gap > 0:
+            gap_radius = int(inner_gap)
+            cv2.circle(
+                frame_copy,
+                (cx_int, cy_int),
+                gap_radius,
+                (150, 150, 150),
+                1,
+                lineType=cv2.LINE_AA
+            )
         
         # Draw endpoint circles for red and blue lines (draggable)
         cv2.circle(frame_copy, (v_x2, v_y2), 7, (0, 0, 255), 2)  # Red line endpoint
         cv2.circle(frame_copy, (h_x2, h_y2), 7, (255, 0, 0), 2)  # Blue line endpoint
         
+        # Sample pixels along all 4 lines (for dots & plot)
+        v_pixels, v_points = self.get_line_samples_with_radius(cx, cy, v_angle, line_length, num_samples=num_samples, inner_radius=0)
+        h_pixels, h_points = self.get_line_samples_with_radius(cx, cy, h_angle, line_length, num_samples=num_samples, inner_radius=0)
+        mid1_angle = (v_angle + h_angle) / 2.0
+        mid2_angle = mid1_angle + 90.0
+        mid1_pixels, mid1_points = self.get_line_samples_with_radius(cx, cy, mid1_angle, line_length, num_samples=num_samples, inner_radius=inner_gap)
+        mid2_pixels, mid2_points = self.get_line_samples_with_radius(cx, cy, mid2_angle, line_length, num_samples=num_samples, inner_radius=inner_gap)
+        
         # Draw sample points on all four lines
-        num_samples = self.num_samples_var.get()
-        
-        # Sample points along red line (V-angle)
-        v_angle_rad = np.deg2rad(v_angle)
-        v_dx_sample = line_length * np.cos(v_angle_rad)
-        v_dy_sample = line_length * np.sin(v_angle_rad)
-        for i in range(num_samples):
-            t = i / max(1, num_samples - 1)
-            px = int(cx_int + (t - 0.5) * 2 * v_dx_sample)
-            py = int(cy_int + (t - 0.5) * 2 * v_dy_sample)
-            px = np.clip(px, 0, w - 1)
-            py = np.clip(py, 0, h - 1)
+        for px, py in v_points:
             cv2.circle(frame_copy, (px, py), 4, (0, 0, 255), -1)  # Red dots
-        
-        # Sample points along blue line (H-angle)
-        h_angle_rad = np.deg2rad(h_angle)
-        h_dx_sample = line_length * np.cos(h_angle_rad)
-        h_dy_sample = line_length * np.sin(h_angle_rad)
-        for i in range(num_samples):
-            t = i / max(1, num_samples - 1)
-            px = int(cx_int + (t - 0.5) * 2 * h_dx_sample)
-            py = int(cy_int + (t - 0.5) * 2 * h_dy_sample)
-            px = np.clip(px, 0, w - 1)
-            py = np.clip(py, 0, h - 1)
+        for px, py in h_points:
             cv2.circle(frame_copy, (px, py), 4, (255, 0, 0), -1)  # Blue dots
-        
-        # Sample points along green line (Mid1)
-        mid1_angle_rad = np.deg2rad(mid_angle_1)
-        mid1_dx_sample = line_length * np.cos(mid1_angle_rad)
-        mid1_dy_sample = line_length * np.sin(mid1_angle_rad)
-        for i in range(num_samples):
-            t = i / max(1, num_samples - 1)
-            px = int(cx_int + (t - 0.5) * 2 * mid1_dx_sample)
-            py = int(cy_int + (t - 0.5) * 2 * mid1_dy_sample)
-            px = np.clip(px, 0, w - 1)
-            py = np.clip(py, 0, h - 1)
+        for px, py in mid1_points:
             cv2.circle(frame_copy, (px, py), 4, (0, 255, 0), -1)  # Green dots
-        
-        # Sample points along cyan line (Mid2)
-        mid2_angle_rad = np.deg2rad(mid_angle_2)
-        mid2_dx_sample = line_length * np.cos(mid2_angle_rad)
-        mid2_dy_sample = line_length * np.sin(mid2_angle_rad)
-        for i in range(num_samples):
-            t = i / max(1, num_samples - 1)
-            px = int(cx_int + (t - 0.5) * 2 * mid2_dx_sample)
-            py = int(cy_int + (t - 0.5) * 2 * mid2_dy_sample)
-            px = np.clip(px, 0, w - 1)
-            py = np.clip(py, 0, h - 1)
+        for px, py in mid2_points:
             cv2.circle(frame_copy, (px, py), 4, (255, 255, 0), -1)  # Cyan dots
         
         # Display text
@@ -592,19 +598,10 @@ class App:
         self.v_angle_label.config(text=f"{v_angle:.1f}")
         self.h_angle_label.config(text=f"{h_angle:.1f}")
         self.line_length_label.config(text=f"{line_length}")
-        num_samples = self.num_samples_var.get()
         self.num_samples_label.config(text=f"{num_samples}")
+        self.inner_gap_label.config(text=f"{inner_gap:.0f}")
         self.frame_label.config(text=f"{self.frame_num_var.get()}")
         self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}")
-        
-        # Sample pixels along all 4 lines
-        num_samples = self.num_samples_var.get()
-        v_pixels = self.get_line_samples(cx, cy, v_angle, line_length, num_samples=num_samples)
-        h_pixels = self.get_line_samples(cx, cy, h_angle, line_length, num_samples=num_samples)
-        mid1_angle = (v_angle + h_angle) / 2.0
-        mid2_angle = mid1_angle + 90.0
-        mid1_pixels = self.get_line_samples(cx, cy, mid1_angle, line_length, num_samples=num_samples)
-        mid2_pixels = self.get_line_samples(cx, cy, mid2_angle, line_length, num_samples=num_samples)
         
         # Draw pixel plot
         self.draw_pixel_plot(v_pixels, h_pixels, mid1_pixels, mid2_pixels)
