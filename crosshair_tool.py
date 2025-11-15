@@ -276,10 +276,10 @@ class App:
         if mid2_pixels is not None:
             combined_mid.extend(mid2_pixels.tolist())
         if combined_mid:
-            perc_mid = np.percentile(combined_mid, 95)
+            perc_mid = np.mean(combined_mid)
             y_perc_mid = canvas_h - (perc_mid / 255.0) * canvas_h
             self.plot_canvas.create_line(0, y_perc_mid, canvas_w, y_perc_mid, fill="magenta", dash=(4, 4), width=2)
-            self.plot_canvas.create_text(5, y_perc_mid - 12, anchor="nw", text="Mid 95%", fill="magenta", font=("Arial", 8))
+            self.plot_canvas.create_text(5, y_perc_mid - 12, anchor="nw", text="Mid Avg", fill="magenta", font=("Arial", 8))
         else:
             perc_mid = None
 
@@ -289,10 +289,10 @@ class App:
         if h_pixels is not None:
             combined_main.extend(h_pixels.tolist())
         if combined_main:
-            perc_main = np.percentile(combined_main, 95)
+            perc_main = np.mean(combined_main)
             y_perc_main = canvas_h - (perc_main / 255.0) * canvas_h
             self.plot_canvas.create_line(0, y_perc_main, canvas_w, y_perc_main, fill="orange", dash=(4, 4), width=2)
-            self.plot_canvas.create_text(5, y_perc_main - 24, anchor="nw", text="Main 95%", fill="orange", font=("Arial", 8))
+            self.plot_canvas.create_text(5, y_perc_main - 24, anchor="nw", text="Main Avg", fill="orange", font=("Arial", 8))
         else:
             perc_main = None
 
@@ -310,8 +310,8 @@ class App:
             ("blue", "H-Line"),
             ("green", "Mid1"),
             ("cyan", "Mid2"),
-            ("magenta", "Mid 95%"),
-            ("orange", "Main 95%")
+            ("magenta", "Mid Avg"),
+            ("orange", "Main Avg")
         ]
         for color, label in colors:
             self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill=color, width=2)
@@ -575,8 +575,8 @@ class App:
         if not combined_mid or not combined_main:
             return -np.inf
 
-        mid95 = np.percentile(combined_mid, 95)
-        main95 = np.percentile(combined_main, 95)
+        mid95 = np.mean(combined_mid)
+        main95 = np.mean(combined_main)
         return mid95 - main95
 
     @staticmethod
