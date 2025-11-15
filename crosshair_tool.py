@@ -260,21 +260,39 @@ class App:
         draw_line(mid1_pixels, "green")  # Green line (Mid1)
         draw_line(mid2_pixels, "cyan")   # Cyan line (Mid2)
 
-        # Draw combined 95th percentile line for mid lines
+        # Draw combined 95th percentile lines
         combined_mid = []
         if mid1_pixels is not None:
             combined_mid.extend(mid1_pixels.tolist())
         if mid2_pixels is not None:
             combined_mid.extend(mid2_pixels.tolist())
         if combined_mid:
-            p95 = np.percentile(combined_mid, 95)
-            y_p95 = canvas_h - (p95 / 255.0) * canvas_h
-            self.plot_canvas.create_line(0, y_p95, canvas_w, y_p95, fill="magenta", dash=(4, 4), width=2)
-            self.plot_canvas.create_text(5, y_p95 - 12, anchor="nw", text="Mid 95%", fill="magenta", font=("Arial", 8))
+            p95_mid = np.percentile(combined_mid, 95)
+            y_p95_mid = canvas_h - (p95_mid / 255.0) * canvas_h
+            self.plot_canvas.create_line(0, y_p95_mid, canvas_w, y_p95_mid, fill="magenta", dash=(4, 4), width=2)
+            self.plot_canvas.create_text(5, y_p95_mid - 12, anchor="nw", text="Mid 95%", fill="magenta", font=("Arial", 8))
+
+        combined_main = []
+        if v_pixels is not None:
+            combined_main.extend(v_pixels.tolist())
+        if h_pixels is not None:
+            combined_main.extend(h_pixels.tolist())
+        if combined_main:
+            p95_main = np.percentile(combined_main, 95)
+            y_p95_main = canvas_h - (p95_main / 255.0) * canvas_h
+            self.plot_canvas.create_line(0, y_p95_main, canvas_w, y_p95_main, fill="orange", dash=(4, 4), width=2)
+            self.plot_canvas.create_text(5, y_p95_main - 24, anchor="nw", text="Main 95%", fill="orange", font=("Arial", 8))
         
         # Draw legend
         legend_y = 10
-        colors = [("red", "V-Line"), ("blue", "H-Line"), ("green", "Mid1"), ("cyan", "Mid2"), ("magenta", "Mid 95%")]
+        colors = [
+            ("red", "V-Line"),
+            ("blue", "H-Line"),
+            ("green", "Mid1"),
+            ("cyan", "Mid2"),
+            ("magenta", "Mid 95%"),
+            ("orange", "Main 95%")
+        ]
         for color, label in colors:
             self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill=color, width=2)
             self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text=label, font=("Arial", 8))
