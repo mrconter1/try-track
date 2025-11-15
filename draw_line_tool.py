@@ -133,6 +133,7 @@ class App:
         self.video_path = video_path
         self.total_frames = total_frames
         self.current_frame_num = args.frame
+        self.display_mode = args.display_mode
         
         self.root.title("Hough Line Control")
         
@@ -373,7 +374,7 @@ class App:
         self.update_image()
 
 
-    def draw_pixel_plot(self, pixel_values, probe_pixel_values=None, probe2_pixel_values=None):
+    def draw_pixel_plot(self, pixel_values, probe_pixel_values=None, probe2_pixel_values=None, show_only_max=False):
         self.plot_canvas.delete("all") # Clear previous plot
 
         if pixel_values is None or len(pixel_values) == 0:
@@ -399,6 +400,20 @@ class App:
 
         if len(points) > 2:
             self.plot_canvas.create_line(points, fill="red", width=2)
+
+        if show_only_max:
+            if pixel_values is not None and len(pixel_values) > 0:
+                max_value = np.max(pixel_values)
+                max_y = canvas_h - (max_value / 255.0) * canvas_h
+                self.plot_canvas.create_line(0, max_y, canvas_w, max_y, fill="orange", width=2, dash=(4, 4))
+                self.plot_canvas.create_text(canvas_w - 60, max_y - 10, anchor="w", text=f"Max: {int(max_value)}", font=("Arial", 8))
+
+            # Draw Y-axis labels for context
+            for val in range(0, 256, 25):
+                y = canvas_h - (val / 255.0) * canvas_h
+                self.plot_canvas.create_text(15, y, anchor="w", text=str(val), font=("Arial", 9))
+                self.plot_canvas.create_line(0, y, 10, y)
+            return
 
         # Draw probe line if available
         if probe_pixel_values is not None and len(probe_pixel_values) > 0:
@@ -600,45 +615,52 @@ class App:
         # Draw line
         frame_with_line = draw_hough_line(frame_copy, rho, theta_deg)
         
-        # Draw parallel probe line at configurable distance
-        probe_distance = self.probe_distance_var.get()
-        rho_probe = rho + probe_distance
-        frame_with_line = draw_hough_line(frame_with_line, rho_probe, theta_deg, color=(0, 255, 0), thickness=2)
+        show_only_main = self.display_mode == "minimal"
 
-        # Draw second probe line on the other side
-        rho_probe2 = rho - probe_distance
-        frame_with_line = draw_hough_line(frame_with_line, rho_probe2, theta_deg, color=(0, 255, 255), thickness=2)
-        
-        # Get number of samples
+        probe_distance = self.probe_distance_var.get()
         num_samples = self.num_samples_var.get()
 
         # Calculate Std Dev for main line
         std_dev, _, pixel_values = get_line_metrics(self.original_frame, rho, theta_deg, num_samples)
 
-        # Get pixel values for probe line
-        _, _, probe_pixel_values = get_line_metrics(self.original_frame, rho_probe, theta_deg, num_samples)
+        probe_pixel_values = None
+        probe2_pixel_values = None
 
-        # Get pixel values for second probe line
-        _, _, probe2_pixel_values = get_line_metrics(self.original_frame, rho_probe2, theta_deg, num_samples)
+        if not show_only_main:
+            # Draw parallel probe line at configurable distance
+            rho_probe = rho + probe_distance
+            frame_with_line = draw_hough_line(frame_with_line, rho_probe, theta_deg, color=(0, 255, 0), thickness=2)
 
-        # Get parametric sample points for main line
-        main_sample_points = get_parametric_line_samples(rho, theta_deg, num_samples, self.original_frame.shape)
+            # Draw second probe line on the other side
+            rho_probe2 = rho - probe_distance
+            frame_with_line = draw_hough_line(frame_with_line, rho_probe2, theta_deg, color=(0, 255, 255), thickness=2)
 
-        # Draw sample points on the frame with perpendicular correspondences
-        if main_sample_points:
-            for x, y, t in main_sample_points:
-                cv2.circle(frame_with_line, (x, y), 5, (0, 0, 255), -1)  # Red circles for main
-                
-                # Get corresponding probe point by perpendicular offset
-                probe_x, probe_y = get_perpendicular_offset_point(x, y, theta_deg, probe_distance)
-                cv2.circle(frame_with_line, (probe_x, probe_y), 5, (0, 255, 0), -1)  # Green circles for probe
+            # Get pixel values for probe lines
+            _, _, probe_pixel_values = get_line_metrics(self.original_frame, rho_probe, theta_deg, num_samples)
+            _, _, probe2_pixel_values = get_line_metrics(self.original_frame, rho_probe2, theta_deg, num_samples)
 
-                # Get corresponding second probe point by perpendicular offset
-                probe2_x, probe2_y = get_perpendicular_offset_point(x, y, theta_deg, -probe_distance)
-                cv2.circle(frame_with_line, (probe2_x, probe2_y), 5, (0, 255, 255), -1) # Yellow circles for probe 2
+            # Get parametric sample points for main line
+            main_sample_points = get_parametric_line_samples(rho, theta_deg, num_samples, self.original_frame.shape)
 
-        # Draw a blue dot at the center point last so it remains visible
-        cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (255, 0, 0), -1)
+            # Draw sample points on the frame with perpendicular correspondences
+            if main_sample_points:
+                for x, y, t in main_sample_points:
+                    cv2.circle(frame_with_line, (x, y), 5, (0, 0, 255), -1)  # Red circles for main
+
+                    # Get corresponding probe point by perpendicular offset
+                    probe_x, probe_y = get_perpendicular_offset_point(x, y, theta_deg, probe_distance)
+                    cv2.circle(frame_with_line, (probe_x, probe_y), 5, (0, 255, 0), -1)  # Green circles for probe
+
+                    # Get corresponding second probe point by perpendicular offset
+                    probe2_x, probe2_y = get_perpendicular_offset_point(x, y, theta_deg, -probe_distance)
+                    cv2.circle(frame_with_line, (probe2_x, probe2_y), 5, (0, 255, 255), -1) # Yellow circles for probe 2
+        else:
+            # In minimal mode, ensure only the main line is visible
+            pass
+
+        # Draw a blue dot at the center point last so it remains visible (only in full mode)
+        if not show_only_main:
+            cv2.circle(frame_with_line, (int(cx), int(cy)), 5, (255, 0, 0), -1)
 
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -650,7 +672,7 @@ class App:
             cv2.putText(frame_with_line, std_dev_text, (10, 70), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         # --- Update the pixel plot ---
-        self.draw_pixel_plot(pixel_values, probe_pixel_values, probe2_pixel_values)
+        self.draw_pixel_plot(pixel_values, probe_pixel_values, probe2_pixel_values, show_only_max=show_only_main)
 
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_with_line, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
@@ -722,6 +744,7 @@ def parse_args():
     parser.add_argument("--position-ranges", type=float, nargs='+', default=[20.0, 10.0, 5.0], help="Search ranges for cx and cy for each iteration.")
     parser.add_argument("--angle-ranges", type=float, nargs='+', default=[180.0, 20.0, 5.0], help="Search ranges for the angle for each iteration.")
     parser.add_argument("--num-search-samples", type=int, nargs='+', default=[1000, 1000, 500], help="Number of random samples for each iteration of the darkest line search.")
+    parser.add_argument("--display-mode", type=str, choices=["full", "minimal"], default="full", help="Display either the full set of overlays or only the main line and its max intensity line.")
     return parser.parse_args()
 
 if __name__ == "__main__":
