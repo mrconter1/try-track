@@ -27,6 +27,7 @@ class App:
         self.cy_var = tk.DoubleVar(value=initial_cy)
         self.v_angle_var = tk.DoubleVar(value=0.0)   # First line angle
         self.h_angle_var = tk.DoubleVar(value=90.0)  # Second line angle (perpendicular)
+        self.line_length_var = tk.IntVar(value=50)   # Line length for both
         self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
@@ -90,17 +91,26 @@ class App:
         self.h_angle_label = ttk.Label(control_frame, text=f"{self.h_angle_var.get():.1f}", width=7)
         self.h_angle_label.grid(row=4, column=4, padx=5)
 
+        # Line Length Controls
+        ttk.Label(control_frame, text="Length:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_line_length(-5)).grid(row=5, column=1)
+        self.line_length_slider = tk.Scale(control_frame, from_=10, to=200, orient=tk.HORIZONTAL, variable=self.line_length_var, command=self.update_image, resolution=1, showvalue=0)
+        self.line_length_slider.grid(row=5, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_line_length(5)).grid(row=5, column=3)
+        self.line_length_label = ttk.Label(control_frame, text=f"{self.line_length_var.get()}", width=7)
+        self.line_length_label.grid(row=5, column=4, padx=5)
+
         # CLAHE Enable/Disable
-        ttk.Label(control_frame, text="CLAHE:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        ttk.Label(control_frame, text="CLAHE:").grid(row=6, column=0, sticky=tk.W, pady=2)
         self.clahe_checkbox = ttk.Checkbutton(control_frame, variable=self.clahe_enabled, command=self.update_image)
-        self.clahe_checkbox.grid(row=5, column=1, sticky=tk.W)
+        self.clahe_checkbox.grid(row=6, column=1, sticky=tk.W)
         
         # CLAHE Clip Limit
-        ttk.Label(control_frame, text="Clip:").grid(row=5, column=2, sticky=tk.W, padx=(10, 0))
+        ttk.Label(control_frame, text="Clip:").grid(row=6, column=2, sticky=tk.W, padx=(10, 0))
         self.clahe_clip_slider = tk.Scale(control_frame, from_=1.0, to=10.0, orient=tk.HORIZONTAL, variable=self.clahe_clip_limit, command=self.update_image, resolution=0.5, showvalue=0)
-        self.clahe_clip_slider.grid(row=5, column=3, sticky="ew")
+        self.clahe_clip_slider.grid(row=6, column=3, sticky="ew")
         self.clahe_clip_label = ttk.Label(control_frame, text=f"{self.clahe_clip_limit.get():.1f}", width=5)
-        self.clahe_clip_label.grid(row=5, column=4, padx=5)
+        self.clahe_clip_label.grid(row=6, column=4, padx=5)
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -161,6 +171,12 @@ class App:
         self.h_angle_var.set(round(new_val, 1))
         self.update_image()
 
+    def adjust_line_length(self, amount):
+        current_val = self.line_length_var.get()
+        new_val = max(10, min(200, current_val + amount))
+        self.line_length_var.set(new_val)
+        self.update_image()
+
     def adjust_frame(self, amount):
         """Adjust frame number by a given amount."""
         current_frame = self.frame_num_var.get()
@@ -190,6 +206,7 @@ class App:
         cy = self.cy_var.get()
         v_angle = self.v_angle_var.get()
         h_angle = self.h_angle_var.get()
+        line_length = self.line_length_var.get()
 
         # Apply CLAHE
         frame_copy = self.apply_clahe(frame_copy)
@@ -198,7 +215,6 @@ class App:
         h, w = frame_copy.shape[:2]
         cx_int = int(cx)
         cy_int = int(cy)
-        line_length = 50
         
         # First line with v_angle
         v_angle_rad = np.deg2rad(v_angle)
@@ -233,14 +249,15 @@ class App:
         
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
-        text = f"Center: ({cx:.0f}, {cy:.0f}) | V: {v_angle:.1f}° H: {h_angle:.1f}°"
-        cv2.putText(frame_copy, text, (10, 30), font, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
+        text = f"Center: ({cx:.0f}, {cy:.0f}) | V: {v_angle:.1f}° H: {h_angle:.1f}° | Length: {line_length}px"
+        cv2.putText(frame_copy, text, (10, 30), font, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
         
         # Update labels
         self.cx_label.config(text=f"{cx:.1f}")
         self.cy_label.config(text=f"{cy:.1f}")
         self.v_angle_label.config(text=f"{v_angle:.1f}")
         self.h_angle_label.config(text=f"{h_angle:.1f}")
+        self.line_length_label.config(text=f"{line_length}")
         self.frame_label.config(text=f"{self.frame_num_var.get()}")
         self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}")
         
