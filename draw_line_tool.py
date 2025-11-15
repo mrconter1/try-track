@@ -174,6 +174,7 @@ class App:
         self.frame_label = ttk.Label(control_frame, text=f"{self.frame_num_var.get()}", width=7)
         self.frame_label.grid(row=0, column=4, padx=5)
 
+        # Create control elements but conditionally display them
         # Angle Controls
         ttk.Label(control_frame, text="Angle:").grid(row=1, column=0, sticky=tk.W, pady=2)
         ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_angle(-0.1)).grid(row=1, column=1)
@@ -182,6 +183,10 @@ class App:
         ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_angle(0.1)).grid(row=1, column=3)
         self.angle_label = ttk.Label(control_frame, text=f"{self.angle_var.get():.2f}", width=7)
         self.angle_label.grid(row=1, column=4, padx=5)
+        
+        self.angle_label_widget = ttk.Label(control_frame, text="Angle:")
+        self.angle_button_minus = ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_angle(-0.1))
+        self.angle_button_plus = ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_angle(0.1))
 
         # Center X Controls
         ttk.Label(control_frame, text="Center X:").grid(row=2, column=0, sticky=tk.W, pady=2)
@@ -234,6 +239,21 @@ class App:
         # --- Search Button ---
         self.search_button = ttk.Button(control_frame, text="Find Best Fit", command=self.start_best_fit_search)
         self.search_button.grid(row=0, column=5, rowspan=7, padx=10, sticky="ns")
+        
+        # Hide controls for crosshair mode
+        if self.display_mode == "crosshair":
+            self.angle_slider.grid_remove()
+            self.angle_label.grid_remove()
+            self.angle_button_minus.grid_remove()
+            self.angle_button_plus.grid_remove()
+            self.num_samples_slider.grid_remove()
+            self.num_samples_label.grid_remove()
+            self.probe_distance_slider.grid_remove()
+            self.probe_distance_label.grid_remove()
+            self.clahe_checkbox.grid_remove()
+            self.clahe_clip_slider.grid_remove()
+            self.clahe_clip_label.grid_remove()
+            self.search_button.grid_remove()
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -592,10 +612,56 @@ class App:
             self.update_image()
         
     def update_image(self, *args):
-        # Get user-friendly parameters from the GUI
-        angle_deg = self.angle_var.get()
+        frame_copy = self.original_frame.copy()
+        
         cx = self.cx_var.get()
         cy = self.cy_var.get()
+
+        # Handle crosshair mode
+        if self.display_mode == "crosshair":
+            # Draw two perpendicular lines (horizontal and vertical crosshair)
+            h, w = frame_copy.shape[:2]
+            cx_int = int(cx)
+            cy_int = int(cy)
+            line_length = 50
+            
+            # Vertical line (red)
+            cv2.line(frame_copy, (cx_int, max(0, cy_int - line_length)), (cx_int, min(h - 1, cy_int + line_length)), (0, 0, 255), 2)
+            
+            # Horizontal line (red)
+            cv2.line(frame_copy, (max(0, cx_int - line_length), cy_int), (min(w - 1, cx_int + line_length), cy_int), (0, 0, 255), 2)
+            
+            # Draw a red dot at center
+            cv2.circle(frame_copy, (cx_int, cy_int), 5, (0, 0, 255), -1)
+            
+            # Display text
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            text = f"Center: ({cx:.0f}, {cy:.0f})"
+            cv2.putText(frame_copy, text, (10, 30), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # Update labels
+            self.cx_label.config(text=f"{cx:.1f}")
+            self.cy_label.config(text=f"{cy:.1f}")
+            self.frame_label.config(text=f"{self.frame_num_var.get()}")
+            
+            # --- Scale frame for display ---
+            display_frame = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
+
+            # Convert for Tkinter
+            img = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            img_pil = Image.fromarray(img)
+            img_tk = ImageTk.PhotoImage(image=img_pil)
+            
+            self.image_label.imgtk = img_tk
+            self.image_label.configure(image=img_tk)
+            
+            # Clear the plot canvas in crosshair mode
+            self.plot_canvas.delete("all")
+            return
+
+        # Regular modes (full and minimal)
+        # Get user-friendly parameters from the GUI
+        angle_deg = self.angle_var.get()
 
         # --- Convert (cx, cy, angle) to (rho, theta) ---
         # Theta is the angle of the normal, so it's 90 degrees offset from the line's angle.
@@ -606,8 +672,6 @@ class App:
         # Rho is the distance from the origin to the line, calculated by projecting
         # the center point onto the normal vector.
         rho = cx * np.cos(theta_rad) + cy * np.sin(theta_rad)
-
-        frame_copy = self.original_frame.copy()
         
         # Apply CLAHE if enabled
         frame_copy = self.apply_clahe(frame_copy)
@@ -744,7 +808,7 @@ def parse_args():
     parser.add_argument("--position-ranges", type=float, nargs='+', default=[20.0, 10.0, 5.0], help="Search ranges for cx and cy for each iteration.")
     parser.add_argument("--angle-ranges", type=float, nargs='+', default=[180.0, 20.0, 5.0], help="Search ranges for the angle for each iteration.")
     parser.add_argument("--num-search-samples", type=int, nargs='+', default=[1000, 1000, 500], help="Number of random samples for each iteration of the darkest line search.")
-    parser.add_argument("--display-mode", type=str, choices=["full", "minimal"], default="full", help="Display either the full set of overlays or only the main line and its max intensity line.")
+    parser.add_argument("--display-mode", type=str, choices=["full", "minimal", "crosshair"], default="full", help="Display mode: 'full' for all overlays, 'minimal' for main line only with max line, or 'crosshair' for perpendicular crosshair.")
     return parser.parse_args()
 
 if __name__ == "__main__":
