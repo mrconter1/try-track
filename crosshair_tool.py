@@ -27,7 +27,7 @@ class App:
         self.cy_var = tk.DoubleVar(value=initial_cy)
         self.v_angle_var = tk.DoubleVar(value=0.0)   # First line angle
         self.h_angle_var = tk.DoubleVar(value=90.0)  # Second line angle (perpendicular)
-        self.line_length_var = tk.IntVar(value=100)  # Line length for both
+        self.line_length_var = tk.IntVar(value=150)  # Line length for both
         self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
@@ -218,15 +218,15 @@ class App:
             if len(points) > 2:
                 self.plot_canvas.create_line(points, fill=color, width=2)
         
-        # Draw all four lines
-        draw_line(v_pixels, "red")        # Red line
-        draw_line(h_pixels, "blue")       # Blue line
-        draw_line(mid1_pixels, "cyan")    # First cyan line
-        draw_line(mid2_pixels, "magenta") # Second cyan line
+        # Draw all four lines with matching frame colors
+        draw_line(v_pixels, "red")     # Red line (V-angle)
+        draw_line(h_pixels, "blue")    # Blue line (H-angle)
+        draw_line(mid1_pixels, "green")  # Green line (Mid1)
+        draw_line(mid2_pixels, "cyan")   # Cyan line (Mid2)
         
         # Draw legend
         legend_y = 10
-        colors = [("red", "V-Line"), ("blue", "H-Line"), ("cyan", "Mid1"), ("magenta", "Mid2")]
+        colors = [("red", "V-Line"), ("blue", "H-Line"), ("green", "Mid1"), ("cyan", "Mid2")]
         for color, label in colors:
             self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill=color, width=2)
             self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text=label, font=("Arial", 8))
@@ -415,7 +415,7 @@ class App:
         v_y1 = np.clip(v_y1, 0, h - 1)
         v_x2 = np.clip(v_x2, 0, w - 1)
         v_y2 = np.clip(v_y2, 0, h - 1)
-        cv2.line(frame_copy, (v_x1, v_y1), (v_x2, v_y2), (0, 0, 255), 2)
+        cv2.line(frame_copy, (v_x1, v_y1), (v_x2, v_y2), (0, 0, 255), 2)  # Red
         
         # Second line perpendicular to first (90° offset)
         h_angle_rad = np.deg2rad(h_angle)
@@ -429,7 +429,7 @@ class App:
         h_y1 = np.clip(h_y1, 0, h - 1)
         h_x2 = np.clip(h_x2, 0, w - 1)
         h_y2 = np.clip(h_y2, 0, h - 1)
-        cv2.line(frame_copy, (h_x1, h_y1), (h_x2, h_y2), (255, 0, 0), 2)
+        cv2.line(frame_copy, (h_x1, h_y1), (h_x2, h_y2), (255, 0, 0), 2)  # Blue
         
         # Calculate in-between angles (bisector lines)
         mid_angle_1 = (v_angle + h_angle) / 2.0
@@ -447,7 +447,7 @@ class App:
         mid1_y1 = np.clip(mid1_y1, 0, h - 1)
         mid1_x2 = np.clip(mid1_x2, 0, w - 1)
         mid1_y2 = np.clip(mid1_y2, 0, h - 1)
-        cv2.line(frame_copy, (mid1_x1, mid1_y1), (mid1_x2, mid1_y2), (0, 255, 255), 2)
+        cv2.line(frame_copy, (mid1_x1, mid1_y1), (mid1_x2, mid1_y2), (0, 255, 0), 2)  # Green
         
         # Second in-between line (perpendicular to first in-between)
         mid2_angle_rad = np.deg2rad(mid_angle_2)
@@ -461,7 +461,7 @@ class App:
         mid2_y1 = np.clip(mid2_y1, 0, h - 1)
         mid2_x2 = np.clip(mid2_x2, 0, w - 1)
         mid2_y2 = np.clip(mid2_y2, 0, h - 1)
-        cv2.line(frame_copy, (mid2_x1, mid2_y1), (mid2_x2, mid2_y2), (0, 255, 255), 2)
+        cv2.line(frame_copy, (mid2_x1, mid2_y1), (mid2_x2, mid2_y2), (255, 255, 0), 2)  # Cyan
         
         # Draw a red dot at center
         cv2.circle(frame_copy, (cx_int, cy_int), 5, (0, 0, 255), -1)
