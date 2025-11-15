@@ -129,8 +129,10 @@ class App:
         self.display_h = int(h_orig * ratio)
 
         # --- Image and Plot Layout ---
-        self.image_label = ttk.Label(main_frame)
-        self.image_label.grid(row=0, column=0, sticky="nsew")
+        # Use a Canvas for the image to capture mouse events properly
+        self.image_canvas = tk.Canvas(main_frame, bg="black", highlightthickness=0)
+        self.image_canvas.grid(row=0, column=0, sticky="nsew")
+        self.image_canvas.config(width=self.display_w, height=self.display_h)
         
         # Pixel Plot Canvas
         self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200, height=self.display_h)
@@ -142,10 +144,13 @@ class App:
         
         # Store display scaling factor for mouse interaction
         self.scale_factor = 1.0
+        self.dragging_endpoint = None  # Track which endpoint is being dragged
+        self.image_on_canvas = None  # Store the PhotoImage to prevent garbage collection
         
-        # Bind mouse events to image label
-        self.image_label.bind("<Button-1>", self.on_image_click)
-        self.image_label.bind("<B1-Motion>", self.on_image_drag)
+        # Bind mouse events to image canvas
+        self.image_canvas.bind("<Button-1>", self.on_image_click)
+        self.image_canvas.bind("<B1-Motion>", self.on_image_drag)
+        self.image_canvas.bind("<ButtonRelease-1>", self.on_image_release)
 
         self.update_image()
     
@@ -229,39 +234,107 @@ class App:
 
     def on_image_click(self, event):
         """Handle mouse click on the image."""
+        h_orig, w_orig = self.original_frame.shape[:2]
+        self.scale_factor = self.display_w / w_orig
+        
+        # Convert display coordinates to frame coordinates
+        frame_x = event.x / self.scale_factor
+        frame_y = event.y / self.scale_factor
+        
+        cx = self.cx_var.get()
+        cy = self.cy_var.get()
+        v_angle = self.v_angle_var.get()
+        h_angle = self.h_angle_var.get()
+        line_length = self.line_length_var.get()
+        
+        # Calculate both endpoints for red and blue lines
+        v_angle_rad = np.deg2rad(v_angle)
+        v_dx = line_length * np.cos(v_angle_rad)
+        v_dy = line_length * np.sin(v_angle_rad)
+        v_x1 = cx - v_dx
+        v_y1 = cy - v_dy
+        v_x2 = cx + v_dx
+        v_y2 = cy + v_dy
+        
+        h_angle_rad = np.deg2rad(h_angle)
+        h_dx = line_length * np.cos(h_angle_rad)
+        h_dy = line_length * np.sin(h_angle_rad)
+        h_x1 = cx - h_dx
+        h_y1 = cy - h_dy
+        h_x2 = cx + h_dx
+        h_y2 = cy + h_dy
+        
+        # Check if click is near an endpoint (within 15 pixels in frame space)
+        threshold = 15
+        
+        v_dist1 = np.sqrt((frame_x - v_x1)**2 + (frame_y - v_y1)**2)
+        v_dist2 = np.sqrt((frame_x - v_x2)**2 + (frame_y - v_y2)**2)
+        h_dist1 = np.sqrt((frame_x - h_x1)**2 + (frame_y - h_y1)**2)
+        h_dist2 = np.sqrt((frame_x - h_x2)**2 + (frame_y - h_y2)**2)
+        
+        min_v_dist = min(v_dist1, v_dist2)
+        min_h_dist = min(h_dist1, h_dist2)
+        
+        if min_v_dist < threshold and min_v_dist < min_h_dist:
+            self.dragging_endpoint = "v"
+        elif min_h_dist < threshold:
+            self.dragging_endpoint = "h"
+        else:
+            self.dragging_endpoint = None
+        
         # Store the initial position for dragging
         self.last_x = event.x
         self.last_y = event.y
     
     def on_image_drag(self, event):
-        """Handle mouse drag on the image to move the center point."""
+        """Handle mouse drag on the image to move center or rotate endpoints."""
         h_orig, w_orig = self.original_frame.shape[:2]
         self.scale_factor = self.display_w / w_orig
         
-        # Calculate the delta in display coordinates
-        delta_x = event.x - self.last_x
-        delta_y = event.y - self.last_y
+        # Convert display coordinates to frame coordinates
+        frame_x = event.x / self.scale_factor
+        frame_y = event.y / self.scale_factor
         
-        # Convert to frame coordinates
-        frame_delta_x = delta_x / self.scale_factor
-        frame_delta_y = delta_y / self.scale_factor
+        cx = self.cx_var.get()
+        cy = self.cy_var.get()
         
-        # Update center position
-        new_cx = self.cx_var.get() + frame_delta_x
-        new_cy = self.cy_var.get() + frame_delta_y
-        
-        # Clamp to frame boundaries
-        new_cx = max(0, min(w_orig - 1, new_cx))
-        new_cy = max(0, min(h_orig - 1, new_cy))
-        
-        self.cx_var.set(round(new_cx, 1))
-        self.cy_var.set(round(new_cy, 1))
-        
-        # Store current position for next drag event
-        self.last_x = event.x
-        self.last_y = event.y
+        if self.dragging_endpoint == "v":
+            # Dragging red line endpoint - change v_angle
+            dx = frame_x - cx
+            dy = frame_y - cy
+            new_angle = np.degrees(np.arctan2(dy, dx))
+            self.v_angle_var.set(round(new_angle % 180.0, 1))
+        elif self.dragging_endpoint == "h":
+            # Dragging blue line endpoint - change h_angle
+            dx = frame_x - cx
+            dy = frame_y - cy
+            new_angle = np.degrees(np.arctan2(dy, dx))
+            self.h_angle_var.set(round(new_angle % 180.0, 1))
+        else:
+            # Dragging center point
+            delta_x = event.x - self.last_x
+            delta_y = event.y - self.last_y
+            
+            frame_delta_x = delta_x / self.scale_factor
+            frame_delta_y = delta_y / self.scale_factor
+            
+            new_cx = cx + frame_delta_x
+            new_cy = cy + frame_delta_y
+            
+            new_cx = max(0, min(w_orig - 1, new_cx))
+            new_cy = max(0, min(h_orig - 1, new_cy))
+            
+            self.cx_var.set(round(new_cx, 1))
+            self.cy_var.set(round(new_cy, 1))
+            
+            self.last_x = event.x
+            self.last_y = event.y
         
         self.update_image()
+    
+    def on_image_release(self, event):
+        """Handle mouse release."""
+        self.dragging_endpoint = None
 
     def adjust_cx(self, amount):
         current_val = self.cx_var.get()
@@ -393,6 +466,10 @@ class App:
         # Draw a red dot at center
         cv2.circle(frame_copy, (cx_int, cy_int), 5, (0, 0, 255), -1)
         
+        # Draw endpoint circles for red and blue lines (draggable)
+        cv2.circle(frame_copy, (v_x2, v_y2), 7, (0, 0, 255), 2)  # Red line endpoint
+        cv2.circle(frame_copy, (h_x2, h_y2), 7, (255, 0, 0), 2)  # Blue line endpoint
+        
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
         text = f"Center: ({cx:.0f}, {cy:.0f}) | V: {v_angle:.1f}° H: {h_angle:.1f}° | Length: {line_length}px"
@@ -426,8 +503,10 @@ class App:
         img_pil = Image.fromarray(img)
         img_tk = ImageTk.PhotoImage(image=img_pil)
         
-        self.image_label.imgtk = img_tk
-        self.image_label.configure(image=img_tk)
+        # Update canvas with image
+        self.image_canvas.delete("image")
+        self.image_canvas.create_image(0, 0, image=img_tk, anchor="nw", tags="image")
+        self.image_on_canvas = img_tk  # Keep a reference to prevent garbage collection
 
 def main(args):
     """Main function to load frame and launch the GUI."""
