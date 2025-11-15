@@ -27,7 +27,7 @@ class App:
         self.cy_var = tk.DoubleVar(value=initial_cy)
         self.v_angle_var = tk.DoubleVar(value=0.0)   # First line angle
         self.h_angle_var = tk.DoubleVar(value=90.0)  # Second line angle (perpendicular)
-        self.line_length_var = tk.IntVar(value=50)   # Line length for both
+        self.line_length_var = tk.IntVar(value=100)  # Line length for both
         self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
