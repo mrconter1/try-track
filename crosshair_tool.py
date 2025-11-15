@@ -139,6 +139,13 @@ class App:
         main_frame.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=3) # Image gets 3/4 of the space
         main_frame.columnconfigure(1, weight=1) # Plot gets 1/4 of the space
+        
+        # Store display scaling factor for mouse interaction
+        self.scale_factor = 1.0
+        
+        # Bind mouse events to image label
+        self.image_label.bind("<Button-1>", self.on_image_click)
+        self.image_label.bind("<B1-Motion>", self.on_image_drag)
 
         self.update_image()
     
@@ -219,6 +226,42 @@ class App:
             self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill=color, width=2)
             self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text=label, font=("Arial", 8))
             legend_y += 15
+
+    def on_image_click(self, event):
+        """Handle mouse click on the image."""
+        # Store the initial position for dragging
+        self.last_x = event.x
+        self.last_y = event.y
+    
+    def on_image_drag(self, event):
+        """Handle mouse drag on the image to move the center point."""
+        h_orig, w_orig = self.original_frame.shape[:2]
+        self.scale_factor = self.display_w / w_orig
+        
+        # Calculate the delta in display coordinates
+        delta_x = event.x - self.last_x
+        delta_y = event.y - self.last_y
+        
+        # Convert to frame coordinates
+        frame_delta_x = delta_x / self.scale_factor
+        frame_delta_y = delta_y / self.scale_factor
+        
+        # Update center position
+        new_cx = self.cx_var.get() + frame_delta_x
+        new_cy = self.cy_var.get() + frame_delta_y
+        
+        # Clamp to frame boundaries
+        new_cx = max(0, min(w_orig - 1, new_cx))
+        new_cy = max(0, min(h_orig - 1, new_cy))
+        
+        self.cx_var.set(round(new_cx, 1))
+        self.cy_var.set(round(new_cy, 1))
+        
+        # Store current position for next drag event
+        self.last_x = event.x
+        self.last_y = event.y
+        
+        self.update_image()
 
     def adjust_cx(self, amount):
         current_val = self.cx_var.get()
