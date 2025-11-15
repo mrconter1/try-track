@@ -280,6 +280,8 @@ class App:
             y_perc_mid = canvas_h - (perc_mid / 255.0) * canvas_h
             self.plot_canvas.create_line(0, y_perc_mid, canvas_w, y_perc_mid, fill="magenta", dash=(4, 4), width=2)
             self.plot_canvas.create_text(5, y_perc_mid - 12, anchor="nw", text="Mid 95%", fill="magenta", font=("Arial", 8))
+        else:
+            perc_mid = None
 
         combined_main = []
         if v_pixels is not None:
@@ -291,6 +293,15 @@ class App:
             y_perc_main = canvas_h - (perc_main / 255.0) * canvas_h
             self.plot_canvas.create_line(0, y_perc_main, canvas_w, y_perc_main, fill="orange", dash=(4, 4), width=2)
             self.plot_canvas.create_text(5, y_perc_main - 24, anchor="nw", text="Main 95%", fill="orange", font=("Arial", 8))
+        else:
+            perc_main = None
+
+        if perc_mid is not None and perc_main is not None:
+            diff = perc_mid - perc_main
+            print("[debug] Contrast metric")
+            print(f"  Mid samples ({len(combined_mid)}): {combined_mid}")
+            print(f"  Main samples ({len(combined_main)}): {combined_main}")
+            print(f"  Mid95={perc_mid:.2f} Main95={perc_main:.2f} Diff={diff:.2f}")
         
         # Draw legend
         legend_y = 10
