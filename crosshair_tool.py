@@ -244,6 +244,38 @@ class App:
         h_y2 = np.clip(h_y2, 0, h - 1)
         cv2.line(frame_copy, (h_x1, h_y1), (h_x2, h_y2), (255, 0, 0), 2)
         
+        # Calculate in-between angles (bisector lines)
+        mid_angle_1 = (v_angle + h_angle) / 2.0
+        mid_angle_2 = mid_angle_1 + 90.0
+        
+        # First in-between line
+        mid1_angle_rad = np.deg2rad(mid_angle_1)
+        mid1_dx = line_length * np.cos(mid1_angle_rad)
+        mid1_dy = line_length * np.sin(mid1_angle_rad)
+        mid1_x1 = int(cx_int - mid1_dx)
+        mid1_y1 = int(cy_int - mid1_dy)
+        mid1_x2 = int(cx_int + mid1_dx)
+        mid1_y2 = int(cy_int + mid1_dy)
+        mid1_x1 = np.clip(mid1_x1, 0, w - 1)
+        mid1_y1 = np.clip(mid1_y1, 0, h - 1)
+        mid1_x2 = np.clip(mid1_x2, 0, w - 1)
+        mid1_y2 = np.clip(mid1_y2, 0, h - 1)
+        cv2.line(frame_copy, (mid1_x1, mid1_y1), (mid1_x2, mid1_y2), (0, 255, 255), 2)
+        
+        # Second in-between line (perpendicular to first in-between)
+        mid2_angle_rad = np.deg2rad(mid_angle_2)
+        mid2_dx = line_length * np.cos(mid2_angle_rad)
+        mid2_dy = line_length * np.sin(mid2_angle_rad)
+        mid2_x1 = int(cx_int - mid2_dx)
+        mid2_y1 = int(cy_int - mid2_dy)
+        mid2_x2 = int(cx_int + mid2_dx)
+        mid2_y2 = int(cy_int + mid2_dy)
+        mid2_x1 = np.clip(mid2_x1, 0, w - 1)
+        mid2_y1 = np.clip(mid2_y1, 0, h - 1)
+        mid2_x2 = np.clip(mid2_x2, 0, w - 1)
+        mid2_y2 = np.clip(mid2_y2, 0, h - 1)
+        cv2.line(frame_copy, (mid2_x1, mid2_y1), (mid2_x2, mid2_y2), (0, 255, 255), 2)
+        
         # Draw a red dot at center
         cv2.circle(frame_copy, (cx_int, cy_int), 5, (0, 0, 255), -1)
         
