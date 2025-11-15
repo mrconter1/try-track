@@ -27,7 +27,8 @@ class App:
         self.cy_var = tk.DoubleVar(value=initial_cy)
         self.v_angle_var = tk.DoubleVar(value=0.0)   # First line angle
         self.h_angle_var = tk.DoubleVar(value=90.0)  # Second line angle (perpendicular)
-        self.line_length_var = tk.IntVar(value=150)  # Line length for both
+        self.line_length_var = tk.IntVar(value=100)  # Line length for both
+        self.num_samples_var = tk.IntVar(value=10)   # Number of sample points per line
         self.clahe_enabled = tk.BooleanVar(value=True)
         self.clahe_clip_limit = tk.DoubleVar(value=2.0)
         self.clahe_tile_size = tk.IntVar(value=8)
@@ -100,17 +101,26 @@ class App:
         self.line_length_label = ttk.Label(control_frame, text=f"{self.line_length_var.get()}", width=7)
         self.line_length_label.grid(row=5, column=4, padx=5)
 
+        # Number of Samples Controls
+        ttk.Label(control_frame, text="Samples:").grid(row=6, column=0, sticky=tk.W, pady=2)
+        ttk.Button(control_frame, text="-", width=3, command=lambda: self.adjust_num_samples(-1)).grid(row=6, column=1)
+        self.num_samples_slider = tk.Scale(control_frame, from_=3, to=50, orient=tk.HORIZONTAL, variable=self.num_samples_var, command=self.update_image, resolution=1, showvalue=0)
+        self.num_samples_slider.grid(row=6, column=2, sticky="ew")
+        ttk.Button(control_frame, text="+", width=3, command=lambda: self.adjust_num_samples(1)).grid(row=6, column=3)
+        self.num_samples_label = ttk.Label(control_frame, text=f"{self.num_samples_var.get()}", width=7)
+        self.num_samples_label.grid(row=6, column=4, padx=5)
+
         # CLAHE Enable/Disable
-        ttk.Label(control_frame, text="CLAHE:").grid(row=6, column=0, sticky=tk.W, pady=2)
+        ttk.Label(control_frame, text="CLAHE:").grid(row=7, column=0, sticky=tk.W, pady=2)
         self.clahe_checkbox = ttk.Checkbutton(control_frame, variable=self.clahe_enabled, command=self.update_image)
-        self.clahe_checkbox.grid(row=6, column=1, sticky=tk.W)
+        self.clahe_checkbox.grid(row=7, column=1, sticky=tk.W)
         
         # CLAHE Clip Limit
-        ttk.Label(control_frame, text="Clip:").grid(row=6, column=2, sticky=tk.W, padx=(10, 0))
+        ttk.Label(control_frame, text="Clip:").grid(row=7, column=2, sticky=tk.W, padx=(10, 0))
         self.clahe_clip_slider = tk.Scale(control_frame, from_=1.0, to=10.0, orient=tk.HORIZONTAL, variable=self.clahe_clip_limit, command=self.update_image, resolution=0.5, showvalue=0)
-        self.clahe_clip_slider.grid(row=6, column=3, sticky="ew")
+        self.clahe_clip_slider.grid(row=7, column=3, sticky="ew")
         self.clahe_clip_label = ttk.Label(control_frame, text=f"{self.clahe_clip_limit.get():.1f}", width=5)
-        self.clahe_clip_label.grid(row=6, column=4, padx=5)
+        self.clahe_clip_label.grid(row=7, column=4, padx=5)
 
         control_frame.columnconfigure(2, weight=1) # Make slider stretch
 
@@ -204,7 +214,7 @@ class App:
             self.root.after(50, lambda: self.draw_pixel_plot(v_pixels, h_pixels, mid1_pixels, mid2_pixels))
             return
         
-        # Helper to draw line on canvas
+        # Helper to draw line on canvas with sample points
         def draw_line(pixels, color):
             if pixels is None or len(pixels) == 0:
                 return
@@ -215,6 +225,10 @@ class App:
                 x = i * x_step
                 y = canvas_h - (value / 255.0) * canvas_h
                 points.extend([x, y])
+                
+                # Draw sample point as small circle
+                self.plot_canvas.create_oval(x-2, y-2, x+2, y+2, fill=color, outline=color)
+            
             if len(points) > 2:
                 self.plot_canvas.create_line(points, fill=color, width=2)
         
@@ -364,6 +378,12 @@ class App:
         self.line_length_var.set(new_val)
         self.update_image()
 
+    def adjust_num_samples(self, amount):
+        current_val = self.num_samples_var.get()
+        new_val = max(3, min(50, current_val + amount))
+        self.num_samples_var.set(new_val)
+        self.update_image()
+
     def adjust_frame(self, amount):
         """Adjust frame number by a given amount."""
         current_frame = self.frame_num_var.get()
@@ -470,6 +490,57 @@ class App:
         cv2.circle(frame_copy, (v_x2, v_y2), 7, (0, 0, 255), 2)  # Red line endpoint
         cv2.circle(frame_copy, (h_x2, h_y2), 7, (255, 0, 0), 2)  # Blue line endpoint
         
+        # Draw sample points on all four lines
+        num_samples = self.num_samples_var.get()
+        
+        # Sample points along red line (V-angle)
+        v_angle_rad = np.deg2rad(v_angle)
+        v_dx_sample = line_length * np.cos(v_angle_rad)
+        v_dy_sample = line_length * np.sin(v_angle_rad)
+        for i in range(num_samples):
+            t = i / max(1, num_samples - 1)
+            px = int(cx_int + (t - 0.5) * 2 * v_dx_sample)
+            py = int(cy_int + (t - 0.5) * 2 * v_dy_sample)
+            px = np.clip(px, 0, w - 1)
+            py = np.clip(py, 0, h - 1)
+            cv2.circle(frame_copy, (px, py), 4, (0, 0, 255), -1)  # Red dots
+        
+        # Sample points along blue line (H-angle)
+        h_angle_rad = np.deg2rad(h_angle)
+        h_dx_sample = line_length * np.cos(h_angle_rad)
+        h_dy_sample = line_length * np.sin(h_angle_rad)
+        for i in range(num_samples):
+            t = i / max(1, num_samples - 1)
+            px = int(cx_int + (t - 0.5) * 2 * h_dx_sample)
+            py = int(cy_int + (t - 0.5) * 2 * h_dy_sample)
+            px = np.clip(px, 0, w - 1)
+            py = np.clip(py, 0, h - 1)
+            cv2.circle(frame_copy, (px, py), 4, (255, 0, 0), -1)  # Blue dots
+        
+        # Sample points along green line (Mid1)
+        mid1_angle_rad = np.deg2rad(mid_angle_1)
+        mid1_dx_sample = line_length * np.cos(mid1_angle_rad)
+        mid1_dy_sample = line_length * np.sin(mid1_angle_rad)
+        for i in range(num_samples):
+            t = i / max(1, num_samples - 1)
+            px = int(cx_int + (t - 0.5) * 2 * mid1_dx_sample)
+            py = int(cy_int + (t - 0.5) * 2 * mid1_dy_sample)
+            px = np.clip(px, 0, w - 1)
+            py = np.clip(py, 0, h - 1)
+            cv2.circle(frame_copy, (px, py), 4, (0, 255, 0), -1)  # Green dots
+        
+        # Sample points along cyan line (Mid2)
+        mid2_angle_rad = np.deg2rad(mid_angle_2)
+        mid2_dx_sample = line_length * np.cos(mid2_angle_rad)
+        mid2_dy_sample = line_length * np.sin(mid2_angle_rad)
+        for i in range(num_samples):
+            t = i / max(1, num_samples - 1)
+            px = int(cx_int + (t - 0.5) * 2 * mid2_dx_sample)
+            py = int(cy_int + (t - 0.5) * 2 * mid2_dy_sample)
+            px = np.clip(px, 0, w - 1)
+            py = np.clip(py, 0, h - 1)
+            cv2.circle(frame_copy, (px, py), 4, (255, 255, 0), -1)  # Cyan dots
+        
         # Display text
         font = cv2.FONT_HERSHEY_SIMPLEX
         text = f"Center: ({cx:.0f}, {cy:.0f}) | V: {v_angle:.1f}° H: {h_angle:.1f}° | Length: {line_length}px"
@@ -481,16 +552,19 @@ class App:
         self.v_angle_label.config(text=f"{v_angle:.1f}")
         self.h_angle_label.config(text=f"{h_angle:.1f}")
         self.line_length_label.config(text=f"{line_length}")
+        num_samples = self.num_samples_var.get()
+        self.num_samples_label.config(text=f"{num_samples}")
         self.frame_label.config(text=f"{self.frame_num_var.get()}")
         self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}")
         
         # Sample pixels along all 4 lines
-        v_pixels = self.get_line_samples(cx, cy, v_angle, line_length, num_samples=10)
-        h_pixels = self.get_line_samples(cx, cy, h_angle, line_length, num_samples=10)
+        num_samples = self.num_samples_var.get()
+        v_pixels = self.get_line_samples(cx, cy, v_angle, line_length, num_samples=num_samples)
+        h_pixels = self.get_line_samples(cx, cy, h_angle, line_length, num_samples=num_samples)
         mid1_angle = (v_angle + h_angle) / 2.0
         mid2_angle = mid1_angle + 90.0
-        mid1_pixels = self.get_line_samples(cx, cy, mid1_angle, line_length, num_samples=10)
-        mid2_pixels = self.get_line_samples(cx, cy, mid2_angle, line_length, num_samples=10)
+        mid1_pixels = self.get_line_samples(cx, cy, mid1_angle, line_length, num_samples=num_samples)
+        mid2_pixels = self.get_line_samples(cx, cy, mid2_angle, line_length, num_samples=num_samples)
         
         # Draw pixel plot
         self.draw_pixel_plot(v_pixels, h_pixels, mid1_pixels, mid2_pixels)
