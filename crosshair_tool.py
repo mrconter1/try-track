@@ -28,10 +28,10 @@ class App:
         self.v_angle_var = tk.DoubleVar(value=0.0)   # First line angle
         self.h_angle_var = tk.DoubleVar(value=90.0)  # Second line angle (perpendicular)
         self.line_length_var = tk.IntVar(value=100)  # Line length for both
-        self.num_samples_var = tk.IntVar(value=10)   # Number of sample points per line
-        self.inner_exclusion_var = tk.DoubleVar(value=10.0)  # Inner radius for adjacent lines
+        self.num_samples_var = tk.IntVar(value=15)   # Number of sample points per line
+        self.inner_exclusion_var = tk.DoubleVar(value=30.0)  # Inner radius for adjacent lines
         self.clahe_enabled = tk.BooleanVar(value=True)
-        self.clahe_clip_limit = tk.DoubleVar(value=2.0)
+        self.clahe_clip_limit = tk.DoubleVar(value=10.0)
         self.clahe_tile_size = tk.IntVar(value=8)
         self.frame_num_var = tk.IntVar(value=self.current_frame_num)
         self.processed_frame = self.original_frame.copy()
