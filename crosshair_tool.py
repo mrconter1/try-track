@@ -128,12 +128,17 @@ class App:
         self.display_w = int(w_orig * ratio)
         self.display_h = int(h_orig * ratio)
 
-        # --- Image Display ---
+        # --- Image and Plot Layout ---
         self.image_label = ttk.Label(main_frame)
         self.image_label.grid(row=0, column=0, sticky="nsew")
+        
+        # Pixel Plot Canvas
+        self.plot_canvas = tk.Canvas(main_frame, bg="white", width=200, height=self.display_h)
+        self.plot_canvas.grid(row=0, column=1, sticky="nsew")
 
         main_frame.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=3) # Image gets 3/4 of the space
+        main_frame.columnconfigure(1, weight=1) # Plot gets 1/4 of the space
 
         self.update_image()
     
@@ -148,6 +153,72 @@ class App:
         
         # Merge the CLAHE-processed gray channel back to BGR
         return cv2.cvtColor(gray_clahe, cv2.COLOR_GRAY2BGR)
+    
+    def get_line_samples(self, cx, cy, angle, line_length, num_samples=10):
+        """Sample pixel values along a line and return them."""
+        h, w = self.original_frame.shape[:2]
+        cx_int = int(cx)
+        cy_int = int(cy)
+        
+        angle_rad = np.deg2rad(angle)
+        dx = line_length * np.cos(angle_rad)
+        dy = line_length * np.sin(angle_rad)
+        
+        x1 = int(cx_int - dx)
+        y1 = int(cy_int - dy)
+        x2 = int(cx_int + dx)
+        y2 = int(cy_int + dy)
+        
+        x1 = np.clip(x1, 0, w - 1)
+        y1 = np.clip(y1, 0, h - 1)
+        x2 = np.clip(x2, 0, w - 1)
+        y2 = np.clip(y2, 0, h - 1)
+        
+        x_coords = np.linspace(x1, x2, num_samples, dtype=int)
+        y_coords = np.linspace(y1, y2, num_samples, dtype=int)
+        
+        gray_frame = cv2.cvtColor(self.original_frame, cv2.COLOR_BGR2GRAY)
+        pixel_values = gray_frame[y_coords, x_coords]
+        return pixel_values
+    
+    def draw_pixel_plot(self, v_pixels, h_pixels, mid1_pixels, mid2_pixels):
+        """Draw a plot of pixel values for all four lines."""
+        self.plot_canvas.delete("all")
+        
+        canvas_w = self.plot_canvas.winfo_width()
+        canvas_h = self.plot_canvas.winfo_height()
+        
+        if canvas_w < 2 or canvas_h < 2:
+            self.root.after(50, lambda: self.draw_pixel_plot(v_pixels, h_pixels, mid1_pixels, mid2_pixels))
+            return
+        
+        # Helper to draw line on canvas
+        def draw_line(pixels, color):
+            if pixels is None or len(pixels) == 0:
+                return
+            points = []
+            num_samples = len(pixels)
+            x_step = canvas_w / max(1, num_samples - 1)
+            for i, value in enumerate(pixels):
+                x = i * x_step
+                y = canvas_h - (value / 255.0) * canvas_h
+                points.extend([x, y])
+            if len(points) > 2:
+                self.plot_canvas.create_line(points, fill=color, width=2)
+        
+        # Draw all four lines
+        draw_line(v_pixels, "red")        # Red line
+        draw_line(h_pixels, "blue")       # Blue line
+        draw_line(mid1_pixels, "cyan")    # First cyan line
+        draw_line(mid2_pixels, "magenta") # Second cyan line
+        
+        # Draw legend
+        legend_y = 10
+        colors = [("red", "V-Line"), ("blue", "H-Line"), ("cyan", "Mid1"), ("magenta", "Mid2")]
+        for color, label in colors:
+            self.plot_canvas.create_line(canvas_w - 90, legend_y, canvas_w - 70, legend_y, fill=color, width=2)
+            self.plot_canvas.create_text(canvas_w - 65, legend_y, anchor="w", text=label, font=("Arial", 8))
+            legend_y += 15
 
     def adjust_cx(self, amount):
         current_val = self.cx_var.get()
@@ -292,6 +363,17 @@ class App:
         self.line_length_label.config(text=f"{line_length}")
         self.frame_label.config(text=f"{self.frame_num_var.get()}")
         self.clahe_clip_label.config(text=f"{self.clahe_clip_limit.get():.1f}")
+        
+        # Sample pixels along all 4 lines
+        v_pixels = self.get_line_samples(cx, cy, v_angle, line_length, num_samples=10)
+        h_pixels = self.get_line_samples(cx, cy, h_angle, line_length, num_samples=10)
+        mid1_angle = (v_angle + h_angle) / 2.0
+        mid2_angle = mid1_angle + 90.0
+        mid1_pixels = self.get_line_samples(cx, cy, mid1_angle, line_length, num_samples=10)
+        mid2_pixels = self.get_line_samples(cx, cy, mid2_angle, line_length, num_samples=10)
+        
+        # Draw pixel plot
+        self.draw_pixel_plot(v_pixels, h_pixels, mid1_pixels, mid2_pixels)
         
         # --- Scale frame for display ---
         display_frame = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
