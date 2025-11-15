@@ -4,6 +4,9 @@ import argparse
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+import threading
+
+MIN_ANGLE_DIFF = 50.0
 
 # --- Tkinter GUI Application ---
 
@@ -34,6 +37,7 @@ class App:
         self.clahe_clip_limit = tk.DoubleVar(value=10.0)
         self.clahe_tile_size = tk.IntVar(value=8)
         self.frame_num_var = tk.IntVar(value=self.current_frame_num)
+        self._optimizing = False
         self.processed_frame = self.original_frame.copy()
         
         # --- GUI Layout ---
@@ -175,6 +179,10 @@ class App:
         self.image_canvas.bind("<Motion>", self.on_mouse_move)
         self.image_canvas.bind("<Leave>", self.on_mouse_leave)
 
+        # Optimize button
+        self.optimize_button = ttk.Button(control_frame, text="Optimize Contrast", command=self.start_optimization)
+        self.optimize_button.grid(row=0, column=5, rowspan=9, sticky="ns", padx=10)
+
         self.update_image()
     
     def apply_clahe(self, frame):
@@ -212,7 +220,7 @@ class App:
         y_vals = np.clip(y_vals[mask], 0, h - 1).astype(int)
         return list(zip(x_vals, y_vals))
 
-    def get_line_samples_with_radius(self, cx, cy, angle, line_length, num_samples=10, inner_radius=0):
+    def get_line_samples_with_radius(self, cx, cy, angle, line_length, num_samples=10, inner_radius=0, frame=None):
         """Return (pixel_values, points) for a line respecting inner radius."""
         h, w = self.original_frame.shape[:2]
         points = self.compute_sample_points(cx, cy, angle, line_length, num_samples, inner_radius)
@@ -220,7 +228,7 @@ class App:
             return np.array([]), []
         xs = np.array([pt[0] for pt in points])
         ys = np.array([pt[1] for pt in points])
-        source_frame = self.processed_frame if self.processed_frame is not None else self.original_frame
+        source_frame = frame if frame is not None else (self.processed_frame if self.processed_frame is not None else self.original_frame)
         gray_frame = cv2.cvtColor(source_frame, cv2.COLOR_BGR2GRAY)
         pixel_values = gray_frame[ys, xs]
         return pixel_values, points
@@ -436,6 +444,107 @@ class App:
         """Clear pixel info when cursor leaves the image."""
         self.image_canvas.delete("pixel_info")
         self.image_canvas.delete("pixel_info_bg")
+
+    def start_optimization(self):
+        """Kick off contrast optimization in background."""
+        if getattr(self, "_optimizing", False):
+            return
+        self._optimizing = True
+        self.optimize_button.config(state="disabled", text="Optimizing...")
+        thread = threading.Thread(target=self._optimize_worker, daemon=True)
+        thread.start()
+
+    def _optimize_worker(self):
+        """Search parameter space to maximize mid95 - main95."""
+        h, w = self.original_frame.shape[:2]
+        current_params = {
+            "cx": self.cx_var.get(),
+            "cy": self.cy_var.get(),
+            "v_angle": self.v_angle_var.get(),
+            "h_angle": self.h_angle_var.get(),
+        }
+        num_samples = self.num_samples_var.get()
+        line_length = self.line_length_var.get()
+        inner_gap = self.inner_exclusion_var.get()
+        best_params = current_params.copy()
+        best_score = self.evaluate_contrast_metric(
+            line_length=line_length,
+            inner_gap=inner_gap,
+            num_samples=num_samples,
+            **best_params,
+        )
+
+        iterations = 300
+        rng = np.random.default_rng()
+        for _ in range(iterations):
+            candidate = {
+                "cx": rng.uniform(0, w),
+                "cy": rng.uniform(0, h),
+                "v_angle": rng.uniform(0, 180),
+                "h_angle": rng.uniform(0, 180),
+            }
+            if not self.angle_gap_ok(candidate["v_angle"], candidate["h_angle"]):
+                continue
+            score = self.evaluate_contrast_metric(
+                line_length=line_length,
+                inner_gap=inner_gap,
+                num_samples=num_samples,
+                **candidate,
+            )
+            if score > best_score:
+                best_score = score
+                best_params = candidate
+
+        self.root.after(0, self._finish_optimization, best_params)
+
+    def _finish_optimization(self, params):
+        """Apply best parameters and re-enable button."""
+        if not self.angle_gap_ok(params["v_angle"], params["h_angle"]):
+            params["h_angle"] = (params["v_angle"] + MIN_ANGLE_DIFF) % 180
+        self.cx_var.set(params["cx"])
+        self.cy_var.set(params["cy"])
+        self.v_angle_var.set(params["v_angle"] % 180)
+        self.h_angle_var.set(params["h_angle"] % 180)
+        self.update_image()
+        self.optimize_button.config(state="normal", text="Optimize Contrast")
+        self._optimizing = False
+
+    def evaluate_contrast_metric(self, cx, cy, v_angle, h_angle, line_length, inner_gap, num_samples):
+        """Return contrast metric (mid95 - main95) for given parameters."""
+        if not self.angle_gap_ok(v_angle, h_angle):
+            return -np.inf
+        candidate_frame = self.apply_clahe(self.original_frame.copy())
+        v_pixels, _ = self.get_line_samples_with_radius(cx, cy, v_angle, line_length, num_samples=num_samples, inner_radius=0, frame=candidate_frame)
+        h_pixels, _ = self.get_line_samples_with_radius(cx, cy, h_angle, line_length, num_samples=num_samples, inner_radius=0, frame=candidate_frame)
+        mid_angle = (v_angle + h_angle) / 2.0
+        mid2_angle = (mid_angle + 90) % 180
+        mid1_pixels, _ = self.get_line_samples_with_radius(cx, cy, mid_angle, line_length, num_samples=num_samples, inner_radius=inner_gap, frame=candidate_frame)
+        mid2_pixels, _ = self.get_line_samples_with_radius(cx, cy, mid2_angle, line_length, num_samples=num_samples, inner_radius=inner_gap, frame=candidate_frame)
+
+        combined_mid = []
+        if mid1_pixels is not None:
+            combined_mid.extend(mid1_pixels.tolist())
+        if mid2_pixels is not None:
+            combined_mid.extend(mid2_pixels.tolist())
+
+        combined_main = []
+        if v_pixels is not None:
+            combined_main.extend(v_pixels.tolist())
+        if h_pixels is not None:
+            combined_main.extend(h_pixels.tolist())
+
+        if not combined_mid or not combined_main:
+            return -np.inf
+
+        mid95 = np.percentile(combined_mid, 95)
+        main95 = np.percentile(combined_main, 95)
+        return mid95 - main95
+
+    @staticmethod
+    def angle_gap_ok(v_angle, h_angle):
+        """Ensure smallest angle difference exceeds required minimum."""
+        diff = abs(((v_angle - h_angle + 90) % 180) - 90)
+        return diff >= MIN_ANGLE_DIFF
 
     def adjust_cx(self, amount):
         current_val = self.cx_var.get()
