@@ -166,7 +166,8 @@ class DotViewer:
         x = min(x, self.w - 1)
         brightness_list = []
         x_start = base_x
-        for offset in range(self.scan_length - 3, self.scan_length + 1):
+        history_length = 9  # last 9 plus current
+        for offset in range(self.scan_length - history_length, self.scan_length + 1):
             px = np.clip(x_start + offset, 0, self.w - 1)
             b, g, r = self.original_frame[y, px]
             brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
@@ -175,7 +176,7 @@ class DotViewer:
         prev_values = brightness_list[:-1]
         current_value = brightness_list[-1]
         drop = False
-        if len(prev_values) >= 2:
+        if len(prev_values) >= 5:
             mean_prev = np.mean(prev_values)
             std_prev = np.std(prev_values)
             if std_prev > 0:
