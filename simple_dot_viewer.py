@@ -3,6 +3,7 @@ import argparse
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+import numpy as np
 
 
 class DotViewer:
@@ -135,9 +136,14 @@ class DotViewer:
         x = int(self.x_var.get() + self.scan_length)
         y = int(self.y_var.get())
         x = min(x, self.w - 1)
-        b, g, r = self.original_frame[y, x]
-        brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
-        print(f"[scan] x={x} y={y} brightness={brightness}")
+        brightness_list = []
+        x_start = int(self.x_var.get())
+        for offset in range(self.scan_length - 3, self.scan_length + 1):
+            px = np.clip(x_start + offset, 0, self.w - 1)
+            b, g, r = self.original_frame[y, px]
+            brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
+            brightness_list.append(brightness)
+        print(f"[scan] {brightness_list}, {brightness_list[-1]}")
 
 
 def load_frame(video_path, frame_idx):
