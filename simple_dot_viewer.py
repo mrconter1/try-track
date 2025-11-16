@@ -85,6 +85,10 @@ class DotViewer:
                 "left": (0, 255, 255),
                 "up": (255, 0, 255),
                 "down": (255, 255, 0),
+                "up_right": (0, 150, 255),
+                "up_left": (150, 0, 255),
+                "down_right": (255, 150, 0),
+                "down_left": (150, 255, 0),
             }
             for name, state in self.scan_states.items():
                 length = state["length"]
@@ -147,11 +151,19 @@ class DotViewer:
             return
         self.scanning = True
         self.scan_origin = (int(self.x_var.get()), int(self.y_var.get()))
+        directions = [
+            ("right", 1, 0),
+            ("left", -1, 0),
+            ("up", 0, -1),
+            ("down", 0, 1),
+            ("up_right", np.sqrt(0.5), -np.sqrt(0.5)),
+            ("up_left", -np.sqrt(0.5), -np.sqrt(0.5)),
+            ("down_right", np.sqrt(0.5), np.sqrt(0.5)),
+            ("down_left", -np.sqrt(0.5), np.sqrt(0.5)),
+        ]
         self.scan_states = {
-            "right": {"dx": 1, "dy": 0, "length": 0, "active": True},
-            "left": {"dx": -1, "dy": 0, "length": 0, "active": True},
-            "up": {"dx": 0, "dy": -1, "length": 0, "active": True},
-            "down": {"dx": 0, "dy": 1, "length": 0, "active": True},
+            name: {"dx": dx, "dy": dy, "length": 0.0, "active": True}
+            for name, dx, dy in directions
         }
         self.search_button.config(text="Stop")
         self.schedule_scan_step()
@@ -199,8 +211,8 @@ class DotViewer:
         length = state["length"]
         history = 10
         brightness_list = []
-        start_step = max(1, length - history + 1)
-        for step in range(start_step, length + 1):
+        start_step = max(1, int(length) - history + 1)
+        for step in range(start_step, int(length) + 1):
             px = int(np.clip(base_x + dx * step, 0, self.w - 1))
             py = int(np.clip(base_y + dy * step, 0, self.h - 1))
             b, g, r = self.original_frame[py, px]
