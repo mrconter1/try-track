@@ -61,8 +61,10 @@ class DotViewer:
 
         control.columnconfigure(1, weight=1)
 
-        self.image_label = ttk.Label(main)
+        self.image_label = tk.Canvas(main, highlightthickness=0, bg="black")
         self.image_label.grid(row=0, column=0, sticky="nsew")
+        self.image_label.bind("<Button-1>", self.on_canvas_click)
+        self.image_label.bind("<B1-Motion>", self.on_canvas_drag)
 
         main.rowconfigure(0, weight=1)
 
@@ -89,8 +91,9 @@ class DotViewer:
         display = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
         img = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         img_tk = ImageTk.PhotoImage(Image.fromarray(img))
-        self.image_label.imgtk = img_tk
-        self.image_label.configure(image=img_tk)
+        self.image_label.delete("all")
+        self.display_image = img_tk
+        self.image_label.create_image(0, 0, anchor="nw", image=img_tk, tags="frame")
 
         self.x_label.config(text=f"{self.x_var.get():.0f}")
         self.y_label.config(text=f"{self.y_var.get():.0f}")
@@ -102,6 +105,23 @@ class DotViewer:
             self.finish_scan(clear_line=True)
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
+        self.update_image()
+
+    def on_canvas_click(self, event):
+        self.move_dot_to_canvas(event.x, event.y)
+
+    def on_canvas_drag(self, event):
+        self.move_dot_to_canvas(event.x, event.y)
+
+    def move_dot_to_canvas(self, canvas_x, canvas_y):
+        if self.scanning or self.scan_origin:
+            self.finish_scan(clear_line=True)
+        scale_x = self.w / self.display_w
+        scale_y = self.h / self.display_h
+        new_x = np.clip(canvas_x * scale_x, 0, self.w - 1)
+        new_y = np.clip(canvas_y * scale_y, 0, self.h - 1)
+        self.x_var.set(round(new_x, 1))
+        self.y_var.set(round(new_y, 1))
         self.update_image()
 
     def toggle_scan(self):
