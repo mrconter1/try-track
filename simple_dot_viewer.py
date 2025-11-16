@@ -55,6 +55,9 @@ class DotViewer:
         self.y_label = ttk.Label(control, text=f"{self.y_var.get():.0f}")
         self.y_label.grid(row=2, column=2, padx=5)
 
+        self.search_button = ttk.Button(control, text="Search", command=self.toggle_scan)
+        self.search_button.grid(row=3, column=0, columnspan=3, pady=5, sticky="ew")
+
         control.columnconfigure(1, weight=1)
 
         self.image_label = ttk.Label(main)
@@ -65,6 +68,8 @@ class DotViewer:
         self.display_w = min(1200, self.w)
         self.display_h = int(self.display_w * (self.h / self.w))
 
+        self.scanning = False
+        self.scan_length = 0
         self.update_image()
 
     def update_image(self, *args):
@@ -72,6 +77,11 @@ class DotViewer:
         x = int(self.x_var.get())
         y = int(self.y_var.get())
         cv2.circle(frame_copy, (x, y), 6, (0, 0, 255), -1)
+
+        if self.scanning and self.scan_length > 0:
+            x_end = min(x + self.scan_length, self.w - 1)
+            cv2.line(frame_copy, (x, y), (x_end, y), (0, 255, 0), 2)
+            cv2.circle(frame_copy, (x_end, y), 4, (0, 255, 0), -1)
 
         display = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
         img = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
@@ -88,6 +98,46 @@ class DotViewer:
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
         self.update_image()
+
+    def toggle_scan(self):
+        if self.scanning:
+            self.finish_scan()
+        else:
+            self.start_line_scan()
+
+    def start_line_scan(self):
+        if self.scanning:
+            return
+        self.scanning = True
+        self.scan_length = 0
+        self.search_button.config(text="Stop")
+        self.schedule_scan_step()
+
+    def schedule_scan_step(self):
+        if not self.scanning:
+            return
+        self.scan_length += 1
+        self.log_scan_brightness()
+        self.update_image()
+        max_len = self.w - int(self.x_var.get()) - 1
+        if self.scan_length >= max_len:
+            self.finish_scan()
+        else:
+            self.root.after(100, self.schedule_scan_step)
+
+    def finish_scan(self):
+        self.scanning = False
+        self.scan_length = 0
+        self.search_button.config(text="Search")
+        self.update_image()
+
+    def log_scan_brightness(self):
+        x = int(self.x_var.get() + self.scan_length)
+        y = int(self.y_var.get())
+        x = min(x, self.w - 1)
+        b, g, r = self.original_frame[y, x]
+        brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
+        print(f"[scan] x={x} y={y} brightness={brightness}")
 
 
 def load_frame(video_path, frame_idx):
