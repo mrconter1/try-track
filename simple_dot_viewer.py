@@ -72,8 +72,8 @@ class DotViewer:
         self.display_h = int(self.display_w * (self.h / self.w))
 
         self.scanning = False
-        self.scan_length = 0
         self.scan_origin = None
+        self.scan_states = None
         self.update_image()
 
     def update_image(self, *args):
@@ -82,11 +82,23 @@ class DotViewer:
         cursor_y = int(self.y_var.get())
         cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
 
-        if self.scan_origin and self.scan_length > 0:
+        if self.scan_origin and self.scan_states:
             base_x, base_y = self.scan_origin
-            x_end = min(base_x + self.scan_length, self.w - 1)
-            cv2.line(frame_copy, (base_x, base_y), (x_end, base_y), (0, 255, 0), 2)
-            cv2.circle(frame_copy, (x_end, base_y), 4, (0, 255, 0), -1)
+            colors = {
+                "right": (0, 255, 0),
+                "left": (0, 255, 255),
+                "up": (255, 0, 255),
+                "down": (255, 255, 0),
+            }
+            for name, state in self.scan_states.items():
+                length = state["length"]
+                if length <= 0:
+                    continue
+                end_x = int(np.clip(base_x + state["dx"] * length, 0, self.w - 1))
+                end_y = int(np.clip(base_y + state["dy"] * length, 0, self.h - 1))
+                color = colors.get(name, (0, 255, 0))
+                cv2.line(frame_copy, (base_x, base_y), (end_x, end_y), color, 2)
+                cv2.circle(frame_copy, (end_x, end_y), 4, color, -1)
 
         display = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
         img = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
@@ -134,19 +146,37 @@ class DotViewer:
         if self.scanning:
             return
         self.scanning = True
-        self.scan_length = 0
         self.scan_origin = (int(self.x_var.get()), int(self.y_var.get()))
+        self.scan_states = {
+            "right": {"dx": 1, "dy": 0, "length": 0, "active": True},
+            "left": {"dx": -1, "dy": 0, "length": 0, "active": True},
+            "up": {"dx": 0, "dy": -1, "length": 0, "active": True},
+            "down": {"dx": 0, "dy": 1, "length": 0, "active": True},
+        }
         self.search_button.config(text="Stop")
         self.schedule_scan_step()
 
     def schedule_scan_step(self):
         if not self.scanning:
             return
-        self.scan_length += 1
-        self.log_scan_brightness()
+        any_active = False
+        for name, state in self.scan_states.items():
+            if not state["active"]:
+                continue
+            next_len = state["length"] + 1
+            end_x = self.scan_origin[0] + state["dx"] * next_len
+            end_y = self.scan_origin[1] + state["dy"] * next_len
+            if not (0 <= end_x < self.w and 0 <= end_y < self.h):
+                state["active"] = False
+                continue
+            state["length"] = next_len
+            any_active = True
+            drop = self.log_scan_brightness(name, state)
+            if drop:
+                state["active"] = False
+
         self.update_image()
-        max_len = self.w - int(self.x_var.get()) - 1
-        if self.scan_length >= max_len:
+        if not any_active:
             self.finish_scan()
         else:
             self.root.after(100, self.schedule_scan_step)
@@ -154,22 +184,26 @@ class DotViewer:
     def finish_scan(self, clear_line=False):
         self.scanning = False
         if clear_line:
-            self.scan_length = 0
+            self.scan_states = None
             self.scan_origin = None
+        else:
+            if self.scan_states:
+                for state in self.scan_states.values():
+                    state["active"] = False
         self.search_button.config(text="Search")
         self.update_image()
 
-    def log_scan_brightness(self):
-        base_x, base_y = self.scan_origin if self.scan_origin else (int(self.x_var.get()), int(self.y_var.get()))
-        x = base_x + self.scan_length
-        y = base_y
-        x = min(x, self.w - 1)
+    def log_scan_brightness(self, direction, state):
+        base_x, base_y = self.scan_origin
+        dx, dy = state["dx"], state["dy"]
+        length = state["length"]
+        history = 10
         brightness_list = []
-        x_start = base_x
-        history_length = 9  # last 9 plus current
-        for offset in range(self.scan_length - history_length, self.scan_length + 1):
-            px = np.clip(x_start + offset, 0, self.w - 1)
-            b, g, r = self.original_frame[y, px]
+        start_step = max(1, length - history + 1)
+        for step in range(start_step, length + 1):
+            px = int(np.clip(base_x + dx * step, 0, self.w - 1))
+            py = int(np.clip(base_y + dy * step, 0, self.h - 1))
+            b, g, r = self.original_frame[py, px]
             brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
             brightness_list.append(brightness)
 
@@ -179,19 +213,15 @@ class DotViewer:
         if len(prev_values) >= 5:
             mean_prev = np.mean(prev_values)
             std_prev = np.std(prev_values)
-            if std_prev > 0:
-                z_score = (mean_prev - current_value) / std_prev
-            else:
-                z_score = 0
+            z_score = (mean_prev - current_value) / std_prev if std_prev > 0 else 0
             if std_prev > 0 and z_score > 5:
                 drop = True
-                print(f"[scan] {brightness_list}, {current_value}  <-- drop (z={z_score:.2f}, std={std_prev:.2f})")
+                print(f"[scan][{direction}] {brightness_list}, {current_value}  <-- drop (z={z_score:.2f}, std={std_prev:.2f})")
             else:
-                print(f"[scan] {brightness_list}, {current_value}  (z={z_score:.2f}, std={std_prev:.2f})")
+                print(f"[scan][{direction}] {brightness_list}, {current_value}  (z={z_score:.2f}, std={std_prev:.2f})")
         else:
-            print(f"[scan] {brightness_list}, {current_value}")
-        if drop:
-            self.finish_scan()
+            print(f"[scan][{direction}] {brightness_list}, {current_value}")
+        return drop
 
 
 def load_frame(video_path, frame_idx):
