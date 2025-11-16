@@ -16,6 +16,7 @@ class RandomPatchViewer:
         self.coords = coords
         self.patch = patch
         self.patch_size = patch_size
+        self.display_size = 250
         self.photo_image = None
 
         self.root.title("Random Patch Viewer")
@@ -33,11 +34,10 @@ class RandomPatchViewer:
         self.info_label.grid(row=0, column=0, sticky="w")
         self._update_info_label()
 
-        height, width = self.patch.shape[:2]
         self.canvas = tk.Canvas(
             container,
-            width=width,
-            height=height,
+            width=self.display_size,
+            height=self.display_size,
             highlightthickness=0,
             borderwidth=0,
             bg="black",
@@ -53,7 +53,10 @@ class RandomPatchViewer:
 
     def _display_patch(self):
         rgb_patch = cv2.cvtColor(self.patch, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb_patch)
+        image = Image.fromarray(rgb_patch).resize(
+            (self.display_size, self.display_size),
+            resample=Image.NEAREST,
+        )
         self.photo_image = ImageTk.PhotoImage(image)
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
 
