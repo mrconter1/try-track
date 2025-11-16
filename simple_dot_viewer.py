@@ -71,18 +71,20 @@ class DotViewer:
 
         self.scanning = False
         self.scan_length = 0
+        self.scan_origin = None
         self.update_image()
 
     def update_image(self, *args):
         frame_copy = self.original_frame.copy()
-        x = int(self.x_var.get())
-        y = int(self.y_var.get())
-        cv2.circle(frame_copy, (x, y), 6, (0, 0, 255), -1)
+        cursor_x = int(self.x_var.get())
+        cursor_y = int(self.y_var.get())
+        cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
 
-        if self.scanning and self.scan_length > 0:
-            x_end = min(x + self.scan_length, self.w - 1)
-            cv2.line(frame_copy, (x, y), (x_end, y), (0, 255, 0), 2)
-            cv2.circle(frame_copy, (x_end, y), 4, (0, 255, 0), -1)
+        if self.scan_origin and self.scan_length > 0:
+            base_x, base_y = self.scan_origin
+            x_end = min(base_x + self.scan_length, self.w - 1)
+            cv2.line(frame_copy, (base_x, base_y), (x_end, base_y), (0, 255, 0), 2)
+            cv2.circle(frame_copy, (x_end, base_y), 4, (0, 255, 0), -1)
 
         display = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
         img = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
@@ -96,6 +98,8 @@ class DotViewer:
 
     def on_frame_change(self, value):
         frame_idx = int(float(value))
+        if self.scanning or self.scan_origin:
+            self.finish_scan(clear_line=True)
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
         self.update_image()
@@ -111,6 +115,7 @@ class DotViewer:
             return
         self.scanning = True
         self.scan_length = 0
+        self.scan_origin = (int(self.x_var.get()), int(self.y_var.get()))
         self.search_button.config(text="Stop")
         self.schedule_scan_step()
 
@@ -126,24 +131,46 @@ class DotViewer:
         else:
             self.root.after(100, self.schedule_scan_step)
 
-    def finish_scan(self):
+    def finish_scan(self, clear_line=False):
         self.scanning = False
-        self.scan_length = 0
+        if clear_line:
+            self.scan_length = 0
+            self.scan_origin = None
         self.search_button.config(text="Search")
         self.update_image()
 
     def log_scan_brightness(self):
-        x = int(self.x_var.get() + self.scan_length)
-        y = int(self.y_var.get())
+        base_x, base_y = self.scan_origin if self.scan_origin else (int(self.x_var.get()), int(self.y_var.get()))
+        x = base_x + self.scan_length
+        y = base_y
         x = min(x, self.w - 1)
         brightness_list = []
-        x_start = int(self.x_var.get())
+        x_start = base_x
         for offset in range(self.scan_length - 3, self.scan_length + 1):
             px = np.clip(x_start + offset, 0, self.w - 1)
             b, g, r = self.original_frame[y, px]
             brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
             brightness_list.append(brightness)
-        print(f"[scan] {brightness_list}, {brightness_list[-1]}")
+
+        prev_values = brightness_list[:-1]
+        current_value = brightness_list[-1]
+        drop = False
+        if len(prev_values) >= 2:
+            mean_prev = np.mean(prev_values)
+            std_prev = np.std(prev_values)
+            if std_prev > 0:
+                z_score = (mean_prev - current_value) / std_prev
+            else:
+                z_score = 0
+            if std_prev > 0 and z_score > 5:
+                drop = True
+                print(f"[scan] {brightness_list}, {current_value}  <-- drop (z={z_score:.2f}, std={std_prev:.2f})")
+            else:
+                print(f"[scan] {brightness_list}, {current_value}  (z={z_score:.2f}, std={std_prev:.2f})")
+        else:
+            print(f"[scan] {brightness_list}, {current_value}")
+        if drop:
+            self.finish_scan()
 
 
 def load_frame(video_path, frame_idx):
