@@ -16,10 +16,13 @@ class TrainingDataBrowser:
         self.annotations_path = annotations_path
         self.positive_samples = []
         self.negative_samples = []
-        self.current_image = None
+        self.current_images = []
         self.current_info = ""
-        self.photo_image = None
-        self.display_size = 384
+        self.photo_images = []
+        self.canvases = []
+        self.display_size = 200
+        self.grid_cols = 5
+        self.grid_rows = 2
         
         self.root.title("Training Data Browser")
         self._load_annotations()
@@ -79,31 +82,39 @@ class TrainingDataBrowser:
         try:
             self.root.state("zoomed")
         except tk.TclError:
-            self.root.geometry("800x900")
+            self.root.geometry("1200x700")
         
-        self.root.bind("<p>", lambda e: self.generate_positive())
-        self.root.bind("<P>", lambda e: self.generate_positive())
-        self.root.bind("<n>", lambda e: self.generate_negative())
-        self.root.bind("<N>", lambda e: self.generate_negative())
+        self.root.bind("<p>", lambda e: self.generate_positive_batch())
+        self.root.bind("<P>", lambda e: self.generate_positive_batch())
+        self.root.bind("<n>", lambda e: self.generate_negative_batch())
+        self.root.bind("<N>", lambda e: self.generate_negative_batch())
         
         # Info label
         self.info_label = ttk.Label(
             container,
-            text="Press 'Generate Positive' or 'Generate Negative' to create a training sample",
+            text="Press 'Generate Positive' or 'Generate Negative' to create 10 training samples",
             justify="center",
             font=("Segoe UI", 11)
         )
         self.info_label.grid(row=0, column=0, pady=(0, 10))
         
-        # Canvas for displaying the sample
-        self.canvas = tk.Canvas(
-            container,
-            width=self.display_size,
-            height=self.display_size,
-            bg="black",
-            highlightthickness=0
-        )
-        self.canvas.grid(row=1, column=0, pady=10)
+        # Grid frame for canvases
+        grid_frame = ttk.Frame(container)
+        grid_frame.grid(row=1, column=0, pady=10)
+        
+        # Create 5x2 grid of canvases
+        for row in range(self.grid_rows):
+            for col in range(self.grid_cols):
+                canvas = tk.Canvas(
+                    grid_frame,
+                    width=self.display_size,
+                    height=self.display_size,
+                    bg="black",
+                    highlightthickness=1,
+                    highlightbackground="#333"
+                )
+                canvas.grid(row=row, column=col, padx=2, pady=2)
+                self.canvases.append(canvas)
         
         # Buttons
         button_frame = ttk.Frame(container)
@@ -112,134 +123,142 @@ class TrainingDataBrowser:
         self.positive_button = ttk.Button(
             button_frame,
             text="Generate Positive (P)",
-            command=self.generate_positive
+            command=self.generate_positive_batch
         )
         self.positive_button.pack(side=tk.LEFT, padx=5)
         
         self.negative_button = ttk.Button(
             button_frame,
             text="Generate Negative (N)",
-            command=self.generate_negative
+            command=self.generate_negative_batch
         )
         self.negative_button.pack(side=tk.LEFT, padx=5)
     
-    def generate_positive(self):
-        """Generate and display a positive training sample (has cross)."""
+    def generate_positive_batch(self):
+        """Generate and display 10 positive training samples."""
         if not self.positive_samples:
             messagebox.showwarning("No Data", "No positive samples available")
             return
         
-        sample = random.choice(self.positive_samples)
+        self.current_images = []
+        num_samples = self.grid_cols * self.grid_rows
         
-        try:
-            # Load frame
-            frame = self._load_frame(sample["video_path"], sample["frame_idx"])
-            h, w = frame.shape[:2]
-            
-            # Denormalize cross coordinates
-            cross_x = sample["cross"]["x"] * w
-            cross_y = sample["cross"]["y"] * h
-            
-            # Generate random offset so cross is not always centered
-            # Cross must be at least 10px from edge of 128x128 crop
-            crop_size = 128
-            margin = 10
-            
-            # Calculate valid offset range
-            offset_x = random.uniform(-(crop_size//2 - margin), (crop_size//2 - margin))
-            offset_y = random.uniform(-(crop_size//2 - margin), (crop_size//2 - margin))
-            
-            # Calculate crop center
-            center_x = cross_x - offset_x
-            center_y = cross_y - offset_y
-            
-            # Clamp crop center to keep crop fully inside frame
-            half = crop_size / 2
-            center_x = max(half, min(w - half, center_x))
-            center_y = max(half, min(h - half, center_y))
-            
-            # Extract crop (no padding, guaranteed to be inside frame)
-            crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
-            
-            # Calculate cross position within crop
-            cross_in_crop_x = cross_x - (center_x - half)
-            cross_in_crop_y = cross_y - (center_y - half)
-            
-            # Apply augmentations
-            augmented, cross_aug_x, cross_aug_y = self._augment_image(
-                crop, cross_in_crop_x, cross_in_crop_y
-            )
-            
-            # Draw crosshair overlay
-            augmented = self._draw_crosshair(augmented, cross_aug_x, cross_aug_y)
-            
-            # Display
-            self.current_image = augmented
-            video_name = os.path.basename(sample["video_path"])
-            self.current_info = (
-                f"Type: POSITIVE (Has Cross)\n"
-                f"Video: {video_name}\n"
-                f"Frame: {sample['frame_idx']}\n"
-                f"Cross position in crop: ({cross_aug_x:.1f}, {cross_aug_y:.1f})"
-            )
-            self._display_sample()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to generate positive sample: {e}")
+        for _ in range(num_samples):
+            try:
+                img = self._generate_single_positive()
+                self.current_images.append(img)
+            except Exception as e:
+                print(f"[Warning] Failed to generate positive sample: {e}")
+                # Add black placeholder
+                self.current_images.append(np.zeros((128, 128, 3), dtype=np.uint8))
+        
+        self.current_info = f"Type: POSITIVE (Has Cross) - {num_samples} samples"
+        self._display_batch()
     
-    def generate_negative(self):
-        """Generate and display a negative training sample (no cross)."""
+    def generate_negative_batch(self):
+        """Generate and display 10 negative training samples."""
         if not self.negative_samples:
             messagebox.showwarning("No Data", "No negative samples available")
             return
         
+        self.current_images = []
+        num_samples = self.grid_cols * self.grid_rows
+        
+        for _ in range(num_samples):
+            try:
+                img = self._generate_single_negative()
+                self.current_images.append(img)
+            except Exception as e:
+                print(f"[Warning] Failed to generate negative sample: {e}")
+                # Add black placeholder
+                self.current_images.append(np.zeros((128, 128, 3), dtype=np.uint8))
+        
+        self.current_info = f"Type: NEGATIVE (No Cross) - {num_samples} samples"
+        self._display_batch()
+    
+    def _generate_single_positive(self):
+        """Generate a single positive training sample (has cross)."""
+        sample = random.choice(self.positive_samples)
+        
+        # Load frame
+        frame = self._load_frame(sample["video_path"], sample["frame_idx"])
+        h, w = frame.shape[:2]
+        
+        # Denormalize cross coordinates
+        cross_x = sample["cross"]["x"] * w
+        cross_y = sample["cross"]["y"] * h
+        
+        # Generate random offset so cross is not always centered
+        # Cross must be at least 10px from edge of 128x128 crop
+        crop_size = 128
+        margin = 10
+        
+        # Calculate valid offset range
+        offset_x = random.uniform(-(crop_size//2 - margin), (crop_size//2 - margin))
+        offset_y = random.uniform(-(crop_size//2 - margin), (crop_size//2 - margin))
+        
+        # Calculate crop center
+        center_x = cross_x - offset_x
+        center_y = cross_y - offset_y
+        
+        # Clamp crop center to keep crop fully inside frame
+        half = crop_size / 2
+        center_x = max(half, min(w - half, center_x))
+        center_y = max(half, min(h - half, center_y))
+        
+        # Extract crop (no padding, guaranteed to be inside frame)
+        crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
+        
+        # Calculate cross position within crop
+        cross_in_crop_x = cross_x - (center_x - half)
+        cross_in_crop_y = cross_y - (center_y - half)
+        
+        # Apply augmentations
+        augmented, cross_aug_x, cross_aug_y = self._augment_image(
+            crop, cross_in_crop_x, cross_in_crop_y
+        )
+        
+        # Draw crosshair overlay
+        augmented = self._draw_crosshair(augmented, cross_aug_x, cross_aug_y)
+        
+        return augmented
+    
+    def _generate_single_negative(self):
+        """Generate a single negative training sample (no cross)."""
         sample = random.choice(self.negative_samples)
         
-        try:
-            # Load frame
-            frame = self._load_frame(sample["video_path"], sample["frame_idx"])
-            h, w = frame.shape[:2]
-            
-            # Denormalize rect coordinates
-            rect = sample["rect"]
-            x0 = rect["x0"] * w
-            y0 = rect["y0"] * h
-            x1 = rect["x1"] * w
-            y1 = rect["y1"] * h
-            
-            rect_w = x1 - x0
-            rect_h = y1 - y0
-            
-            crop_size = 128
-            
-            # Check if rect is large enough
-            if rect_w < crop_size or rect_h < crop_size:
-                # Try another sample
-                return self.generate_negative()
-            
-            # Random position within rect for crop center
-            center_x = random.uniform(x0 + crop_size/2, x1 - crop_size/2)
-            center_y = random.uniform(y0 + crop_size/2, y1 - crop_size/2)
-            
-            # Extract crop (guaranteed to be inside rect, which is inside frame)
-            crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
-            
-            # Apply augmentations (no cross to track)
-            augmented, _, _ = self._augment_image(crop, None, None)
-            
-            # Display
-            self.current_image = augmented
-            video_name = os.path.basename(sample["video_path"])
-            self.current_info = (
-                f"Type: NEGATIVE (No Cross)\n"
-                f"Video: {video_name}\n"
-                f"Frame: {sample['frame_idx']}\n"
-                f"Crop from negative rect ({rect_w:.0f}×{rect_h:.0f})"
-            )
-            self._display_sample()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to generate negative sample: {e}")
+        # Load frame
+        frame = self._load_frame(sample["video_path"], sample["frame_idx"])
+        h, w = frame.shape[:2]
+        
+        # Denormalize rect coordinates
+        rect = sample["rect"]
+        x0 = rect["x0"] * w
+        y0 = rect["y0"] * h
+        x1 = rect["x1"] * w
+        y1 = rect["y1"] * h
+        
+        rect_w = x1 - x0
+        rect_h = y1 - y0
+        
+        crop_size = 128
+        
+        # Check if rect is large enough
+        if rect_w < crop_size or rect_h < crop_size:
+            # Try another sample
+            return self._generate_single_negative()
+        
+        # Random position within rect for crop center
+        center_x = random.uniform(x0 + crop_size/2, x1 - crop_size/2)
+        center_y = random.uniform(y0 + crop_size/2, y1 - crop_size/2)
+        
+        # Extract crop (guaranteed to be inside rect, which is inside frame)
+        crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
+        
+        # Apply augmentations (no cross to track)
+        augmented, _, _ = self._augment_image(crop, None, None)
+        
+        return augmented
     
     def _load_frame(self, video_path, frame_idx):
         """Load a specific frame from video."""
@@ -328,28 +347,33 @@ class TrainingDataBrowser:
         
         return image
     
-    def _display_sample(self):
-        """Display current sample and info."""
-        if self.current_image is None:
+    def _display_batch(self):
+        """Display current batch of samples."""
+        if not self.current_images:
             return
         
-        # Convert to RGB
-        rgb = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2RGB)
+        self.photo_images = []
         
-        # Scale up for display
-        display_img = cv2.resize(
-            rgb,
-            (self.display_size, self.display_size),
-            interpolation=cv2.INTER_NEAREST
-        )
-        
-        # Convert to PhotoImage
-        pil_img = Image.fromarray(display_img)
-        self.photo_image = ImageTk.PhotoImage(pil_img)
-        
-        # Update canvas
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
+        for idx, img in enumerate(self.current_images):
+            # Convert to RGB
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            # Scale up for display
+            display_img = cv2.resize(
+                rgb,
+                (self.display_size, self.display_size),
+                interpolation=cv2.INTER_NEAREST
+            )
+            
+            # Convert to PhotoImage
+            pil_img = Image.fromarray(display_img)
+            photo = ImageTk.PhotoImage(pil_img)
+            self.photo_images.append(photo)
+            
+            # Update corresponding canvas
+            canvas = self.canvases[idx]
+            canvas.delete("all")
+            canvas.create_image(0, 0, anchor="nw", image=photo)
         
         # Update info label
         self.info_label.config(text=self.current_info)
