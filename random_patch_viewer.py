@@ -1,7 +1,8 @@
 import argparse
+import json
 import random
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 
 import cv2
 import numpy as np
@@ -114,6 +115,13 @@ class RandomPatchViewer:
             command=self.load_next_frame,
         )
         self.random_button.grid(row=3, column=0, sticky="ew")
+
+        self.export_button = ttk.Button(
+            control_frame,
+            text="Export annotations",
+            command=self.export_annotations,
+        )
+        self.export_button.grid(row=4, column=0, sticky="ew", pady=(10, 0))
 
     def _append_random_frame(self):
         frame_idx, frame, total_frames = choose_random_frame(self.video_path)
@@ -417,6 +425,54 @@ class RandomPatchViewer:
         y0 = int(round(cy - half))
         patch = padded[y0 : y0 + size, x0 : x0 + size]
         return patch, None
+
+    def export_annotations(self):
+        import os
+        frames_data = []
+        for entry in self.history:
+            frame = entry["frame"]
+            h, w = frame.shape[:2]
+            
+            normalized_crosses = []
+            for ann in entry["annotations"]:
+                normalized_crosses.append({
+                    "x": float(ann["x"] / w),
+                    "y": float(ann["y"] / h)
+                })
+            
+            normalized_rects = []
+            for rect in entry.get("negative_rects", []):
+                normalized_rects.append({
+                    "x0": float(rect["x0"] / w),
+                    "y0": float(rect["y0"] / h),
+                    "x1": float(rect["x1"] / w),
+                    "y1": float(rect["y1"] / h)
+                })
+            
+            frame_data = {
+                "frame_idx": entry["frame_idx"],
+                "crosses": normalized_crosses,
+                "negative_rects": normalized_rects
+            }
+            frames_data.append(frame_data)
+        
+        abs_video_path = os.path.abspath(self.video_path)
+        export_data = {
+            "videos": [
+                {
+                    "video_path": abs_video_path,
+                    "frames": frames_data
+                }
+            ]
+        }
+        
+        output_path = "annotations.json"
+        try:
+            with open(output_path, "w") as f:
+                json.dump(export_data, f, indent=2)
+            messagebox.showinfo("Export successful", f"Annotations saved to {output_path}")
+        except Exception as e:
+            messagebox.showerror("Export failed", f"Could not save file: {e}")
 
 
 
