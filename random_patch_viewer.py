@@ -79,6 +79,7 @@ class RandomPatchViewer:
         self.canvas.bind("<ButtonPress-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        self.canvas.bind("<Button-3>", self.on_canvas_right_click)
 
         self.random_button = ttk.Button(
             content,
@@ -208,6 +209,9 @@ class RandomPatchViewer:
     def on_canvas_release(self, event):
         self.canvas.configure(cursor="")
 
+    def on_canvas_right_click(self, event):
+        self.clear_annotation()
+
     def _update_annotation_from_event(self, event):
         if not self.current_sample:
             return
@@ -225,6 +229,16 @@ class RandomPatchViewer:
             return
         self.current_sample["annotation"] = (float(patch_x), float(patch_y))
         self.current_sample["state"] = "Has cross"
+        self._update_sample_label()
+        self._display_patch()
+
+    def clear_annotation(self):
+        if not self.current_sample:
+            return
+        if self.current_sample.get("annotation") is None:
+            return
+        self.current_sample["annotation"] = None
+        self.current_sample["state"] = "No cross"
         self._update_sample_label()
         self._display_patch()
 
