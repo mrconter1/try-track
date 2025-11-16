@@ -53,7 +53,7 @@ class RandomPatchViewer:
         self.random_button = ttk.Button(
             container,
             text="Randomize patch",
-            command=self.load_random_patch,
+            command=self.load_next_patch,
         )
         self.random_button.grid(row=2, column=0, sticky="ew")
 
@@ -74,13 +74,21 @@ class RandomPatchViewer:
         )
         self.info_label.config(text=info_text)
 
-    def load_random_patch(self):
+    def load_next_patch(self):
+        if self.history_idx < len(self.history) - 1:
+            self.history_idx += 1
+            sample = self.history[self.history_idx]
+            self._apply_sample(sample)
+        else:
+            self._append_random_sample()
+
+    def _append_random_sample(self):
         frame_idx, frame, total_frames = choose_random_frame(self.video_path)
         coords, patch = choose_random_patch(frame, self.patch_size)
         self._store_sample(frame_idx, total_frames, coords, patch)
 
     def _on_key_randomize(self, event):
-        self.load_random_patch()
+        self.load_next_patch()
 
     def load_previous_patch(self):
         if self.history_idx <= 0:
