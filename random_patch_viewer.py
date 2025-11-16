@@ -65,6 +65,8 @@ class RandomPatchViewer:
             font=("Segoe UI", 12, "bold"),
         )
         self.coords_label.grid(row=1, column=0, sticky="ew")
+        self.stats_label = ttk.Label(content, justify="center", anchor="center")
+        self.stats_label.grid(row=4, column=0, pady=(10, 0), sticky="ew")
         self._update_info_label()
 
         self.canvas = tk.Canvas(
@@ -148,6 +150,22 @@ class RandomPatchViewer:
             state_text = f"State: {state}"
         self.state_label.config(text=state_text, foreground=state_color)
         self.coords_label.config(text=coord_text, foreground=coords_color)
+        self._update_stats_label()
+
+    def _update_stats_label(self):
+        no_cross = sum(
+            1
+            for sample in self.history
+            if sample.get("state") == "No cross" or not sample.get("annotation")
+        )
+        has_cross = sum(
+            1
+            for sample in self.history
+            if sample.get("state") == "Has cross" and sample.get("annotation")
+        )
+        self.stats_label.config(
+            text=f"No cross: {no_cross}    With cross: {has_cross}"
+        )
 
     def load_next_patch(self):
         if self.history_idx < len(self.history) - 1:
