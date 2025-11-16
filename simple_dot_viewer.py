@@ -76,8 +76,30 @@ class DotViewer:
         self.threshold_label = ttk.Label(control, text=f"{self.threshold_var.get():.1f}")
         self.threshold_label.grid(row=4, column=2, padx=5)
 
+        ttk.Label(control, text="Grid Count:").grid(row=5, column=0, sticky=tk.W)
+        self.grid_count_var = tk.IntVar(value=5)
+        self.grid_count_slider = tk.Scale(
+            control, from_=1, to=9, orient=tk.HORIZONTAL,
+            variable=self.grid_count_var, command=lambda *_: self.on_param_change(),
+            showvalue=0, resolution=2
+        )
+        self.grid_count_slider.grid(row=5, column=1, sticky="ew")
+        self.grid_count_label = ttk.Label(control, text=f"{self.grid_count_var.get()}")
+        self.grid_count_label.grid(row=5, column=2, padx=5)
+
+        ttk.Label(control, text="Grid Extent:").grid(row=6, column=0, sticky=tk.W)
+        self.grid_extent_var = tk.DoubleVar(value=40.0)
+        self.grid_extent_slider = tk.Scale(
+            control, from_=5, to=200, orient=tk.HORIZONTAL,
+            variable=self.grid_extent_var, command=lambda *_: self.on_param_change(),
+            showvalue=0, resolution=5
+        )
+        self.grid_extent_slider.grid(row=6, column=1, sticky="ew")
+        self.grid_extent_label = ttk.Label(control, text=f"{self.grid_extent_var.get():.0f}")
+        self.grid_extent_label.grid(row=6, column=2, padx=5)
+
         self.search_button = ttk.Button(control, text="Start", command=self.toggle_scan)
-        self.search_button.grid(row=5, column=0, columnspan=3, pady=5, sticky="ew")
+        self.search_button.grid(row=7, column=0, columnspan=3, pady=5, sticky="ew")
 
         control.columnconfigure(1, weight=1)
 
@@ -114,6 +136,18 @@ class DotViewer:
 
         cursor_x = int(self.x_var.get())
         cursor_y = int(self.y_var.get())
+
+        count = max(1, self.grid_count_var.get())
+        radius = count // 2
+        if radius > 0:
+            extent = max(1.0, self.grid_extent_var.get())
+            spacing = extent / radius
+            for gx in range(-radius, radius + 1):
+                for gy in range(-radius, radius + 1):
+                    px = int(np.clip(cursor_x + gx * spacing, 0, self.w - 1))
+                    py = int(np.clip(cursor_y + gy * spacing, 0, self.h - 1))
+                    cv2.circle(frame_copy, (px, py), 2, (0, 0, 255), -1)
+
         cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
 
         display = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
@@ -128,6 +162,8 @@ class DotViewer:
         self.frame_label.config(text=f"{self.frame_var.get()}")
         self.history_label.config(text=f"{self.history_var.get()}")
         self.threshold_label.config(text=f"{self.threshold_var.get():.1f}")
+        self.grid_count_label.config(text=f"{self.grid_count_var.get()}")
+        self.grid_extent_label.config(text=f"{self.grid_extent_var.get():.0f}")
 
     def on_frame_change(self, value):
         frame_idx = int(float(value))
