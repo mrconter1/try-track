@@ -53,6 +53,8 @@ class RandomPatchViewer:
         self.root.bind("<D>", self._on_key_next)
         self.root.bind("<a>", self._on_key_previous)
         self.root.bind("<A>", self._on_key_previous)
+        self.root.bind("<Control-z>", self._on_undo)
+        self.root.bind("<Control-Z>", self._on_undo)
 
         canvas_frame = ttk.Frame(container)
         canvas_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
@@ -138,6 +140,20 @@ class RandomPatchViewer:
 
     def _on_key_previous(self, event):
         self.load_previous_frame()
+
+    def _on_undo(self, event):
+        if not self.current_entry:
+            return
+        if self.current_entry["annotations"]:
+            self.current_entry["annotations"].pop()
+            self._update_annotation_label()
+            self._update_stats_label()
+            self._display_current_frame()
+        elif self.current_entry.get("negative_rects"):
+            self.current_entry["negative_rects"].pop()
+            self._update_annotation_label()
+            self._update_stats_label()
+            self._display_current_frame()
 
     def load_next_frame(self):
         if self.history_idx < len(self.history) - 1:
