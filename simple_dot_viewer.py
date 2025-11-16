@@ -41,7 +41,7 @@ class DotViewer:
         ttk.Label(control, text="X:").grid(row=1, column=0, sticky=tk.W)
         self.x_slider = tk.Scale(
             control, from_=0, to=self.w - 1, orient=tk.HORIZONTAL,
-            variable=self.x_var, command=self.update_image, showvalue=0, resolution=1
+            variable=self.x_var, command=lambda *_: self.on_position_slider_change(), showvalue=0, resolution=1
         )
         self.x_slider.grid(row=1, column=1, sticky="ew")
         self.x_label = ttk.Label(control, text=f"{self.x_var.get():.0f}")
@@ -50,7 +50,7 @@ class DotViewer:
         ttk.Label(control, text="Y:").grid(row=2, column=0, sticky=tk.W)
         self.y_slider = tk.Scale(
             control, from_=0, to=self.h - 1, orient=tk.HORIZONTAL,
-            variable=self.y_var, command=self.update_image, showvalue=0, resolution=1
+            variable=self.y_var, command=lambda *_: self.on_position_slider_change(), showvalue=0, resolution=1
         )
         self.y_slider.grid(row=2, column=1, sticky="ew")
         self.y_label = ttk.Label(control, text=f"{self.y_var.get():.0f}")
@@ -60,7 +60,7 @@ class DotViewer:
         self.history_var = tk.IntVar(value=30)
         self.history_slider = tk.Scale(
             control, from_=5, to=30, orient=tk.HORIZONTAL,
-            variable=self.history_var, command=lambda *_: self.update_image(), showvalue=0, resolution=1
+            variable=self.history_var, command=lambda *_: self.on_param_change(), showvalue=0, resolution=1
         )
         self.history_slider.grid(row=3, column=1, sticky="ew")
         self.history_label = ttk.Label(control, text=f"{self.history_var.get()}")
@@ -70,13 +70,13 @@ class DotViewer:
         self.threshold_var = tk.DoubleVar(value=5.0)
         self.threshold_slider = tk.Scale(
             control, from_=2.0, to=20.0, orient=tk.HORIZONTAL,
-            variable=self.threshold_var, command=lambda *_: self.update_image(), showvalue=0, resolution=0.5
+            variable=self.threshold_var, command=lambda *_: self.on_param_change(), showvalue=0, resolution=0.5
         )
         self.threshold_slider.grid(row=4, column=1, sticky="ew")
         self.threshold_label = ttk.Label(control, text=f"{self.threshold_var.get():.1f}")
         self.threshold_label.grid(row=4, column=2, padx=5)
 
-        self.search_button = ttk.Button(control, text="Search", command=self.toggle_scan)
+        self.search_button = ttk.Button(control, text="Start", command=self.toggle_scan)
         self.search_button.grid(row=5, column=0, columnspan=3, pady=5, sticky="ew")
 
         control.columnconfigure(1, weight=1)
@@ -94,7 +94,9 @@ class DotViewer:
         self.scanning = False
         self.scan_origin = None
         self.scan_states = None
+        self.pending_scan_job = None
         self.update_image()
+        self.schedule_scan_restart()
 
     def update_image(self, *args):
         frame_copy = self.original_frame.copy()
@@ -134,6 +136,7 @@ class DotViewer:
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
         self.update_image()
+        self.schedule_scan_restart()
 
     def on_canvas_click(self, event):
         self.move_dot_to_canvas(event.x, event.y)
@@ -151,6 +154,28 @@ class DotViewer:
         self.x_var.set(round(new_x, 1))
         self.y_var.set(round(new_y, 1))
         self.update_image()
+        self.schedule_scan_restart()
+
+    def on_position_slider_change(self):
+        if self.scanning or self.scan_origin:
+            self.finish_scan(clear_line=True)
+        self.update_image()
+        self.schedule_scan_restart()
+
+    def on_param_change(self):
+        if self.scanning or self.scan_origin:
+            self.finish_scan(clear_line=True)
+        self.update_image()
+        self.schedule_scan_restart()
+
+    def schedule_scan_restart(self):
+        if self.pending_scan_job:
+            self.root.after_cancel(self.pending_scan_job)
+        self.pending_scan_job = self.root.after(100, self._delayed_start)
+
+    def _delayed_start(self):
+        self.pending_scan_job = None
+        self.start_line_scan()
 
     def toggle_scan(self):
         if self.scanning:
@@ -159,8 +184,11 @@ class DotViewer:
             self.start_line_scan()
 
     def start_line_scan(self):
+        if self.pending_scan_job:
+            self.root.after_cancel(self.pending_scan_job)
+            self.pending_scan_job = None
         if self.scanning:
-            return
+            self.finish_scan(clear_line=True)
         self.scanning = True
         self.scan_origin = (int(self.x_var.get()), int(self.y_var.get()))
         directions = [
@@ -214,7 +242,7 @@ class DotViewer:
             if self.scan_states:
                 for state in self.scan_states.values():
                     state["active"] = False
-        self.search_button.config(text="Search")
+        self.search_button.config(text="Start")
         self.update_image()
 
     def log_scan_brightness(self, direction, state):
