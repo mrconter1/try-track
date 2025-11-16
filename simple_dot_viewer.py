@@ -56,8 +56,28 @@ class DotViewer:
         self.y_label = ttk.Label(control, text=f"{self.y_var.get():.0f}")
         self.y_label.grid(row=2, column=2, padx=5)
 
+        ttk.Label(control, text="History:").grid(row=3, column=0, sticky=tk.W)
+        self.history_var = tk.IntVar(value=30)
+        self.history_slider = tk.Scale(
+            control, from_=5, to=30, orient=tk.HORIZONTAL,
+            variable=self.history_var, command=lambda *_: self.update_image(), showvalue=0, resolution=1
+        )
+        self.history_slider.grid(row=3, column=1, sticky="ew")
+        self.history_label = ttk.Label(control, text=f"{self.history_var.get()}")
+        self.history_label.grid(row=3, column=2, padx=5)
+
+        ttk.Label(control, text="Z Threshold:").grid(row=4, column=0, sticky=tk.W)
+        self.threshold_var = tk.DoubleVar(value=5.0)
+        self.threshold_slider = tk.Scale(
+            control, from_=2.0, to=20.0, orient=tk.HORIZONTAL,
+            variable=self.threshold_var, command=lambda *_: self.update_image(), showvalue=0, resolution=0.5
+        )
+        self.threshold_slider.grid(row=4, column=1, sticky="ew")
+        self.threshold_label = ttk.Label(control, text=f"{self.threshold_var.get():.1f}")
+        self.threshold_label.grid(row=4, column=2, padx=5)
+
         self.search_button = ttk.Button(control, text="Search", command=self.toggle_scan)
-        self.search_button.grid(row=3, column=0, columnspan=3, pady=5, sticky="ew")
+        self.search_button.grid(row=5, column=0, columnspan=3, pady=5, sticky="ew")
 
         control.columnconfigure(1, weight=1)
 
@@ -114,6 +134,8 @@ class DotViewer:
         self.x_label.config(text=f"{self.x_var.get():.0f}")
         self.y_label.config(text=f"{self.y_var.get():.0f}")
         self.frame_label.config(text=f"{self.frame_var.get()}")
+        self.history_label.config(text=f"{self.history_var.get()}")
+        self.threshold_label.config(text=f"{self.threshold_var.get():.1f}")
 
     def on_frame_change(self, value):
         frame_idx = int(float(value))
@@ -191,7 +213,7 @@ class DotViewer:
         if not any_active:
             self.finish_scan()
         else:
-            self.root.after(100, self.schedule_scan_step)
+            self.root.after(10, self.schedule_scan_step)
 
     def finish_scan(self, clear_line=False):
         self.scanning = False
@@ -209,7 +231,7 @@ class DotViewer:
         base_x, base_y = self.scan_origin
         dx, dy = state["dx"], state["dy"]
         length = state["length"]
-        history = 10
+        history = self.history_var.get()
         brightness_list = []
         start_step = max(1, int(length) - history + 1)
         for step in range(start_step, int(length) + 1):
@@ -222,11 +244,12 @@ class DotViewer:
         prev_values = brightness_list[:-1]
         current_value = brightness_list[-1]
         drop = False
-        if len(prev_values) >= 5:
+        if len(prev_values) >= max(5, history // 2):
             mean_prev = np.mean(prev_values)
             std_prev = np.std(prev_values)
             z_score = (mean_prev - current_value) / std_prev if std_prev > 0 else 0
-            if std_prev > 0 and z_score > 10:
+            threshold = self.threshold_var.get()
+            if std_prev > 0 and z_score > threshold:
                 drop = True
                 print(f"[scan][{direction}] {brightness_list}, {current_value}  <-- drop (z={z_score:.2f}, std={std_prev:.2f})")
             else:
