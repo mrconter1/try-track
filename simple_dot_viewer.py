@@ -21,8 +21,8 @@ class DotViewer:
 
         self.root.title("Dot Viewer")
 
-        self.x_var = tk.DoubleVar(value=self.w / 2)
-        self.y_var = tk.DoubleVar(value=self.h / 2)
+        self.x_var = tk.DoubleVar(value=358)
+        self.y_var = tk.DoubleVar(value=231)
         self.frame_var = tk.IntVar(value=initial_frame_idx)
 
         main = ttk.Frame(root, padding=10)
@@ -62,7 +62,7 @@ class DotViewer:
         self.y_label.grid(row=2, column=2, padx=5)
 
         ttk.Label(control, text="History:").grid(row=3, column=0, sticky=tk.W)
-        self.history_var = tk.IntVar(value=30)
+        self.history_var = tk.IntVar(value=15)
         self.history_slider = tk.Scale(
             control, from_=5, to=30, orient=tk.HORIZONTAL,
             variable=self.history_var, command=lambda *_: self.on_param_change(), showvalue=0, resolution=1
@@ -93,7 +93,7 @@ class DotViewer:
         self.dot_count_label.grid(row=5, column=2, padx=5)
 
         ttk.Label(control, text="Dot Radius:").grid(row=6, column=0, sticky=tk.W)
-        self.dot_radius_var = tk.DoubleVar(value=40.0)
+        self.dot_radius_var = tk.DoubleVar(value=50.0)
         self.dot_radius_slider = tk.Scale(
             control, from_=5, to=200, orient=tk.HORIZONTAL,
             variable=self.dot_radius_var, command=lambda *_: self.on_param_change(),
@@ -104,7 +104,7 @@ class DotViewer:
         self.dot_radius_label.grid(row=6, column=2, padx=5)
 
         ttk.Label(control, text="Direction Count:").grid(row=7, column=0, sticky=tk.W)
-        self.dir_count_var = tk.IntVar(value=8)
+        self.dir_count_var = tk.IntVar(value=5)
         self.dir_count_slider = tk.Scale(
             control, from_=1, to=32, orient=tk.HORIZONTAL,
             variable=self.dir_count_var, command=lambda *_: self.on_param_change(),
@@ -115,7 +115,7 @@ class DotViewer:
         self.dir_count_label.grid(row=7, column=2, padx=5)
 
         ttk.Label(control, text="Stop Percent:").grid(row=8, column=0, sticky=tk.W)
-        self.stop_percent_var = tk.DoubleVar(value=90.0)
+        self.stop_percent_var = tk.DoubleVar(value=50.0)
         self.stop_percent_slider = tk.Scale(
             control, from_=10, to=100, orient=tk.HORIZONTAL,
             variable=self.stop_percent_var, command=lambda *_: self.on_param_change(),
@@ -359,13 +359,15 @@ class DotViewer:
         dx, dy = state["dx"], state["dy"]
         length = state["length"]
         history = self.history_var.get()
-        brightness_list = []
         start_step = max(1, int(length) - history + 1)
+        end_step = int(length)
+        if end_step < start_step:
+            return False
+        steps = np.arange(start_step, end_step + 1, dtype=np.float32)
+        xs = np.clip(base_x + dx * steps, 0, self.w - 1).astype(np.int32)
+        ys = np.clip(base_y + dy * steps, 0, self.h - 1).astype(np.int32)
         gray = self.gray_frame
-        for step in range(start_step, int(length) + 1):
-            px = int(np.clip(base_x + dx * step, 0, self.w - 1))
-            py = int(np.clip(base_y + dy * step, 0, self.h - 1))
-            brightness_list.append(int(gray[py, px]))
+        brightness_list = gray[ys, xs].astype(np.int32)
 
         prev_values = brightness_list[:-1]
         current_value = brightness_list[-1]
