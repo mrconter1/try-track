@@ -16,6 +16,7 @@ class DotViewer:
         self.video_path = video_path
         self.total_frames = total_frames
         self.original_frame = load_frame(video_path, initial_frame_idx)
+        self.gray_frame = cv2.cvtColor(self.original_frame, cv2.COLOR_BGR2GRAY)
         self.h, self.w = self.original_frame.shape[:2]
 
         self.root.title("Dot Viewer")
@@ -213,6 +214,7 @@ class DotViewer:
         self.request_scan_stop(clear_line=True)
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
+        self.gray_frame = cv2.cvtColor(self.original_frame, cv2.COLOR_BGR2GRAY)
         self.update_image()
         self.schedule_scan_restart()
 
@@ -359,12 +361,11 @@ class DotViewer:
         history = self.history_var.get()
         brightness_list = []
         start_step = max(1, int(length) - history + 1)
+        gray = self.gray_frame
         for step in range(start_step, int(length) + 1):
             px = int(np.clip(base_x + dx * step, 0, self.w - 1))
             py = int(np.clip(base_y + dy * step, 0, self.h - 1))
-            b, g, r = self.original_frame[py, px]
-            brightness = int(0.299 * r + 0.587 * g + 0.114 * b)
-            brightness_list.append(brightness)
+            brightness_list.append(int(gray[py, px]))
 
         prev_values = brightness_list[:-1]
         current_value = brightness_list[-1]
