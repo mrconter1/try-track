@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import cv2
+import numpy as np
 from PIL import Image, ImageTk, ImageDraw
 
 
@@ -75,8 +76,9 @@ class RandomPatchViewer:
             bg="black",
         )
         self.canvas.grid(row=2, column=0, pady=10)
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<ButtonPress-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
 
         self.random_button = ttk.Button(
             content,
@@ -97,13 +99,18 @@ class RandomPatchViewer:
             scale_x = self.display_size / max(1, patch_w)
             scale_y = self.display_size / max(1, patch_h)
             draw = ImageDraw.Draw(image)
-            disp_x = int(ann_x * scale_x)
-            disp_y = int(ann_y * scale_y)
-            r = 6
-            draw.ellipse(
-                (disp_x - r, disp_y - r, disp_x + r, disp_y + r),
+            disp_x = ann_x * scale_x
+            disp_y = ann_y * scale_y
+            half = 8
+            draw.line(
+                (disp_x - half, disp_y, disp_x + half, disp_y),
                 fill="red",
-                outline="black",
+                width=2,
+            )
+            draw.line(
+                (disp_x, disp_y - half, disp_x, disp_y + half),
+                fill="red",
+                width=2,
             )
         self.photo_image = ImageTk.PhotoImage(image)
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
@@ -127,7 +134,7 @@ class RandomPatchViewer:
             state = self.current_sample.get("state", "No cross")
             annotation = self.current_sample.get("annotation")
             if annotation:
-                coord_text = f"Patch coords: ({annotation[0]}, {annotation[1]})"
+                coord_text = f"Patch coords: ({annotation[0]:.1f}, {annotation[1]:.1f})"
                 coords_color = "#003399"
             else:
                 coord_text = "Patch coords: –"
@@ -191,11 +198,15 @@ class RandomPatchViewer:
     def _on_key_previous(self, event):
         self.load_previous_patch()
 
-    def on_canvas_click(self, event):
+    def on_canvas_press(self, event):
+        self.canvas.configure(cursor="none")
         self._update_annotation_from_event(event)
 
     def on_canvas_drag(self, event):
         self._update_annotation_from_event(event)
+
+    def on_canvas_release(self, event):
+        self.canvas.configure(cursor="")
 
     def _update_annotation_from_event(self, event):
         if not self.current_sample:
@@ -205,14 +216,14 @@ class RandomPatchViewer:
             return
         scale_x = patch_w / self.display_size
         scale_y = patch_h / self.display_size
-        patch_x = int(min(max(event.x * scale_x, 0), patch_w - 1))
-        patch_y = int(min(max(event.y * scale_y, 0), patch_h - 1))
+        patch_x = float(np.clip(event.x * scale_x, 0.0, patch_w - 1e-6))
+        patch_y = float(np.clip(event.y * scale_y, 0.0, patch_h - 1e-6))
         self.set_annotation(patch_x, patch_y)
 
     def set_annotation(self, patch_x, patch_y):
         if not self.current_sample:
             return
-        self.current_sample["annotation"] = (patch_x, patch_y)
+        self.current_sample["annotation"] = (float(patch_x), float(patch_y))
         self.current_sample["state"] = "Has cross"
         self._update_sample_label()
         self._display_patch()
