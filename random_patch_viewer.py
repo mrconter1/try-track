@@ -34,7 +34,9 @@ class RandomPatchViewer:
 
         self.root.title("Frame Annotation Viewer")
         self._build_ui()
-        self._append_random_frame()
+        self._load_existing_annotations()
+        if not self.history:
+            self._append_random_frame()
 
     def _build_ui(self):
         container = ttk.Frame(self.root, padding=20)
@@ -426,6 +428,62 @@ class RandomPatchViewer:
         patch = padded[y0 : y0 + size, x0 : x0 + size]
         return patch, None
 
+    def _load_existing_annotations(self):
+        import os
+        output_path = "annotations.json"
+        if not os.path.exists(output_path):
+            return
+        
+        try:
+            with open(output_path, "r") as f:
+                data = json.load(f)
+            
+            abs_video_path = os.path.abspath(self.video_path)
+            matching_video = None
+            for video in data.get("videos", []):
+                if os.path.abspath(video.get("video_path", "")) == abs_video_path:
+                    matching_video = video
+                    break
+            
+            if not matching_video:
+                return
+            
+            for frame_data in matching_video.get("frames", []):
+                frame_idx = frame_data["frame_idx"]
+                frame = load_frame(self.video_path, frame_idx)
+                h, w = frame.shape[:2]
+                
+                annotations = []
+                for cross in frame_data.get("crosses", []):
+                    annotations.append({
+                        "x": float(cross["x"] * w),
+                        "y": float(cross["y"] * h)
+                    })
+                
+                negative_rects = []
+                for rect in frame_data.get("negative_rects", []):
+                    negative_rects.append({
+                        "x0": float(rect["x0"] * w),
+                        "y0": float(rect["y0"] * h),
+                        "x1": float(rect["x1"] * w),
+                        "y1": float(rect["y1"] * h)
+                    })
+                
+                entry = {
+                    "frame_idx": frame_idx,
+                    "frame": frame,
+                    "annotations": annotations,
+                    "negative_rects": negative_rects
+                }
+                self.history.append(entry)
+            
+            if self.history:
+                self.history_idx = 0
+                self._set_current_entry(self.history[0])
+                
+        except Exception as e:
+            print(f"[Warning] Could not load annotations: {e}")
+
     def export_annotations(self):
         import os
         frames_data = []
@@ -474,6 +532,18 @@ class RandomPatchViewer:
         except Exception as e:
             messagebox.showerror("Export failed", f"Could not save file: {e}")
 
+
+
+def load_frame(video_path, frame_idx):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video {video_path}")
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        raise ValueError(f"Could not read frame {frame_idx}")
+    return frame
 
 
 def choose_random_frame(video_path):
