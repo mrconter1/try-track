@@ -76,6 +76,7 @@ class RandomPatchViewer:
         )
         self.canvas.grid(row=2, column=0, pady=10)
         self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
 
         self.random_button = ttk.Button(
             content,
@@ -117,6 +118,8 @@ class RandomPatchViewer:
         self._update_sample_label()
 
     def _update_sample_label(self):
+        state_color = "#cc0000"
+        coords_color = "#cc0000"
         if not self.current_sample:
             state_text = "State: –"
             coord_text = "Patch coords: –"
@@ -125,11 +128,18 @@ class RandomPatchViewer:
             annotation = self.current_sample.get("annotation")
             if annotation:
                 coord_text = f"Patch coords: ({annotation[0]}, {annotation[1]})"
+                coords_color = "#003399"
             else:
                 coord_text = "Patch coords: –"
+            if state == "Has cross" and annotation:
+                state_color = "#003399"
+                coords_color = "#003399"
+            else:
+                state_color = "#cc0000"
+                coords_color = "#cc0000" if annotation is None else coords_color
             state_text = f"State: {state}"
-        self.state_label.config(text=state_text)
-        self.coords_label.config(text=coord_text)
+        self.state_label.config(text=state_text, foreground=state_color)
+        self.coords_label.config(text=coord_text, foreground=coords_color)
 
     def load_next_patch(self):
         if self.history_idx < len(self.history) - 1:
@@ -182,6 +192,12 @@ class RandomPatchViewer:
         self.load_previous_patch()
 
     def on_canvas_click(self, event):
+        self._update_annotation_from_event(event)
+
+    def on_canvas_drag(self, event):
+        self._update_annotation_from_event(event)
+
+    def _update_annotation_from_event(self, event):
         if not self.current_sample:
             return
         patch_h, patch_w = self.patch.shape[:2]
