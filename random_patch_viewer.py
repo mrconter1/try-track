@@ -35,7 +35,9 @@ class RandomPatchViewer:
     def _build_ui(self):
         container = ttk.Frame(self.root, padding=20)
         container.grid(row=0, column=0, sticky="nsew")
-        container.grid_columnconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=3)
+        container.grid_columnconfigure(1, weight=1)
+        container.grid_rowconfigure(0, weight=1)
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -49,58 +51,62 @@ class RandomPatchViewer:
         self.root.bind("<a>", self._on_key_previous)
         self.root.bind("<A>", self._on_key_previous)
 
-        content = ttk.Frame(container)
-        content.grid(row=0, column=0, sticky="n")
-        content.grid_columnconfigure(0, weight=1)
-
-        self.info_label = ttk.Label(content, justify="center", anchor="center")
-        self.info_label.grid(row=0, column=0, sticky="ew")
-
-        sample_label_frame = ttk.Frame(content)
-        sample_label_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        sample_label_frame.grid_columnconfigure(0, weight=1)
-        self.state_label = ttk.Label(
-            sample_label_frame,
-            justify="center",
-            anchor="center",
-            font=("Segoe UI", 12, "bold"),
-        )
-        self.state_label.grid(row=0, column=0, sticky="ew", pady=(0, 2))
-        self.coords_label = ttk.Label(
-            sample_label_frame,
-            justify="center",
-            anchor="center",
-            font=("Segoe UI", 12, "bold"),
-        )
-        self.coords_label.grid(row=1, column=0, sticky="ew")
+        canvas_frame = ttk.Frame(container)
+        canvas_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        canvas_frame.grid_rowconfigure(0, weight=1)
+        canvas_frame.grid_columnconfigure(0, weight=1)
+        canvas_frame.bind("<Configure>", self._on_canvas_frame_resize)
 
         self.canvas = tk.Canvas(
-            content,
-            width=self.max_display_width,
-            height=self.max_display_height,
+            canvas_frame,
             highlightthickness=0,
             borderwidth=0,
             bg="black",
         )
-        self.canvas.grid(row=2, column=0, pady=10)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<ButtonPress-1>", self.on_left_press)
         self.canvas.bind("<B1-Motion>", self.on_left_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_release)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
 
-        button_row = ttk.Frame(content)
-        button_row.grid(row=3, column=0, sticky="ew", pady=(5, 0))
-        button_row.columnconfigure(0, weight=1)
+        control_frame = ttk.Frame(container)
+        control_frame.grid(row=0, column=1, sticky="nsew")
+        control_frame.grid_columnconfigure(0, weight=1)
+
+        self.info_label = ttk.Label(
+            control_frame, justify="left", anchor="w", font=("Segoe UI", 11, "bold")
+        )
+        self.info_label.grid(row=0, column=0, sticky="ew")
+
+        sample_label_frame = ttk.Frame(control_frame)
+        sample_label_frame.grid(row=1, column=0, sticky="ew", pady=(10, 10))
+        sample_label_frame.grid_columnconfigure(0, weight=1)
+        self.state_label = ttk.Label(
+            sample_label_frame,
+            justify="left",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.state_label.grid(row=0, column=0, sticky="ew", pady=(0, 2))
+        self.coords_label = ttk.Label(
+            sample_label_frame,
+            justify="left",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.coords_label.grid(row=1, column=0, sticky="ew")
+
+        self.stats_label = ttk.Label(
+            control_frame, justify="left", anchor="w", wraplength=260
+        )
+        self.stats_label.grid(row=2, column=0, sticky="ew", pady=(0, 15))
 
         self.random_button = ttk.Button(
-            button_row,
+            control_frame,
             text="Next random frame",
             command=self.load_next_frame,
         )
-        self.random_button.grid(row=0, column=0, sticky="ew")
-
-        self.stats_label = ttk.Label(content, justify="center", anchor="center")
-        self.stats_label.grid(row=4, column=0, pady=(10, 0), sticky="ew")
+        self.random_button.grid(row=3, column=0, sticky="ew")
 
     def _append_random_frame(self):
         frame_idx, frame, total_frames = choose_random_frame(self.video_path)
@@ -180,8 +186,8 @@ class RandomPatchViewer:
         scale = min(
             self.max_display_width / max(1, w),
             self.max_display_height / max(1, h),
-            1.0,
         )
+        scale = max(scale, 0.01)
         disp_w = int(w * scale)
         disp_h = int(h * scale)
         self.scale_x = scale
@@ -206,6 +212,17 @@ class RandomPatchViewer:
         self.canvas.configure(width=disp_w, height=disp_h)
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
+
+    def _on_canvas_frame_resize(self, event):
+        new_w = max(100, event.width)
+        new_h = max(100, event.height)
+        if (
+            abs(new_w - self.max_display_width) > 2
+            or abs(new_h - self.max_display_height) > 2
+        ):
+            self.max_display_width = new_w
+            self.max_display_height = new_h
+            self._display_current_frame()
 
     def on_left_press(self, event):
         self.dragging = True
