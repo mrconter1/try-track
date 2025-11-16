@@ -209,12 +209,24 @@ class RandomPatchViewer:
             x1 = rect["x1"] * scale
             y1 = rect["y1"] * scale
             draw.rectangle([x0, y0, x1, y1], outline="blue", width=2)
+            rx = rect["x0"]
+            ry = rect["y0"]
+            rw = rect["x1"] - rect["x0"]
+            rh = rect["y1"] - rect["y0"]
+            label = f"({rx:.0f},{ry:.0f}) {rw:.0f}x{rh:.0f}"
+            draw.text((x0 + 4, y0 + 4), label, fill="blue")
         if self.rect_preview:
             x0 = self.rect_preview["x0"] * scale
             y0 = self.rect_preview["y0"] * scale
             x1 = self.rect_preview["x1"] * scale
             y1 = self.rect_preview["y1"] * scale
             draw.rectangle([x0, y0, x1, y1], outline="cyan", width=2)
+            rx = self.rect_preview["x0"]
+            ry = self.rect_preview["y0"]
+            rw = self.rect_preview["x1"] - self.rect_preview["x0"]
+            rh = self.rect_preview["y1"] - self.rect_preview["y0"]
+            label = f"({rx:.0f},{ry:.0f}) {rw:.0f}x{rh:.0f}"
+            draw.text((x0 + 4, y0 + 4), label, fill="cyan")
         for ann in self.current_entry["annotations"]:
             dx = ann["x"] * scale
             dy = ann["y"] * scale
