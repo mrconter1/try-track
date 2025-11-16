@@ -1,9 +1,12 @@
-import cv2
 import argparse
+import math
+import random
+
+import cv2
+import numpy as np
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
-import numpy as np
 
 
 class DotViewer:
@@ -86,27 +89,27 @@ class DotViewer:
         self.threshold_label = ttk.Label(control, text=f"{self.threshold_var.get():.1f}")
         self.threshold_label.grid(row=4, column=2, padx=5)
 
-        ttk.Label(control, text="Grid Count:").grid(row=5, column=0, sticky=tk.W)
-        self.grid_count_var = tk.IntVar(value=5)
-        self.grid_count_slider = tk.Scale(
-            control, from_=1, to=9, orient=tk.HORIZONTAL,
-            variable=self.grid_count_var, command=lambda *_: self.on_param_change(),
-            showvalue=0, resolution=2
+        ttk.Label(control, text="Dot Count:").grid(row=5, column=0, sticky=tk.W)
+        self.dot_count_var = tk.IntVar(value=25)
+        self.dot_count_slider = tk.Scale(
+            control, from_=1, to=100, orient=tk.HORIZONTAL,
+            variable=self.dot_count_var, command=lambda *_: self.on_param_change(),
+            showvalue=0, resolution=1
         )
-        self.grid_count_slider.grid(row=5, column=1, sticky="ew")
-        self.grid_count_label = ttk.Label(control, text=f"{self.grid_count_var.get()}")
-        self.grid_count_label.grid(row=5, column=2, padx=5)
+        self.dot_count_slider.grid(row=5, column=1, sticky="ew")
+        self.dot_count_label = ttk.Label(control, text=f"{self.dot_count_var.get()}")
+        self.dot_count_label.grid(row=5, column=2, padx=5)
 
-        ttk.Label(control, text="Grid Extent:").grid(row=6, column=0, sticky=tk.W)
-        self.grid_extent_var = tk.DoubleVar(value=40.0)
-        self.grid_extent_slider = tk.Scale(
+        ttk.Label(control, text="Dot Radius:").grid(row=6, column=0, sticky=tk.W)
+        self.dot_radius_var = tk.DoubleVar(value=40.0)
+        self.dot_radius_slider = tk.Scale(
             control, from_=5, to=200, orient=tk.HORIZONTAL,
-            variable=self.grid_extent_var, command=lambda *_: self.on_param_change(),
+            variable=self.dot_radius_var, command=lambda *_: self.on_param_change(),
             showvalue=0, resolution=5
         )
-        self.grid_extent_slider.grid(row=6, column=1, sticky="ew")
-        self.grid_extent_label = ttk.Label(control, text=f"{self.grid_extent_var.get():.0f}")
-        self.grid_extent_label.grid(row=6, column=2, padx=5)
+        self.dot_radius_slider.grid(row=6, column=1, sticky="ew")
+        self.dot_radius_label = ttk.Label(control, text=f"{self.dot_radius_var.get():.0f}")
+        self.dot_radius_label.grid(row=6, column=2, padx=5)
 
         self.search_button = ttk.Button(control, text="Start", command=self.toggle_scan)
         self.search_button.grid(row=7, column=0, columnspan=3, pady=5, sticky="ew")
@@ -125,6 +128,7 @@ class DotViewer:
 
         self.scanning = False
         self.scan_origins = None
+        self.current_dots = None
         self.pending_scan_job = None
         self.update_image()
         self.schedule_scan_restart()
@@ -147,8 +151,8 @@ class DotViewer:
         cursor_x = int(self.x_var.get())
         cursor_y = int(self.y_var.get())
 
-        grid_points = self.compute_grid_points()
-        for px, py in grid_points:
+        dot_points = self.current_dots if self.current_dots else [(cursor_x, cursor_y)]
+        for px, py in dot_points:
             cv2.circle(frame_copy, (px, py), 2, (0, 0, 255), -1)
 
         cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
@@ -165,27 +169,23 @@ class DotViewer:
         self.frame_label.config(text=f"{self.frame_var.get()}")
         self.history_label.config(text=f"{self.history_var.get()}")
         self.threshold_label.config(text=f"{self.threshold_var.get():.1f}")
-        self.grid_count_label.config(text=f"{self.grid_count_var.get()}")
-        self.grid_extent_label.config(text=f"{self.grid_extent_var.get():.0f}")
+        self.dot_count_label.config(text=f"{self.dot_count_var.get()}")
+        self.dot_radius_label.config(text=f"{self.dot_radius_var.get():.0f}")
 
-    def compute_grid_points(self):
+    def generate_dot_points(self):
         center_x = int(self.x_var.get())
         center_y = int(self.y_var.get())
-        count = max(1, self.grid_count_var.get())
-        if count % 2 == 0:
-            count += 1
-        radius = count // 2
-        points = []
-        if radius == 0:
-            points.append((center_x, center_y))
+        total = max(1, self.dot_count_var.get())
+        radius = max(1.0, self.dot_radius_var.get())
+        points = [(center_x, center_y)]
+        if total == 1:
             return points
-        extent = max(1.0, self.grid_extent_var.get())
-        spacing = extent / radius
-        for gx in range(-radius, radius + 1):
-            for gy in range(-radius, radius + 1):
-                px = int(np.clip(center_x + gx * spacing, 0, self.w - 1))
-                py = int(np.clip(center_y + gy * spacing, 0, self.h - 1))
-                points.append((px, py))
+        for _ in range(total - 1):
+            angle = random.uniform(0, 2 * math.pi)
+            r = radius * math.sqrt(random.random())
+            px = int(np.clip(center_x + r * math.cos(angle), 0, self.w - 1))
+            py = int(np.clip(center_y + r * math.sin(angle), 0, self.h - 1))
+            points.append((px, py))
         return points
 
     def on_frame_change(self, value):
@@ -249,9 +249,9 @@ class DotViewer:
         if self.scanning:
             self.finish_scan(clear_line=True)
         self.scanning = True
-        grid_points = self.compute_grid_points()
+        self.current_dots = self.generate_dot_points()
         self.scan_origins = []
-        for origin in grid_points:
+        for origin in self.current_dots:
             states = {
                 name: {"dx": dx, "dy": dy, "length": 0.0, "active": True}
                 for name, dx, dy in self.DIRECTIONS
@@ -291,6 +291,7 @@ class DotViewer:
         self.scanning = False
         if clear_line:
             self.scan_origins = None
+            self.current_dots = None
         else:
             if self.scan_origins:
                 for entry in self.scan_origins:
