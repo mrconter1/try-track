@@ -100,23 +100,13 @@ class DotViewer:
         frame_copy = self.original_frame.copy()
         if self.scan_origin and self.scan_states:
             base_x, base_y = self.scan_origin
-            colors = {
-                "right": (0, 255, 0),
-                "left": (0, 255, 255),
-                "up": (255, 0, 255),
-                "down": (255, 255, 0),
-                "up_right": (0, 150, 255),
-                "up_left": (150, 0, 255),
-                "down_right": (255, 150, 0),
-                "down_left": (150, 255, 0),
-            }
+            color = (0, 255, 0)
             for name, state in self.scan_states.items():
                 length = state["length"]
                 if length <= 0:
                     continue
                 end_x = int(np.clip(base_x + state["dx"] * length, 0, self.w - 1))
                 end_y = int(np.clip(base_y + state["dy"] * length, 0, self.h - 1))
-                color = colors.get(name, (0, 255, 0))
                 cv2.line(frame_copy, (base_x, base_y), (end_x, end_y), color, 2)
                 cv2.circle(frame_copy, (end_x, end_y), 4, color, -1)
 
@@ -243,20 +233,17 @@ class DotViewer:
 
         prev_values = brightness_list[:-1]
         current_value = brightness_list[-1]
-        drop = False
         if len(prev_values) >= max(5, history // 2):
             mean_prev = np.mean(prev_values)
             std_prev = np.std(prev_values)
             z_score = (mean_prev - current_value) / std_prev if std_prev > 0 else 0
             threshold = self.threshold_var.get()
             if std_prev > 0 and z_score > threshold:
-                drop = True
-                print(f"[scan][{direction}] {brightness_list}, {current_value}  <-- drop (z={z_score:.2f}, std={std_prev:.2f})")
-            else:
-                print(f"[scan][{direction}] {brightness_list}, {current_value}  (z={z_score:.2f}, std={std_prev:.2f})")
-        else:
-            print(f"[scan][{direction}] {brightness_list}, {current_value}")
-        return drop
+                end_x = int(np.clip(base_x + dx * length, 0, self.w - 1))
+                end_y = int(np.clip(base_y + dy * length, 0, self.h - 1))
+                print(f"[stop][{direction}] x={end_x} y={end_y} z={z_score:.2f}")
+                return True
+        return False
 
 
 def load_frame(video_path, frame_idx):
