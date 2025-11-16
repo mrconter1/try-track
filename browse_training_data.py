@@ -153,12 +153,17 @@ class TrainingDataBrowser:
             center_x = cross_x - offset_x
             center_y = cross_y - offset_y
             
-            # Extract crop (with padding to handle edges)
-            crop = self._extract_crop(frame, center_x, center_y, crop_size)
+            # Clamp crop center to keep crop fully inside frame
+            half = crop_size / 2
+            center_x = max(half, min(w - half, center_x))
+            center_y = max(half, min(h - half, center_y))
+            
+            # Extract crop (no padding, guaranteed to be inside frame)
+            crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
             
             # Calculate cross position within crop
-            cross_in_crop_x = crop_size / 2 + offset_x
-            cross_in_crop_y = crop_size / 2 + offset_y
+            cross_in_crop_x = cross_x - (center_x - half)
+            cross_in_crop_y = cross_y - (center_y - half)
             
             # Apply augmentations
             augmented, cross_aug_x, cross_aug_y = self._augment_image(
@@ -216,8 +221,8 @@ class TrainingDataBrowser:
             center_x = random.uniform(x0 + crop_size/2, x1 - crop_size/2)
             center_y = random.uniform(y0 + crop_size/2, y1 - crop_size/2)
             
-            # Extract crop
-            crop = self._extract_crop(frame, center_x, center_y, crop_size)
+            # Extract crop (guaranteed to be inside rect, which is inside frame)
+            crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
             
             # Apply augmentations (no cross to track)
             augmented, _, _ = self._augment_image(crop, None, None)
@@ -248,9 +253,8 @@ class TrainingDataBrowser:
             raise ValueError(f"Could not read frame {frame_idx}")
         return frame
     
-    def _extract_crop(self, frame, center_x, center_y, size):
-        """Extract a crop centered at (center_x, center_y) with padding if needed."""
-        h, w = frame.shape[:2]
+    def _extract_crop_clamped(self, frame, center_x, center_y, size):
+        """Extract a crop centered at (center_x, center_y), guaranteed to be inside frame."""
         half = size // 2
         
         # Calculate crop bounds
@@ -258,23 +262,6 @@ class TrainingDataBrowser:
         y0 = int(center_y - half)
         x1 = x0 + size
         y1 = y0 + size
-        
-        # Pad frame if crop extends beyond boundaries
-        pad_top = max(0, -y0)
-        pad_bottom = max(0, y1 - h)
-        pad_left = max(0, -x0)
-        pad_right = max(0, x1 - w)
-        
-        if pad_top > 0 or pad_bottom > 0 or pad_left > 0 or pad_right > 0:
-            frame = cv2.copyMakeBorder(
-                frame,
-                pad_top, pad_bottom, pad_left, pad_right,
-                borderType=cv2.BORDER_REFLECT_101
-            )
-            x0 += pad_left
-            y0 += pad_top
-            x1 += pad_left
-            y1 += pad_top
         
         crop = frame[y0:y1, x0:x1]
         return crop
