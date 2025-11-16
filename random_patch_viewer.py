@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import random
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -9,10 +10,9 @@ import numpy as np
 from PIL import Image, ImageTk, ImageDraw
 
 class RandomPatchViewer:
-    def __init__(self, root, video_path, total_frames, patch_size):
+    def __init__(self, root, video_paths, patch_size):
         self.root = root
-        self.video_path = video_path
-        self.total_frames = total_frames
+        self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
         self.history = []
         self.history_idx = -1
@@ -126,9 +126,15 @@ class RandomPatchViewer:
         self.export_button.grid(row=4, column=0, sticky="ew", pady=(10, 0))
 
     def _append_random_frame(self):
-        frame_idx, frame, total_frames = choose_random_frame(self.video_path)
-        self.total_frames = total_frames
-        entry = {"frame_idx": frame_idx, "frame": frame, "annotations": [], "negative_rects": []}
+        video_path, frame_idx, frame, total_frames = choose_random_frame_multi(self.video_paths)
+        entry = {
+            "video_path": video_path,
+            "frame_idx": frame_idx,
+            "frame": frame,
+            "total_frames": total_frames,
+            "annotations": [],
+            "negative_rects": []
+        }
         if self.history_idx < len(self.history) - 1:
             self.history = self.history[: self.history_idx + 1]
         self.history.append(entry)
@@ -183,9 +189,11 @@ class RandomPatchViewer:
             self.info_label.config(text="–")
             return
         entry = self.current_entry
+        video_name = os.path.basename(entry.get("video_path", "unknown"))
+        total_frames = entry.get("total_frames", "?")
         info_text = (
-            f"Video: {self.video_path}\n"
-            f"Frame: {entry['frame_idx'] + 1} / {self.total_frames}\n"
+            f"Video: {video_name}\n"
+            f"Frame: {entry['frame_idx'] + 1} / {total_frames}\n"
             f"Annotations on this frame: {len(entry['annotations'])}"
         )
         self.info_label.config(text=info_text)
@@ -429,7 +437,6 @@ class RandomPatchViewer:
         return patch, None
 
     def _load_existing_annotations(self):
-        import os
         output_path = "annotations.json"
         if not os.path.exists(output_path):
             return
@@ -438,44 +445,55 @@ class RandomPatchViewer:
             with open(output_path, "r") as f:
                 data = json.load(f)
             
-            abs_video_path = os.path.abspath(self.video_path)
-            matching_video = None
+            # Load frames from all videos in our video list
             for video in data.get("videos", []):
-                if os.path.abspath(video.get("video_path", "")) == abs_video_path:
-                    matching_video = video
-                    break
-            
-            if not matching_video:
-                return
-            
-            for frame_data in matching_video.get("frames", []):
-                frame_idx = frame_data["frame_idx"]
-                frame = load_frame(self.video_path, frame_idx)
-                h, w = frame.shape[:2]
+                video_path = video.get("video_path", "")
+                abs_video_path = os.path.abspath(video_path)
                 
-                annotations = []
-                for cross in frame_data.get("crosses", []):
-                    annotations.append({
-                        "x": float(cross["x"] * w),
-                        "y": float(cross["y"] * h)
-                    })
+                # Check if this video is in our list
+                if abs_video_path not in self.video_paths:
+                    continue
                 
-                negative_rects = []
-                for rect in frame_data.get("negative_rects", []):
-                    negative_rects.append({
-                        "x0": float(rect["x0"] * w),
-                        "y0": float(rect["y0"] * h),
-                        "x1": float(rect["x1"] * w),
-                        "y1": float(rect["y1"] * h)
-                    })
+                # Get total frames for this video
+                try:
+                    total_frames = get_total_frames(abs_video_path)
+                except:
+                    total_frames = 0
                 
-                entry = {
-                    "frame_idx": frame_idx,
-                    "frame": frame,
-                    "annotations": annotations,
-                    "negative_rects": negative_rects
-                }
-                self.history.append(entry)
+                for frame_data in video.get("frames", []):
+                    frame_idx = frame_data["frame_idx"]
+                    try:
+                        frame = load_frame(abs_video_path, frame_idx)
+                    except:
+                        continue
+                    
+                    h, w = frame.shape[:2]
+                    
+                    annotations = []
+                    for cross in frame_data.get("crosses", []):
+                        annotations.append({
+                            "x": float(cross["x"] * w),
+                            "y": float(cross["y"] * h)
+                        })
+                    
+                    negative_rects = []
+                    for rect in frame_data.get("negative_rects", []):
+                        negative_rects.append({
+                            "x0": float(rect["x0"] * w),
+                            "y0": float(rect["y0"] * h),
+                            "x1": float(rect["x1"] * w),
+                            "y1": float(rect["y1"] * h)
+                        })
+                    
+                    entry = {
+                        "video_path": abs_video_path,
+                        "frame_idx": frame_idx,
+                        "frame": frame,
+                        "total_frames": total_frames,
+                        "annotations": annotations,
+                        "negative_rects": negative_rects
+                    }
+                    self.history.append(entry)
             
             if self.history:
                 self.history_idx = 0
@@ -485,9 +503,13 @@ class RandomPatchViewer:
             print(f"[Warning] Could not load annotations: {e}")
 
     def export_annotations(self):
-        import os
-        frames_data = []
+        # Group frames by video
+        video_frames = {}
         for entry in self.history:
+            video_path = entry["video_path"]
+            if video_path not in video_frames:
+                video_frames[video_path] = []
+            
             frame = entry["frame"]
             h, w = frame.shape[:2]
             
@@ -512,19 +534,30 @@ class RandomPatchViewer:
                 "crosses": normalized_crosses,
                 "negative_rects": normalized_rects
             }
-            frames_data.append(frame_data)
+            video_frames[video_path].append(frame_data)
         
-        abs_video_path = os.path.abspath(self.video_path)
+        # Load existing JSON if present
+        output_path = "annotations.json"
+        existing_data = {"videos": []}
+        if os.path.exists(output_path):
+            try:
+                with open(output_path, "r") as f:
+                    existing_data = json.load(f)
+            except:
+                pass
+        
+        # Merge: update existing videos or add new ones
+        existing_videos = {v["video_path"]: v for v in existing_data.get("videos", [])}
+        for video_path, frames in video_frames.items():
+            existing_videos[video_path] = {
+                "video_path": video_path,
+                "frames": frames
+            }
+        
         export_data = {
-            "videos": [
-                {
-                    "video_path": abs_video_path,
-                    "frames": frames_data
-                }
-            ]
+            "videos": list(existing_videos.values())
         }
         
-        output_path = "annotations.json"
         try:
             with open(output_path, "w") as f:
                 json.dump(export_data, f, indent=2)
@@ -546,7 +579,12 @@ def load_frame(video_path, frame_idx):
     return frame
 
 
-def choose_random_frame(video_path):
+def choose_random_frame_multi(video_paths):
+    """Choose a random video and a random frame from it."""
+    if not video_paths:
+        raise ValueError("No video paths provided")
+    
+    video_path = random.choice(video_paths)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Could not open video '{video_path}'")
@@ -564,7 +602,7 @@ def choose_random_frame(video_path):
     if not success:
         raise ValueError(f"Failed to read frame {frame_idx} from '{video_path}'")
 
-    return frame_idx, frame, total_frames
+    return video_path, frame_idx, frame, total_frames
 
 
 def get_total_frames(video_path):
@@ -581,10 +619,10 @@ def parse_args():
         description="Annotate frames and train a simple cross detector."
     )
     parser.add_argument(
-        "--video",
-        type=str,
-        default="video.mp4",
-        help="Path to the video file to sample from.",
+        "--videos",
+        nargs="+",
+        default=["video.mp4"],
+        help="Paths to one or more video files to sample from.",
     )
     parser.add_argument(
         "--patch-size",
@@ -598,8 +636,7 @@ def parse_args():
 def main():
     args = parse_args()
     root = tk.Tk()
-    total_frames = get_total_frames(args.video)
-    viewer = RandomPatchViewer(root, args.video, total_frames, args.patch_size)
+    viewer = RandomPatchViewer(root, args.videos, args.patch_size)
     root.mainloop()
 
 
