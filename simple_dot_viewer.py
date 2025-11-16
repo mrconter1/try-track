@@ -78,10 +78,6 @@ class DotViewer:
 
     def update_image(self, *args):
         frame_copy = self.original_frame.copy()
-        cursor_x = int(self.x_var.get())
-        cursor_y = int(self.y_var.get())
-        cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
-
         if self.scan_origin and self.scan_states:
             base_x, base_y = self.scan_origin
             colors = {
@@ -99,6 +95,10 @@ class DotViewer:
                 color = colors.get(name, (0, 255, 0))
                 cv2.line(frame_copy, (base_x, base_y), (end_x, end_y), color, 2)
                 cv2.circle(frame_copy, (end_x, end_y), 4, color, -1)
+
+        cursor_x = int(self.x_var.get())
+        cursor_y = int(self.y_var.get())
+        cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
 
         display = cv2.resize(frame_copy, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
         img = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
