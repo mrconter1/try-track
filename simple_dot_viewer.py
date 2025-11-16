@@ -16,6 +16,8 @@ class DotViewer:
         self.video_path = video_path
         self.total_frames = total_frames
         self.original_frame = load_frame(video_path, initial_frame_idx)
+        self.processed_frame = None
+        self.gray_frame = None
         self.gray_frame = cv2.cvtColor(self.original_frame, cv2.COLOR_BGR2GRAY)
         self.h, self.w = self.original_frame.shape[:2]
 
@@ -81,52 +83,62 @@ class DotViewer:
         self.threshold_label = ttk.Label(control, text=f"{self.threshold_var.get():.1f}")
         self.threshold_label.grid(row=4, column=2, padx=5)
 
-        ttk.Label(control, text="Dot Count:").grid(row=5, column=0, sticky=tk.W)
+        ttk.Label(control, text="CLAHE Clip:").grid(row=5, column=0, sticky=tk.W)
+        self.clahe_var = tk.DoubleVar(value=5.0)
+        self.clahe_slider = tk.Scale(
+            control, from_=1.0, to=20.0, orient=tk.HORIZONTAL,
+            variable=self.clahe_var, command=lambda *_: self.on_clahe_change(), showvalue=0, resolution=0.5
+        )
+        self.clahe_slider.grid(row=5, column=1, sticky="ew")
+        self.clahe_label = ttk.Label(control, text=f"{self.clahe_var.get():.1f}")
+        self.clahe_label.grid(row=5, column=2, padx=5)
+
+        ttk.Label(control, text="Dot Count:").grid(row=6, column=0, sticky=tk.W)
         self.dot_count_var = tk.IntVar(value=25)
         self.dot_count_slider = tk.Scale(
             control, from_=1, to=100, orient=tk.HORIZONTAL,
             variable=self.dot_count_var, command=lambda *_: self.on_param_change(),
             showvalue=0, resolution=1
         )
-        self.dot_count_slider.grid(row=5, column=1, sticky="ew")
+        self.dot_count_slider.grid(row=6, column=1, sticky="ew")
         self.dot_count_label = ttk.Label(control, text=f"{self.dot_count_var.get()}")
-        self.dot_count_label.grid(row=5, column=2, padx=5)
+        self.dot_count_label.grid(row=6, column=2, padx=5)
 
-        ttk.Label(control, text="Dot Radius:").grid(row=6, column=0, sticky=tk.W)
+        ttk.Label(control, text="Dot Radius:").grid(row=7, column=0, sticky=tk.W)
         self.dot_radius_var = tk.DoubleVar(value=50.0)
         self.dot_radius_slider = tk.Scale(
             control, from_=5, to=200, orient=tk.HORIZONTAL,
             variable=self.dot_radius_var, command=lambda *_: self.on_param_change(),
             showvalue=0, resolution=5
         )
-        self.dot_radius_slider.grid(row=6, column=1, sticky="ew")
+        self.dot_radius_slider.grid(row=7, column=1, sticky="ew")
         self.dot_radius_label = ttk.Label(control, text=f"{self.dot_radius_var.get():.0f}")
-        self.dot_radius_label.grid(row=6, column=2, padx=5)
+        self.dot_radius_label.grid(row=7, column=2, padx=5)
 
-        ttk.Label(control, text="Direction Count:").grid(row=7, column=0, sticky=tk.W)
+        ttk.Label(control, text="Direction Count:").grid(row=8, column=0, sticky=tk.W)
         self.dir_count_var = tk.IntVar(value=5)
         self.dir_count_slider = tk.Scale(
             control, from_=1, to=32, orient=tk.HORIZONTAL,
             variable=self.dir_count_var, command=lambda *_: self.on_param_change(),
             showvalue=0, resolution=1
         )
-        self.dir_count_slider.grid(row=7, column=1, sticky="ew")
+        self.dir_count_slider.grid(row=8, column=1, sticky="ew")
         self.dir_count_label = ttk.Label(control, text=f"{self.dir_count_var.get()}")
-        self.dir_count_label.grid(row=7, column=2, padx=5)
+        self.dir_count_label.grid(row=8, column=2, padx=5)
 
-        ttk.Label(control, text="Stop Percent:").grid(row=8, column=0, sticky=tk.W)
+        ttk.Label(control, text="Stop Percent:").grid(row=9, column=0, sticky=tk.W)
         self.stop_percent_var = tk.DoubleVar(value=50.0)
         self.stop_percent_slider = tk.Scale(
             control, from_=10, to=100, orient=tk.HORIZONTAL,
             variable=self.stop_percent_var, command=lambda *_: self.on_param_change(),
             showvalue=0, resolution=1
         )
-        self.stop_percent_slider.grid(row=8, column=1, sticky="ew")
+        self.stop_percent_slider.grid(row=9, column=1, sticky="ew")
         self.stop_percent_label = ttk.Label(control, text=f"{self.stop_percent_var.get():.0f}%")
-        self.stop_percent_label.grid(row=8, column=2, padx=5)
+        self.stop_percent_label.grid(row=9, column=2, padx=5)
 
         self.search_button = ttk.Button(control, text="Start", command=self.toggle_scan)
-        self.search_button.grid(row=9, column=0, columnspan=3, pady=5, sticky="ew")
+        self.search_button.grid(row=10, column=0, columnspan=3, pady=5, sticky="ew")
 
         control.columnconfigure(1, weight=1)
 
@@ -149,11 +161,13 @@ class DotViewer:
         self.pending_clear_line = False
         self.total_states = 0
         self.stopped_states = 0
+        self.apply_clahe()
         self.update_image()
         self.schedule_scan_restart()
 
     def update_image(self, *args):
-        frame_copy = self.original_frame.copy()
+        source = self.processed_frame if self.processed_frame is not None else self.original_frame
+        frame_copy = source.copy()
         if self.scan_origins:
             color = (0, 255, 0)
             for entry in self.scan_origins:
@@ -188,6 +202,7 @@ class DotViewer:
         self.frame_label.config(text=f"{self.frame_var.get()}")
         self.history_label.config(text=f"{self.history_var.get()}")
         self.threshold_label.config(text=f"{self.threshold_var.get():.1f}")
+        self.clahe_label.config(text=f"{self.clahe_var.get():.1f}")
         self.dot_count_label.config(text=f"{self.dot_count_var.get()}")
         self.dot_radius_label.config(text=f"{self.dot_radius_var.get():.0f}")
         self.dir_count_label.config(text=f"{self.dir_count_var.get()}")
@@ -214,7 +229,7 @@ class DotViewer:
         self.request_scan_stop(clear_line=True)
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
-        self.gray_frame = cv2.cvtColor(self.original_frame, cv2.COLOR_BGR2GRAY)
+        self.apply_clahe()
         self.update_image()
         self.schedule_scan_restart()
 
@@ -237,12 +252,15 @@ class DotViewer:
 
     def on_position_slider_change(self):
         self.request_scan_stop(clear_line=True)
-        self.update_image()
         self.schedule_scan_restart()
 
     def on_param_change(self):
         self.request_scan_stop(clear_line=True)
-        self.update_image()
+        self.schedule_scan_restart()
+
+    def on_clahe_change(self):
+        self.apply_clahe()
+        self.request_scan_stop(clear_line=True)
         self.schedule_scan_restart()
 
     def request_scan_stop(self, clear_line=False):
@@ -264,6 +282,17 @@ class DotViewer:
         if self.pending_scan_job:
             self.root.after_cancel(self.pending_scan_job)
         self.pending_scan_job = self.root.after(100, self._delayed_start)
+
+    def apply_clahe(self):
+        clip = max(0.1, float(self.clahe_var.get()))
+        frame = self.original_frame
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        merged = cv2.merge((cl, a, b))
+        self.processed_frame = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+        self.gray_frame = cv2.cvtColor(self.processed_frame, cv2.COLOR_BGR2GRAY)
 
     def _delayed_start(self):
         self.pending_scan_job = None
