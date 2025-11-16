@@ -22,24 +22,24 @@ except ImportError:
 
 
 class RandomPatchViewer:
-    def __init__(self, root, video_path, total_frames, frame_idx, coords, patch, patch_size):
+    def __init__(self, root, video_path, total_frames, patch_size):
         self.root = root
         self.video_path = video_path
-        self.patch_size = patch_size
-        self.display_size = 400
-        self.photo_image = None
         self.total_frames = total_frames
-        self.frame_idx = frame_idx
-        self.coords = coords
-        self.patch = patch
+        self.patch_size = patch_size
         self.history = []
         self.history_idx = -1
-        self.current_sample = None
+        self.current_entry = None
+        self.photo_image = None
+        self.max_display_width = 1100
+        self.max_display_height = 750
+        self.scale_x = 1.0
+        self.scale_y = 1.0
         self.training_thread = None
 
-        self.root.title("Random Patch Viewer")
+        self.root.title("Frame Annotation Viewer")
         self._build_ui()
-        self._store_sample(frame_idx, total_frames, coords, patch)
+        self._append_random_frame()
 
     def _build_ui(self):
         container = ttk.Frame(self.root, padding=20)
@@ -48,10 +48,10 @@ class RandomPatchViewer:
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        self.root.minsize(720, 780)
-        self.root.geometry("760x820")
-        self.root.bind("<d>", self._on_key_randomize)
-        self.root.bind("<D>", self._on_key_randomize)
+        self.root.minsize(1000, 950)
+        self.root.geometry("1200x950")
+        self.root.bind("<d>", self._on_key_next)
+        self.root.bind("<D>", self._on_key_next)
         self.root.bind("<a>", self._on_key_previous)
         self.root.bind("<A>", self._on_key_previous)
 
@@ -82,27 +82,25 @@ class RandomPatchViewer:
 
         self.canvas = tk.Canvas(
             content,
-            width=self.display_size,
-            height=self.display_size,
+            width=self.max_display_width,
+            height=self.max_display_height,
             highlightthickness=0,
             borderwidth=0,
             bg="black",
         )
         self.canvas.grid(row=2, column=0, pady=10)
-        self.canvas.bind("<ButtonPress-1>", self.on_canvas_press)
-        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
 
         button_row = ttk.Frame(content)
-        button_row.grid(row=3, column=0, sticky="ew")
+        button_row.grid(row=3, column=0, sticky="ew", pady=(5, 0))
         button_row.columnconfigure(0, weight=1)
         button_row.columnconfigure(1, weight=1)
 
         self.random_button = ttk.Button(
             button_row,
-            text="Randomize patch",
-            command=self.load_next_patch,
+            text="Next random frame",
+            command=self.load_next_frame,
         )
         self.random_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
@@ -115,115 +113,242 @@ class RandomPatchViewer:
 
         self.stats_label = ttk.Label(content, justify="center", anchor="center")
         self.stats_label.grid(row=4, column=0, pady=(10, 0), sticky="ew")
+
+    def _append_random_frame(self):
+        frame_idx, frame, total_frames = choose_random_frame(self.video_path)
+        self.total_frames = total_frames
+        entry = {"frame_idx": frame_idx, "frame": frame, "annotations": []}
+        if self.history_idx < len(self.history) - 1:
+            self.history = self.history[: self.history_idx + 1]
+        self.history.append(entry)
+        self.history_idx = len(self.history) - 1
+        self._set_current_entry(entry)
+
+    def _set_current_entry(self, entry):
+        self.current_entry = entry
         self._update_info_label()
-
-    def _display_patch(self):
-        rgb_patch = cv2.cvtColor(self.patch, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb_patch).resize(
-            (self.display_size, self.display_size),
-            resample=Image.NEAREST,
-        )
-        if self.current_sample and self.current_sample.get("annotation"):
-            ann_x, ann_y = self.current_sample["annotation"]
-            patch_h, patch_w = self.patch.shape[:2]
-            scale_x = self.display_size / max(1, patch_w)
-            scale_y = self.display_size / max(1, patch_h)
-            draw = ImageDraw.Draw(image)
-            disp_x = ann_x * scale_x
-            disp_y = ann_y * scale_y
-            half = 8
-            draw.line(
-                (disp_x - half, disp_y, disp_x + half, disp_y),
-                fill="red",
-                width=2,
-            )
-            draw.line(
-                (disp_x, disp_y - half, disp_x, disp_y + half),
-                fill="red",
-                width=2,
-            )
-        self.photo_image = ImageTk.PhotoImage(image)
-        self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
-
-    def _update_info_label(self):
-        info_text = (
-            f"Video: {self.video_path}\n"
-            f"Frame: {self.frame_idx + 1} / {self.total_frames}\n"
-            f"Top-left pixel: ({self.coords[0]}, {self.coords[1]})"
-        )
-        self.info_label.config(text=info_text)
-        self._update_sample_label()
-
-    def _update_sample_label(self):
-        state_color = "#cc0000"
-        coords_color = "#cc0000"
-        if not self.current_sample:
-            state_text = "State: –"
-            coord_text = "Patch coords: –"
-        else:
-            state = self.current_sample.get("state", "No cross")
-            annotation = self.current_sample.get("annotation")
-            if annotation:
-                coord_text = f"Patch coords: ({annotation[0]:.1f}, {annotation[1]:.1f})"
-                coords_color = "#003399"
-            else:
-                coord_text = "Patch coords: –"
-            if state == "Has cross" and annotation:
-                state_color = "#003399"
-                coords_color = "#003399"
-            else:
-                state_color = "#cc0000"
-                coords_color = "#cc0000" if annotation is None else coords_color
-            state_text = f"State: {state}"
-        self.state_label.config(text=state_text, foreground=state_color)
-        self.coords_label.config(text=coord_text, foreground=coords_color)
+        self._display_current_frame()
         self._update_stats_label()
 
-    def _update_stats_label(self):
-        no_cross = sum(
-            1
-            for sample in self.history
-            if sample.get("state") == "No cross" or not sample.get("annotation")
+    def _on_key_next(self, event):
+        self.load_next_frame()
+
+    def _on_key_previous(self, event):
+        self.load_previous_frame()
+
+    def load_next_frame(self):
+        if self.history_idx < len(self.history) - 1:
+            self.history_idx += 1
+            self._set_current_entry(self.history[self.history_idx])
+        else:
+            self._append_random_frame()
+
+    def load_previous_frame(self):
+        if self.history_idx <= 0:
+            return
+        self.history_idx -= 1
+        self._set_current_entry(self.history[self.history_idx])
+
+    def _update_info_label(self):
+        if not self.current_entry:
+            self.info_label.config(text="–")
+            return
+        entry = self.current_entry
+        info_text = (
+            f"Video: {self.video_path}\n"
+            f"Frame: {entry['frame_idx'] + 1} / {self.total_frames}\n"
+            f"Annotations on this frame: {len(entry['annotations'])}"
         )
-        has_cross = sum(
-            1
-            for sample in self.history
-            if sample.get("state") == "Has cross" and sample.get("annotation")
-        )
-        self.stats_label.config(
-            text=f"No cross: {no_cross}    With cross: {has_cross}"
+        self.info_label.config(text=info_text)
+        self._update_annotation_label()
+
+    def _update_annotation_label(self):
+        if not self.current_entry or not self.current_entry["annotations"]:
+            self.state_label.config(text="Annotations on frame: 0")
+            self.coords_label.config(text="Last point: –")
+            return
+        count = len(self.current_entry["annotations"])
+        last = self.current_entry["annotations"][-1]
+        self.state_label.config(text=f"Annotations on frame: {count}")
+        self.coords_label.config(
+            text=f"Last point: ({last['x']:.1f}, {last['y']:.1f})"
         )
 
+    def _update_stats_label(self):
+        total_frames = len(self.history)
+        annotated_frames = sum(1 for e in self.history if e["annotations"])
+        total_points = sum(len(e["annotations"]) for e in self.history)
+        self.stats_label.config(
+            text=f"Frames visited: {total_frames} | Frames with crosses: {annotated_frames} | Total crosses: {total_points}"
+        )
+
+    def _display_current_frame(self):
+        if not self.current_entry:
+            return
+        frame = self.current_entry["frame"]
+        h, w = frame.shape[:2]
+        scale = min(
+            self.max_display_width / max(1, w),
+            self.max_display_height / max(1, h),
+            1.0,
+        )
+        disp_w = int(w * scale)
+        disp_h = int(h * scale)
+        self.scale_x = scale
+        self.scale_y = scale
+        resized = cv2.resize(frame, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(image)
+        for ann in self.current_entry["annotations"]:
+            dx = ann["x"] * scale
+            dy = ann["y"] * scale
+            half = 10
+            draw.line((dx - half, dy, dx + half, dy), fill="red", width=2)
+            draw.line((dx, dy - half, dx, dy + half), fill="red", width=2)
+        self.photo_image = ImageTk.PhotoImage(image)
+        self.canvas.configure(width=disp_w, height=disp_h)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
+
+    def on_canvas_click(self, event):
+        if not self.current_entry:
+            return
+        frame_x = event.x / max(1e-6, self.scale_x)
+        frame_y = event.y / max(1e-6, self.scale_y)
+        frame = self.current_entry["frame"]
+        h, w = frame.shape[:2]
+        frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
+        frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
+        self.current_entry["annotations"].append({"x": frame_x, "y": frame_y})
+        self._update_annotation_label()
+        self._update_stats_label()
+        self._display_current_frame()
+
+    def on_canvas_right_click(self, event):
+        if not self.current_entry or not self.current_entry["annotations"]:
+            return
+        frame_x = event.x / max(1e-6, self.scale_x)
+        frame_y = event.y / max(1e-6, self.scale_y)
+        annotations = self.current_entry["annotations"]
+        distances = [
+            ((a["x"] - frame_x) ** 2 + (a["y"] - frame_y) ** 2, idx)
+            for idx, a in enumerate(annotations)
+        ]
+        distances.sort()
+        _, idx = distances[0]
+        annotations.pop(idx)
+        self._update_annotation_label()
+        self._update_stats_label()
+        self._display_current_frame()
+
     def start_training(self):
-        if torch is None or nn is None or optim is None or DataLoader is None:
+        if torch is None:
             print("PyTorch is not available. Install torch to enable training.")
             return
         if self.training_thread and self.training_thread.is_alive():
             print("Training already in progress.")
             return
-        if not self.history:
-            print("No samples available for training.")
-            return
-        self.training_thread = threading.Thread(
-            target=self._run_training_worker, daemon=True
-        )
-        self.training_thread.start()
-
-    def _run_training_worker(self):
         prepared = self._prepare_training_data()
         if not prepared:
             return
+        self.training_thread = threading.Thread(
+            target=self._run_training_worker, args=(prepared,), daemon=True
+        )
+        self.training_thread.start()
+
+    def _prepare_training_data(self):
+        positives = []
+        negatives = []
+        for entry in self.history:
+            frame = entry["frame"]
+            annotations = entry["annotations"]
+            for ann in annotations:
+                patch, coord = self._extract_patch(frame, ann["x"], ann["y"], jitter=True)
+                positives.append({"image": patch, "label": 1, "coord": coord})
+            negative_count = max(2, len(annotations) + 1)
+            negatives.extend(
+                self._generate_negative_patches(frame, annotations, negative_count)
+            )
+
+        if not positives:
+            print("[Train] Need at least one annotated cross before training.")
+            return None
+        samples = positives + negatives
+        random.shuffle(samples)
+        total = len(samples)
+        test_size = max(1, int(total * 0.2))
+        train_samples = samples[test_size:]
+        test_samples = samples[:test_size]
+        if len(train_samples) < 5 or len(test_samples) < 2:
+            print("[Train] Not enough samples after split.")
+            return None
+        pos_count = sum(1 for s in train_samples if s["label"] == 1)
+        neg_count = len(train_samples) - pos_count
+        pos_weight = max(1.0, neg_count / max(1, pos_count))
+        return {
+            "train": train_samples,
+            "test": test_samples,
+            "pos_weight": pos_weight,
+        }
+
+    def _generate_negative_patches(self, frame, annotations, target_count):
+        negatives = []
+        h, w = frame.shape[:2]
+        attempts = 0
+        max_attempts = target_count * 20
+        min_dist = self.patch_size * 0.75
+        while len(negatives) < target_count and attempts < max_attempts:
+            attempts += 1
+            cx = random.uniform(0, w - 1)
+            cy = random.uniform(0, h - 1)
+            if annotations:
+                too_close = any(
+                    (abs(ann["x"] - cx) < min_dist)
+                    and (abs(ann["y"] - cy) < min_dist)
+                    for ann in annotations
+                )
+                if too_close:
+                    continue
+            patch, _ = self._extract_patch(frame, cx, cy, jitter=False)
+            negatives.append({"image": patch, "label": 0, "coord": (0.0, 0.0)})
+        return negatives
+
+    def _extract_patch(self, frame, cross_x, cross_y, jitter=True):
+        h, w = frame.shape[:2]
+        jitter_range = self.patch_size * 0.15 if jitter else 0.0
+        offset_x = random.uniform(-jitter_range, jitter_range)
+        offset_y = random.uniform(-jitter_range, jitter_range)
+        center_x = np.clip(cross_x + offset_x, 0.0, w - 1e-6)
+        center_y = np.clip(cross_y + offset_y, 0.0, h - 1e-6)
+        pad = self.patch_size
+        padded = cv2.copyMakeBorder(
+            frame, pad, pad, pad, pad, borderType=cv2.BORDER_REFLECT_101
+        )
+        cx = center_x + pad
+        cy = center_y + pad
+        half = self.patch_size / 2
+        x0 = int(round(cx - half))
+        y0 = int(round(cy - half))
+        patch = padded[y0 : y0 + self.patch_size, x0 : x0 + self.patch_size]
+        rel_x = (cross_x + pad) - x0
+        rel_y = (cross_y + pad) - y0
+        rel_x = float(np.clip(rel_x, 0.0, self.patch_size - 1e-6))
+        rel_y = float(np.clip(rel_y, 0.0, self.patch_size - 1e-6))
+        return patch, (rel_x, rel_y)
+
+    def _run_training_worker(self, prepared):
         train_samples = prepared["train"]
         test_samples = prepared["test"]
         pos_weight = prepared["pos_weight"]
 
         train_dataset = PatchDataset(train_samples, self.patch_size, augment=True)
         test_dataset = PatchDataset(test_samples, self.patch_size, augment=False)
-        batch_size = min(32, max(4, len(train_dataset)))
+        batch_size = min(64, max(4, len(train_dataset)))
         train_loader = DataLoader(
             train_dataset, batch_size=batch_size, shuffle=True, drop_last=False
         )
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = CrossNet().to(device)
@@ -232,7 +357,7 @@ class RandomPatchViewer:
         )
         reg_criterion = nn.SmoothL1Loss()
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
-        epochs = min(40, max(8, len(train_dataset)))
+        epochs = min(60, max(10, len(train_dataset) // 4))
 
         print(
             f"[Train] Starting with {len(train_dataset)} training samples and {len(test_dataset)} test samples (pos_weight={pos_weight:.2f})"
@@ -276,47 +401,9 @@ class RandomPatchViewer:
             f"recall={metrics['recall']:.3f} mae={metrics['mae']:.2f}px"
         )
 
-    def _prepare_training_data(self):
-        snapshot = []
-        for sample in self.history:
-            patch = sample.get("patch")
-            if patch is None:
-                continue
-            label = 1 if sample.get("annotation") else 0
-            coord = sample.get("annotation") or (0.0, 0.0)
-            snapshot.append(
-                {
-                    "image": patch.copy(),
-                    "label": label,
-                    "coord": (float(coord[0]), float(coord[1])),
-                }
-            )
-
-        total = len(snapshot)
-        if total < 10:
-            print(f"[Train] Need at least 10 samples to train (have {total}).")
-            return None
-        positives = sum(1 for s in snapshot if s["label"] == 1)
-        negatives = total - positives
-        if positives == 0 or negatives == 0:
-            print("[Train] Need both cross and no-cross samples.")
-            return None
-
-        random.shuffle(snapshot)
-        test_size = max(1, int(total * 0.2))
-        train_samples = snapshot[test_size:]
-        test_samples = snapshot[:test_size]
-        if len(train_samples) < 5 or len(test_samples) < 2:
-            print("[Train] Not enough data after train/test split.")
-            return None
-
-        pos_weight = max(1.0, negatives / max(1, positives))
-        return {"train": train_samples, "test": test_samples, "pos_weight": pos_weight}
-
     def _evaluate_model(self, model, loader, device):
         model.eval()
-        total = 0
-        correct = 0
+        total = correct = 0
         tp = fp = fn = 0
         mae = 0.0
         mae_batches = 0
@@ -349,100 +436,12 @@ class RandomPatchViewer:
         precision = tp / (tp + fp) if (tp + fp) else 0.0
         recall = tp / (tp + fn) if (tp + fn) else 0.0
         mae_value = mae / mae_batches if mae_batches else 0.0
-        return {"acc": accuracy, "precision": precision, "recall": recall, "mae": mae_value}
-
-    def load_next_patch(self):
-        if self.history_idx < len(self.history) - 1:
-            self.history_idx += 1
-            sample = self.history[self.history_idx]
-            self._apply_sample(sample)
-        else:
-            self._append_random_sample()
-
-    def _append_random_sample(self):
-        frame_idx, frame, total_frames = choose_random_frame(self.video_path)
-        coords, patch = choose_random_patch(frame, self.patch_size)
-        self._store_sample(frame_idx, total_frames, coords, patch)
-
-    def _on_key_randomize(self, event):
-        self.load_next_patch()
-
-    def load_previous_patch(self):
-        if self.history_idx <= 0:
-            return
-        self.history_idx -= 1
-        sample = self.history[self.history_idx]
-        self._apply_sample(sample)
-
-    def _store_sample(self, frame_idx, total_frames, coords, patch):
-        if self.history_idx < len(self.history) - 1:
-            self.history = self.history[: self.history_idx + 1]
-        sample = {
-            "frame_idx": frame_idx,
-            "total_frames": total_frames,
-            "coords": coords,
-            "patch": patch,
-            "state": "No cross",
-            "annotation": None,
+        return {
+            "acc": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "mae": mae_value,
         }
-        self.history.append(sample)
-        self.history_idx += 1
-        self._apply_sample(sample)
-
-    def _apply_sample(self, sample):
-        self.current_sample = sample
-        self.frame_idx = sample["frame_idx"]
-        self.total_frames = sample["total_frames"]
-        self.coords = sample["coords"]
-        self.patch = sample["patch"]
-        self._update_info_label()
-        self._display_patch()
-
-    def _on_key_previous(self, event):
-        self.load_previous_patch()
-
-    def on_canvas_press(self, event):
-        self.canvas.configure(cursor="none")
-        self._update_annotation_from_event(event)
-
-    def on_canvas_drag(self, event):
-        self._update_annotation_from_event(event)
-
-    def on_canvas_release(self, event):
-        self.canvas.configure(cursor="")
-
-    def on_canvas_right_click(self, event):
-        self.clear_annotation()
-
-    def _update_annotation_from_event(self, event):
-        if not self.current_sample:
-            return
-        patch_h, patch_w = self.patch.shape[:2]
-        if patch_h == 0 or patch_w == 0:
-            return
-        scale_x = patch_w / self.display_size
-        scale_y = patch_h / self.display_size
-        patch_x = float(np.clip(event.x * scale_x, 0.0, patch_w - 1e-6))
-        patch_y = float(np.clip(event.y * scale_y, 0.0, patch_h - 1e-6))
-        self.set_annotation(patch_x, patch_y)
-
-    def set_annotation(self, patch_x, patch_y):
-        if not self.current_sample:
-            return
-        self.current_sample["annotation"] = (float(patch_x), float(patch_y))
-        self.current_sample["state"] = "Has cross"
-        self._update_sample_label()
-        self._display_patch()
-
-    def clear_annotation(self):
-        if not self.current_sample:
-            return
-        if self.current_sample.get("annotation") is None:
-            return
-        self.current_sample["annotation"] = None
-        self.current_sample["state"] = "No cross"
-        self._update_sample_label()
-        self._display_patch()
 
 
 if torch is not None:
@@ -566,27 +565,18 @@ def choose_random_frame(video_path):
     return frame_idx, frame, total_frames
 
 
-def choose_random_patch(frame, patch_size):
-    if patch_size <= 0:
-        raise ValueError("Patch size must be positive")
-
-    height, width = frame.shape[:2]
-    if height < patch_size or width < patch_size:
-        raise ValueError(
-            f"Patch size {patch_size} exceeds frame dimensions {width}x{height}"
-        )
-
-    max_x = width - patch_size
-    max_y = height - patch_size
-    x = random.randint(0, max_x)
-    y = random.randint(0, max_y)
-    patch = frame[y : y + patch_size, x : x + patch_size].copy()
-    return (x, y), patch
+def get_total_frames(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video '{video_path}'")
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    cap.release()
+    return total
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Display a random 100x100 region from a random frame in a video."
+        description="Annotate frames and train a simple cross detector."
     )
     parser.add_argument(
         "--video",
@@ -605,19 +595,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-    frame_idx, frame, total_frames = choose_random_frame(args.video)
-    coords, patch = choose_random_patch(frame, args.patch_size)
-
     root = tk.Tk()
-    viewer = RandomPatchViewer(
-        root,
-        args.video,
-        total_frames,
-        frame_idx,
-        coords,
-        patch,
-        args.patch_size,
-    )
+    total_frames = get_total_frames(args.video)
+    viewer = RandomPatchViewer(root, args.video, total_frames, args.patch_size)
     root.mainloop()
 
 
