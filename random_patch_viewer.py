@@ -48,8 +48,11 @@ class RandomPatchViewer:
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        self.root.minsize(1000, 950)
-        self.root.geometry("1200x950")
+        self.root.minsize(1000, 900)
+        try:
+            self.root.state("zoomed")
+        except tk.TclError:
+            self.root.geometry("1200x900")
         self.root.bind("<d>", self._on_key_next)
         self.root.bind("<D>", self._on_key_next)
         self.root.bind("<a>", self._on_key_previous)
