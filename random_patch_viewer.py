@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import cv2
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 
 
 class RandomPatchViewer:
@@ -12,7 +12,7 @@ class RandomPatchViewer:
         self.root = root
         self.video_path = video_path
         self.patch_size = patch_size
-        self.display_size = 250
+        self.display_size = 400
         self.photo_image = None
         self.total_frames = total_frames
         self.frame_idx = frame_idx
@@ -20,6 +20,7 @@ class RandomPatchViewer:
         self.patch = patch
         self.history = []
         self.history_idx = -1
+        self.current_sample = None
 
         self.root.title("Random Patch Viewer")
         self._build_ui()
@@ -28,34 +29,60 @@ class RandomPatchViewer:
     def _build_ui(self):
         container = ttk.Frame(self.root, padding=20)
         container.grid(row=0, column=0, sticky="nsew")
+        container.grid_columnconfigure(0, weight=1)
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        self.root.minsize(720, 780)
+        self.root.geometry("760x820")
         self.root.bind("<d>", self._on_key_randomize)
         self.root.bind("<D>", self._on_key_randomize)
         self.root.bind("<a>", self._on_key_previous)
         self.root.bind("<A>", self._on_key_previous)
 
-        self.info_label = ttk.Label(container, justify="left")
-        self.info_label.grid(row=0, column=0, sticky="w")
+        content = ttk.Frame(container)
+        content.grid(row=0, column=0, sticky="n")
+        content.grid_columnconfigure(0, weight=1)
+
+        self.info_label = ttk.Label(content, justify="center", anchor="center")
+        self.info_label.grid(row=0, column=0, sticky="ew")
+
+        sample_label_frame = ttk.Frame(content)
+        sample_label_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        sample_label_frame.grid_columnconfigure(0, weight=1)
+        self.state_label = ttk.Label(
+            sample_label_frame,
+            justify="center",
+            anchor="center",
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.state_label.grid(row=0, column=0, sticky="ew", pady=(0, 2))
+        self.coords_label = ttk.Label(
+            sample_label_frame,
+            justify="center",
+            anchor="center",
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.coords_label.grid(row=1, column=0, sticky="ew")
         self._update_info_label()
 
         self.canvas = tk.Canvas(
-            container,
+            content,
             width=self.display_size,
             height=self.display_size,
             highlightthickness=0,
             borderwidth=0,
             bg="black",
         )
-        self.canvas.grid(row=1, column=0, pady=10)
+        self.canvas.grid(row=2, column=0, pady=10)
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
 
         self.random_button = ttk.Button(
-            container,
+            content,
             text="Randomize patch",
             command=self.load_next_patch,
         )
-        self.random_button.grid(row=2, column=0, sticky="ew")
+        self.random_button.grid(row=3, column=0, sticky="ew")
 
     def _display_patch(self):
         rgb_patch = cv2.cvtColor(self.patch, cv2.COLOR_BGR2RGB)
@@ -63,6 +90,20 @@ class RandomPatchViewer:
             (self.display_size, self.display_size),
             resample=Image.NEAREST,
         )
+        if self.current_sample and self.current_sample.get("annotation"):
+            ann_x, ann_y = self.current_sample["annotation"]
+            patch_h, patch_w = self.patch.shape[:2]
+            scale_x = self.display_size / max(1, patch_w)
+            scale_y = self.display_size / max(1, patch_h)
+            draw = ImageDraw.Draw(image)
+            disp_x = int(ann_x * scale_x)
+            disp_y = int(ann_y * scale_y)
+            r = 6
+            draw.ellipse(
+                (disp_x - r, disp_y - r, disp_x + r, disp_y + r),
+                fill="red",
+                outline="black",
+            )
         self.photo_image = ImageTk.PhotoImage(image)
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
 
@@ -73,6 +114,22 @@ class RandomPatchViewer:
             f"Top-left pixel: ({self.coords[0]}, {self.coords[1]})"
         )
         self.info_label.config(text=info_text)
+        self._update_sample_label()
+
+    def _update_sample_label(self):
+        if not self.current_sample:
+            state_text = "State: –"
+            coord_text = "Patch coords: –"
+        else:
+            state = self.current_sample.get("state", "No cross")
+            annotation = self.current_sample.get("annotation")
+            if annotation:
+                coord_text = f"Patch coords: ({annotation[0]}, {annotation[1]})"
+            else:
+                coord_text = "Patch coords: –"
+            state_text = f"State: {state}"
+        self.state_label.config(text=state_text)
+        self.coords_label.config(text=coord_text)
 
     def load_next_patch(self):
         if self.history_idx < len(self.history) - 1:
@@ -105,12 +162,15 @@ class RandomPatchViewer:
             "total_frames": total_frames,
             "coords": coords,
             "patch": patch,
+            "state": "No cross",
+            "annotation": None,
         }
         self.history.append(sample)
         self.history_idx += 1
         self._apply_sample(sample)
 
     def _apply_sample(self, sample):
+        self.current_sample = sample
         self.frame_idx = sample["frame_idx"]
         self.total_frames = sample["total_frames"]
         self.coords = sample["coords"]
@@ -120,6 +180,26 @@ class RandomPatchViewer:
 
     def _on_key_previous(self, event):
         self.load_previous_patch()
+
+    def on_canvas_click(self, event):
+        if not self.current_sample:
+            return
+        patch_h, patch_w = self.patch.shape[:2]
+        if patch_h == 0 or patch_w == 0:
+            return
+        scale_x = patch_w / self.display_size
+        scale_y = patch_h / self.display_size
+        patch_x = int(min(max(event.x * scale_x, 0), patch_w - 1))
+        patch_y = int(min(max(event.y * scale_y, 0), patch_h - 1))
+        self.set_annotation(patch_x, patch_y)
+
+    def set_annotation(self, patch_x, patch_y):
+        if not self.current_sample:
+            return
+        self.current_sample["annotation"] = (patch_x, patch_y)
+        self.current_sample["state"] = "Has cross"
+        self._update_sample_label()
+        self._display_patch()
 
 
 def choose_random_frame(video_path):
