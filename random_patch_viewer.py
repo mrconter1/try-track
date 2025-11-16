@@ -27,6 +27,9 @@ class RandomPatchViewer:
         self.magnifier_image = None
         self.magnifier_size = 160
         self.magnifier_zoom = 4
+        self.drawing_rect = False
+        self.rect_start = None
+        self.rect_preview = None
 
         self.root.title("Frame Annotation Viewer")
         self._build_ui()
@@ -67,7 +70,9 @@ class RandomPatchViewer:
         self.canvas.bind("<ButtonPress-1>", self.on_left_press)
         self.canvas.bind("<B1-Motion>", self.on_left_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_release)
-        self.canvas.bind("<Button-3>", self.on_canvas_right_click)
+        self.canvas.bind("<ButtonPress-3>", self.on_right_press)
+        self.canvas.bind("<B3-Motion>", self.on_right_drag)
+        self.canvas.bind("<ButtonRelease-3>", self.on_right_release)
 
         control_frame = ttk.Frame(container)
         control_frame.grid(row=0, column=1, sticky="nsew")
@@ -111,7 +116,7 @@ class RandomPatchViewer:
     def _append_random_frame(self):
         frame_idx, frame, total_frames = choose_random_frame(self.video_path)
         self.total_frames = total_frames
-        entry = {"frame_idx": frame_idx, "frame": frame, "annotations": []}
+        entry = {"frame_idx": frame_idx, "frame": frame, "annotations": [], "negative_rects": []}
         if self.history_idx < len(self.history) - 1:
             self.history = self.history[: self.history_idx + 1]
         self.history.append(entry)
@@ -121,6 +126,8 @@ class RandomPatchViewer:
     def _set_current_entry(self, entry):
         self.current_entry = entry
         self.preview_point = None
+        self.rect_start = None
+        self.rect_preview = None
         self._hide_magnifier()
         self._update_info_label()
         self._display_current_frame()
@@ -196,6 +203,18 @@ class RandomPatchViewer:
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
         draw = ImageDraw.Draw(image)
+        for rect in self.current_entry.get("negative_rects", []):
+            x0 = rect["x0"] * scale
+            y0 = rect["y0"] * scale
+            x1 = rect["x1"] * scale
+            y1 = rect["y1"] * scale
+            draw.rectangle([x0, y0, x1, y1], outline="blue", width=2)
+        if self.rect_preview:
+            x0 = self.rect_preview["x0"] * scale
+            y0 = self.rect_preview["y0"] * scale
+            x1 = self.rect_preview["x1"] * scale
+            y1 = self.rect_preview["y1"] * scale
+            draw.rectangle([x0, y0, x1, y1], outline="cyan", width=2)
         for ann in self.current_entry["annotations"]:
             dx = ann["x"] * scale
             dy = ann["y"] * scale
@@ -264,21 +283,55 @@ class RandomPatchViewer:
         self._display_current_frame()
         self._show_magnifier(frame_x, frame_y, event.x_root, event.y_root)
 
-    def on_canvas_right_click(self, event):
-        if not self.current_entry or not self.current_entry["annotations"]:
+    def on_right_press(self, event):
+        if not self.current_entry:
             return
-        self.preview_point = None
-        self._hide_magnifier()
+        self.drawing_rect = True
         frame_x = event.x / max(1e-6, self.scale_x)
         frame_y = event.y / max(1e-6, self.scale_y)
-        annotations = self.current_entry["annotations"]
-        distances = [
-            ((a["x"] - frame_x) ** 2 + (a["y"] - frame_y) ** 2, idx)
-            for idx, a in enumerate(annotations)
-        ]
-        distances.sort()
-        _, idx = distances[0]
-        annotations.pop(idx)
+        frame = self.current_entry["frame"]
+        h, w = frame.shape[:2]
+        frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
+        frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
+        self.rect_start = {"x": frame_x, "y": frame_y}
+        self.rect_preview = {"x0": frame_x, "y0": frame_y, "x1": frame_x, "y1": frame_y}
+        self._display_current_frame()
+
+    def on_right_drag(self, event):
+        if not self.drawing_rect or not self.rect_start:
+            return
+        frame_x = event.x / max(1e-6, self.scale_x)
+        frame_y = event.y / max(1e-6, self.scale_y)
+        frame = self.current_entry["frame"]
+        h, w = frame.shape[:2]
+        frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
+        frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
+        x0 = min(self.rect_start["x"], frame_x)
+        y0 = min(self.rect_start["y"], frame_y)
+        x1 = max(self.rect_start["x"], frame_x)
+        y1 = max(self.rect_start["y"], frame_y)
+        self.rect_preview = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+        self._display_current_frame()
+
+    def on_right_release(self, event):
+        if not self.drawing_rect or not self.rect_preview:
+            return
+        self.drawing_rect = False
+        if not self.current_entry:
+            self.rect_start = None
+            self.rect_preview = None
+            return
+        rect = {
+            "x0": self.rect_preview["x0"],
+            "y0": self.rect_preview["y0"],
+            "x1": self.rect_preview["x1"],
+            "y1": self.rect_preview["y1"],
+        }
+        if "negative_rects" not in self.current_entry:
+            self.current_entry["negative_rects"] = []
+        self.current_entry["negative_rects"].append(rect)
+        self.rect_start = None
+        self.rect_preview = None
         self._update_annotation_label()
         self._update_stats_label()
         self._display_current_frame()
