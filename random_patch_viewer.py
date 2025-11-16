@@ -21,6 +21,12 @@ class RandomPatchViewer:
         self.max_display_height = 750
         self.scale_x = 1.0
         self.scale_y = 1.0
+        self.dragging = False
+        self.preview_point = None
+        self.magnifier_window = None
+        self.magnifier_image = None
+        self.magnifier_size = 160
+        self.magnifier_zoom = 4
 
         self.root.title("Frame Annotation Viewer")
         self._build_ui()
@@ -77,7 +83,9 @@ class RandomPatchViewer:
             bg="black",
         )
         self.canvas.grid(row=2, column=0, pady=10)
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<ButtonPress-1>", self.on_left_press)
+        self.canvas.bind("<B1-Motion>", self.on_left_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_left_release)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
 
         button_row = ttk.Frame(content)
@@ -106,6 +114,8 @@ class RandomPatchViewer:
 
     def _set_current_entry(self, entry):
         self.current_entry = entry
+        self.preview_point = None
+        self._hide_magnifier()
         self._update_info_label()
         self._display_current_frame()
         self._update_stats_label()
@@ -186,12 +196,45 @@ class RandomPatchViewer:
             half = 10
             draw.line((dx - half, dy, dx + half, dy), fill="red", width=2)
             draw.line((dx, dy - half, dx, dy + half), fill="red", width=2)
+        if self.preview_point:
+            dx = self.preview_point["x"] * scale
+            dy = self.preview_point["y"] * scale
+            half = 12
+            draw.line((dx - half, dy, dx + half, dy), fill="lime", width=2)
+            draw.line((dx, dy - half, dx, dy + half), fill="lime", width=2)
         self.photo_image = ImageTk.PhotoImage(image)
         self.canvas.configure(width=disp_w, height=disp_h)
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
 
-    def on_canvas_click(self, event):
+    def on_left_press(self, event):
+        self.dragging = True
+        self._update_preview(event)
+
+    def on_left_drag(self, event):
+        if not self.dragging:
+            return
+        self._update_preview(event)
+
+    def on_left_release(self, event):
+        if not self.dragging:
+            return
+        self.dragging = False
+        self._hide_magnifier()
+        if not self.preview_point:
+            return
+        if not self.current_entry:
+            self.preview_point = None
+            return
+        self.current_entry["annotations"].append(
+            {"x": self.preview_point["x"], "y": self.preview_point["y"]}
+        )
+        self.preview_point = None
+        self._update_annotation_label()
+        self._update_stats_label()
+        self._display_current_frame()
+
+    def _update_preview(self, event):
         if not self.current_entry:
             return
         frame_x = event.x / max(1e-6, self.scale_x)
@@ -200,14 +243,15 @@ class RandomPatchViewer:
         h, w = frame.shape[:2]
         frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
         frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
-        self.current_entry["annotations"].append({"x": frame_x, "y": frame_y})
-        self._update_annotation_label()
-        self._update_stats_label()
+        self.preview_point = {"x": frame_x, "y": frame_y}
         self._display_current_frame()
+        self._show_magnifier(frame_x, frame_y, event.x_root, event.y_root)
 
     def on_canvas_right_click(self, event):
         if not self.current_entry or not self.current_entry["annotations"]:
             return
+        self.preview_point = None
+        self._hide_magnifier()
         frame_x = event.x / max(1e-6, self.scale_x)
         frame_y = event.y / max(1e-6, self.scale_y)
         annotations = self.current_entry["annotations"]
@@ -221,6 +265,60 @@ class RandomPatchViewer:
         self._update_annotation_label()
         self._update_stats_label()
         self._display_current_frame()
+
+    def _show_magnifier(self, frame_x, frame_y, root_x, root_y):
+        if self.magnifier_window is None:
+            self.magnifier_window = tk.Toplevel(self.root)
+            self.magnifier_window.overrideredirect(True)
+            self.magnifier_window.attributes("-topmost", True)
+            self.magnifier_label = ttk.Label(
+                self.magnifier_window, borderwidth=1, relief="solid"
+            )
+            self.magnifier_label.pack()
+        size = max(4, self.magnifier_size // self.magnifier_zoom)
+        patch, _ = self._extract_magnifier_patch(frame_x, frame_y, size)
+        if patch is None:
+            self._hide_magnifier()
+            return
+        enlarged = cv2.resize(
+            patch,
+            (self.magnifier_size, self.magnifier_size),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        rgb = cv2.cvtColor(enlarged, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(image)
+        half = self.magnifier_size // 2
+        draw.line((half - 10, half, half + 10, half), fill="lime", width=2)
+        draw.line((half, half - 10, half, half + 10), fill="lime", width=2)
+        self.magnifier_image = ImageTk.PhotoImage(image)
+        self.magnifier_label.config(image=self.magnifier_image)
+        offset = 20
+        self.magnifier_window.geometry(
+            f"+{root_x + offset}+{root_y + offset}"
+        )
+        self.magnifier_window.deiconify()
+
+    def _hide_magnifier(self):
+        if self.magnifier_window:
+            self.magnifier_window.withdraw()
+
+    def _extract_magnifier_patch(self, frame_x, frame_y, size):
+        if not self.current_entry:
+            return None, None
+        frame = self.current_entry["frame"]
+        h, w = frame.shape[:2]
+        pad = size * 2
+        padded = cv2.copyMakeBorder(
+            frame, pad, pad, pad, pad, borderType=cv2.BORDER_REFLECT_101
+        )
+        cx = frame_x + pad
+        cy = frame_y + pad
+        half = size // 2
+        x0 = int(round(cx - half))
+        y0 = int(round(cy - half))
+        patch = padded[y0 : y0 + size, x0 : x0 + size]
+        return patch, None
 
 
 
