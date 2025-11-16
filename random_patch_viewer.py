@@ -11,17 +11,19 @@ class RandomPatchViewer:
     def __init__(self, root, video_path, total_frames, frame_idx, coords, patch, patch_size):
         self.root = root
         self.video_path = video_path
+        self.patch_size = patch_size
+        self.display_size = 250
+        self.photo_image = None
         self.total_frames = total_frames
         self.frame_idx = frame_idx
         self.coords = coords
         self.patch = patch
-        self.patch_size = patch_size
-        self.display_size = 250
-        self.photo_image = None
+        self.history = []
+        self.history_idx = -1
 
         self.root.title("Random Patch Viewer")
         self._build_ui()
-        self._display_patch()
+        self._store_sample(frame_idx, total_frames, coords, patch)
 
     def _build_ui(self):
         container = ttk.Frame(self.root, padding=20)
@@ -29,6 +31,10 @@ class RandomPatchViewer:
 
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        self.root.bind("<d>", self._on_key_randomize)
+        self.root.bind("<D>", self._on_key_randomize)
+        self.root.bind("<a>", self._on_key_previous)
+        self.root.bind("<A>", self._on_key_previous)
 
         self.info_label = ttk.Label(container, justify="left")
         self.info_label.grid(row=0, column=0, sticky="w")
@@ -71,12 +77,41 @@ class RandomPatchViewer:
     def load_random_patch(self):
         frame_idx, frame, total_frames = choose_random_frame(self.video_path)
         coords, patch = choose_random_patch(frame, self.patch_size)
-        self.frame_idx = frame_idx
-        self.total_frames = total_frames
-        self.coords = coords
-        self.patch = patch
+        self._store_sample(frame_idx, total_frames, coords, patch)
+
+    def _on_key_randomize(self, event):
+        self.load_random_patch()
+
+    def load_previous_patch(self):
+        if self.history_idx <= 0:
+            return
+        self.history_idx -= 1
+        sample = self.history[self.history_idx]
+        self._apply_sample(sample)
+
+    def _store_sample(self, frame_idx, total_frames, coords, patch):
+        if self.history_idx < len(self.history) - 1:
+            self.history = self.history[: self.history_idx + 1]
+        sample = {
+            "frame_idx": frame_idx,
+            "total_frames": total_frames,
+            "coords": coords,
+            "patch": patch,
+        }
+        self.history.append(sample)
+        self.history_idx += 1
+        self._apply_sample(sample)
+
+    def _apply_sample(self, sample):
+        self.frame_idx = sample["frame_idx"]
+        self.total_frames = sample["total_frames"]
+        self.coords = sample["coords"]
+        self.patch = sample["patch"]
         self._update_info_label()
         self._display_patch()
+
+    def _on_key_previous(self, event):
+        self.load_previous_patch()
 
 
 def choose_random_frame(video_path):
