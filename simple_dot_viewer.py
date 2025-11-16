@@ -10,16 +10,6 @@ from PIL import Image, ImageTk
 
 
 class DotViewer:
-    DIRECTIONS = [
-        ("right", 1.0, 0.0),
-        ("left", -1.0, 0.0),
-        ("up", 0.0, -1.0),
-        ("down", 0.0, 1.0),
-        ("up_right", np.sqrt(0.5), -np.sqrt(0.5)),
-        ("up_left", -np.sqrt(0.5), -np.sqrt(0.5)),
-        ("down_right", np.sqrt(0.5), np.sqrt(0.5)),
-        ("down_left", -np.sqrt(0.5), np.sqrt(0.5)),
-    ]
     def __init__(self, root, video_path, initial_frame_idx, total_frames):
         self.root = root
         self.video_path = video_path
@@ -111,8 +101,19 @@ class DotViewer:
         self.dot_radius_label = ttk.Label(control, text=f"{self.dot_radius_var.get():.0f}")
         self.dot_radius_label.grid(row=6, column=2, padx=5)
 
+        ttk.Label(control, text="Direction Count:").grid(row=7, column=0, sticky=tk.W)
+        self.dir_count_var = tk.IntVar(value=8)
+        self.dir_count_slider = tk.Scale(
+            control, from_=1, to=32, orient=tk.HORIZONTAL,
+            variable=self.dir_count_var, command=lambda *_: self.on_param_change(),
+            showvalue=0, resolution=1
+        )
+        self.dir_count_slider.grid(row=7, column=1, sticky="ew")
+        self.dir_count_label = ttk.Label(control, text=f"{self.dir_count_var.get()}")
+        self.dir_count_label.grid(row=7, column=2, padx=5)
+
         self.search_button = ttk.Button(control, text="Start", command=self.toggle_scan)
-        self.search_button.grid(row=7, column=0, columnspan=3, pady=5, sticky="ew")
+        self.search_button.grid(row=8, column=0, columnspan=3, pady=5, sticky="ew")
 
         control.columnconfigure(1, weight=1)
 
@@ -171,6 +172,7 @@ class DotViewer:
         self.threshold_label.config(text=f"{self.threshold_var.get():.1f}")
         self.dot_count_label.config(text=f"{self.dot_count_var.get()}")
         self.dot_radius_label.config(text=f"{self.dot_radius_var.get():.0f}")
+        self.dir_count_label.config(text=f"{self.dir_count_var.get()}")
 
     def generate_dot_points(self):
         center_x = int(self.x_var.get())
@@ -250,12 +252,15 @@ class DotViewer:
             self.finish_scan(clear_line=True)
         self.scanning = True
         self.current_dots = self.generate_dot_points()
+        dir_count = max(1, self.dir_count_var.get())
         self.scan_origins = []
         for origin in self.current_dots:
-            states = {
-                name: {"dx": dx, "dy": dy, "length": 0.0, "active": True}
-                for name, dx, dy in self.DIRECTIONS
-            }
+            states = {}
+            for i in range(dir_count):
+                angle = random.uniform(0, 2 * math.pi)
+                dx = math.cos(angle)
+                dy = math.sin(angle)
+                states[f"d{i}"] = {"dx": dx, "dy": dy, "length": 0.0, "active": True}
             self.scan_origins.append({"origin": origin, "states": states})
         self.search_button.config(text="Stop")
         self.schedule_scan_step()
