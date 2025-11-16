@@ -1,6 +1,7 @@
 import argparse
 import math
 import random
+import threading
 
 import cv2
 import numpy as np
@@ -112,8 +113,19 @@ class DotViewer:
         self.dir_count_label = ttk.Label(control, text=f"{self.dir_count_var.get()}")
         self.dir_count_label.grid(row=7, column=2, padx=5)
 
+        ttk.Label(control, text="Stop Percent:").grid(row=8, column=0, sticky=tk.W)
+        self.stop_percent_var = tk.DoubleVar(value=90.0)
+        self.stop_percent_slider = tk.Scale(
+            control, from_=10, to=100, orient=tk.HORIZONTAL,
+            variable=self.stop_percent_var, command=lambda *_: self.on_param_change(),
+            showvalue=0, resolution=1
+        )
+        self.stop_percent_slider.grid(row=8, column=1, sticky="ew")
+        self.stop_percent_label = ttk.Label(control, text=f"{self.stop_percent_var.get():.0f}%")
+        self.stop_percent_label.grid(row=8, column=2, padx=5)
+
         self.search_button = ttk.Button(control, text="Start", command=self.toggle_scan)
-        self.search_button.grid(row=8, column=0, columnspan=3, pady=5, sticky="ew")
+        self.search_button.grid(row=9, column=0, columnspan=3, pady=5, sticky="ew")
 
         control.columnconfigure(1, weight=1)
 
@@ -131,6 +143,11 @@ class DotViewer:
         self.scan_origins = None
         self.current_dots = None
         self.pending_scan_job = None
+        self.scan_thread = None
+        self.stop_scan_flag = False
+        self.pending_clear_line = False
+        self.total_states = 0
+        self.stopped_states = 0
         self.update_image()
         self.schedule_scan_restart()
 
@@ -173,6 +190,7 @@ class DotViewer:
         self.dot_count_label.config(text=f"{self.dot_count_var.get()}")
         self.dot_radius_label.config(text=f"{self.dot_radius_var.get():.0f}")
         self.dir_count_label.config(text=f"{self.dir_count_var.get()}")
+        self.stop_percent_label.config(text=f"{self.stop_percent_var.get():.0f}%")
 
     def generate_dot_points(self):
         center_x = int(self.x_var.get())
@@ -192,8 +210,7 @@ class DotViewer:
 
     def on_frame_change(self, value):
         frame_idx = int(float(value))
-        if self.scanning or self.scan_origins:
-            self.finish_scan(clear_line=True)
+        self.request_scan_stop(clear_line=True)
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
         self.update_image()
@@ -206,8 +223,7 @@ class DotViewer:
         self.move_dot_to_canvas(event.x, event.y)
 
     def move_dot_to_canvas(self, canvas_x, canvas_y):
-        if self.scanning or self.scan_origins:
-            self.finish_scan(clear_line=True)
+        self.request_scan_stop(clear_line=True)
         scale_x = self.w / self.display_w
         scale_y = self.h / self.display_h
         new_x = np.clip(canvas_x * scale_x, 0, self.w - 1)
@@ -218,16 +234,29 @@ class DotViewer:
         self.schedule_scan_restart()
 
     def on_position_slider_change(self):
-        if self.scanning or self.scan_origins:
-            self.finish_scan(clear_line=True)
+        self.request_scan_stop(clear_line=True)
         self.update_image()
         self.schedule_scan_restart()
 
     def on_param_change(self):
-        if self.scanning or self.scan_origins:
-            self.finish_scan(clear_line=True)
+        self.request_scan_stop(clear_line=True)
         self.update_image()
         self.schedule_scan_restart()
+
+    def request_scan_stop(self, clear_line=False):
+        if self.scanning and self.scan_thread and self.scan_thread.is_alive():
+            self.stop_scan_flag = True
+            if clear_line:
+                self.pending_clear_line = True
+            return
+        if clear_line:
+            self.scan_origins = None
+            self.current_dots = None
+        self.scanning = False
+        self.search_button.config(text="Start")
+        self.total_states = 0
+        self.stopped_states = 0
+        self.update_image()
 
     def schedule_scan_restart(self):
         if self.pending_scan_job:
@@ -236,11 +265,14 @@ class DotViewer:
 
     def _delayed_start(self):
         self.pending_scan_job = None
+        if self.scanning:
+            self.schedule_scan_restart()
+            return
         self.start_line_scan()
 
     def toggle_scan(self):
         if self.scanning:
-            self.finish_scan()
+            self.request_scan_stop()
         else:
             self.start_line_scan()
 
@@ -249,7 +281,7 @@ class DotViewer:
             self.root.after_cancel(self.pending_scan_job)
             self.pending_scan_job = None
         if self.scanning:
-            self.finish_scan(clear_line=True)
+            return
         self.scanning = True
         self.current_dots = self.generate_dot_points()
         dir_count = max(1, self.dir_count_var.get())
@@ -262,39 +294,55 @@ class DotViewer:
                 dy = math.sin(angle)
                 states[f"d{i}"] = {"dx": dx, "dy": dy, "length": 0.0, "active": True}
             self.scan_origins.append({"origin": origin, "states": states})
+        self.total_states = sum(len(entry["states"]) for entry in self.scan_origins) or 1
+        self.stopped_states = 0
         self.search_button.config(text="Stop")
-        self.schedule_scan_step()
+        self.stop_scan_flag = False
+        self.pending_clear_line = False
+        self.scan_thread = threading.Thread(target=self._run_scan_worker, daemon=True)
+        self.scan_thread.start()
 
-    def schedule_scan_step(self):
-        if not self.scanning or not self.scan_origins:
-            return
-        any_active = False
-        for entry in self.scan_origins:
+    def _run_scan_worker(self):
+        total_states = max(1, self.total_states)
+        threshold_fraction = max(0.01, min(1.0, self.stop_percent_var.get() / 100.0))
+        threshold_met = False
+
+        def deactivate_state(st):
+            nonlocal threshold_met
+            if st["active"]:
+                st["active"] = False
+                self.stopped_states += 1
+                if (self.stopped_states / total_states) >= threshold_fraction:
+                    threshold_met = True
+
+        for entry in list(self.scan_origins or []):
             base_x, base_y = entry["origin"]
             for name, state in entry["states"].items():
-                if not state["active"]:
-                    continue
-                next_len = state["length"] + 1
-                end_x = base_x + state["dx"] * next_len
-                end_y = base_y + state["dy"] * next_len
-                if not (0 <= end_x < self.w and 0 <= end_y < self.h):
-                    state["active"] = False
-                    continue
-                state["length"] = next_len
-                any_active = True
-                drop = self.log_scan_brightness(base_x, base_y, name, state)
-                if drop:
-                    state["active"] = False
-
-        self.update_image()
-        if not any_active:
-            self.finish_scan()
-        else:
-            self.root.after(10, self.schedule_scan_step)
+                while state["active"] and not self.stop_scan_flag and not threshold_met:
+                    next_len = state["length"] + 1
+                    end_x = base_x + state["dx"] * next_len
+                    end_y = base_y + state["dy"] * next_len
+                    if not (0 <= end_x < self.w and 0 <= end_y < self.h):
+                        deactivate_state(state)
+                        break
+                    state["length"] = next_len
+                    drop = self.log_scan_brightness(base_x, base_y, name, state)
+                    if drop:
+                        deactivate_state(state)
+                        break
+                if self.stop_scan_flag or threshold_met:
+                    break
+            if self.stop_scan_flag or threshold_met:
+                break
+        self.root.after(0, lambda: self.finish_scan())
 
     def finish_scan(self, clear_line=False):
+        clear = clear_line or self.pending_clear_line
+        self.pending_clear_line = False
         self.scanning = False
-        if clear_line:
+        self.stop_scan_flag = False
+        self.scan_thread = None
+        if clear:
             self.scan_origins = None
             self.current_dots = None
         else:
