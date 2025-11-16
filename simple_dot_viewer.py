@@ -214,7 +214,7 @@ class DotViewer:
             mean_prev = np.mean(prev_values)
             std_prev = np.std(prev_values)
             z_score = (mean_prev - current_value) / std_prev if std_prev > 0 else 0
-            if std_prev > 0 and z_score > 5:
+            if std_prev > 0 and z_score > 10:
                 drop = True
                 print(f"[scan][{direction}] {brightness_list}, {current_value}  <-- drop (z={z_score:.2f}, std={std_prev:.2f})")
             else:
