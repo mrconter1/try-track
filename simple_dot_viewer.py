@@ -7,6 +7,16 @@ import numpy as np
 
 
 class DotViewer:
+    DIRECTIONS = [
+        ("right", 1.0, 0.0),
+        ("left", -1.0, 0.0),
+        ("up", 0.0, -1.0),
+        ("down", 0.0, 1.0),
+        ("up_right", np.sqrt(0.5), -np.sqrt(0.5)),
+        ("up_left", -np.sqrt(0.5), -np.sqrt(0.5)),
+        ("down_right", np.sqrt(0.5), np.sqrt(0.5)),
+        ("down_left", -np.sqrt(0.5), np.sqrt(0.5)),
+    ]
     def __init__(self, root, video_path, initial_frame_idx, total_frames):
         self.root = root
         self.video_path = video_path
@@ -114,39 +124,32 @@ class DotViewer:
         self.display_h = int(self.display_w * (self.h / self.w))
 
         self.scanning = False
-        self.scan_origin = None
-        self.scan_states = None
+        self.scan_origins = None
         self.pending_scan_job = None
         self.update_image()
         self.schedule_scan_restart()
 
     def update_image(self, *args):
         frame_copy = self.original_frame.copy()
-        if self.scan_origin and self.scan_states:
-            base_x, base_y = self.scan_origin
+        if self.scan_origins:
             color = (0, 255, 0)
-            for name, state in self.scan_states.items():
-                length = state["length"]
-                if length <= 0:
-                    continue
-                end_x = int(np.clip(base_x + state["dx"] * length, 0, self.w - 1))
-                end_y = int(np.clip(base_y + state["dy"] * length, 0, self.h - 1))
-                cv2.line(frame_copy, (base_x, base_y), (end_x, end_y), color, 2)
-                cv2.circle(frame_copy, (end_x, end_y), 4, color, -1)
+            for entry in self.scan_origins:
+                base_x, base_y = entry["origin"]
+                for state in entry["states"].values():
+                    length = state["length"]
+                    if length <= 0:
+                        continue
+                    end_x = int(np.clip(base_x + state["dx"] * length, 0, self.w - 1))
+                    end_y = int(np.clip(base_y + state["dy"] * length, 0, self.h - 1))
+                    cv2.line(frame_copy, (base_x, base_y), (end_x, end_y), color, 2)
+                    cv2.circle(frame_copy, (end_x, end_y), 4, color, -1)
 
         cursor_x = int(self.x_var.get())
         cursor_y = int(self.y_var.get())
 
-        count = max(1, self.grid_count_var.get())
-        radius = count // 2
-        if radius > 0:
-            extent = max(1.0, self.grid_extent_var.get())
-            spacing = extent / radius
-            for gx in range(-radius, radius + 1):
-                for gy in range(-radius, radius + 1):
-                    px = int(np.clip(cursor_x + gx * spacing, 0, self.w - 1))
-                    py = int(np.clip(cursor_y + gy * spacing, 0, self.h - 1))
-                    cv2.circle(frame_copy, (px, py), 2, (0, 0, 255), -1)
+        grid_points = self.compute_grid_points()
+        for px, py in grid_points:
+            cv2.circle(frame_copy, (px, py), 2, (0, 0, 255), -1)
 
         cv2.circle(frame_copy, (cursor_x, cursor_y), 6, (0, 0, 255), -1)
 
@@ -165,9 +168,29 @@ class DotViewer:
         self.grid_count_label.config(text=f"{self.grid_count_var.get()}")
         self.grid_extent_label.config(text=f"{self.grid_extent_var.get():.0f}")
 
+    def compute_grid_points(self):
+        center_x = int(self.x_var.get())
+        center_y = int(self.y_var.get())
+        count = max(1, self.grid_count_var.get())
+        if count % 2 == 0:
+            count += 1
+        radius = count // 2
+        points = []
+        if radius == 0:
+            points.append((center_x, center_y))
+            return points
+        extent = max(1.0, self.grid_extent_var.get())
+        spacing = extent / radius
+        for gx in range(-radius, radius + 1):
+            for gy in range(-radius, radius + 1):
+                px = int(np.clip(center_x + gx * spacing, 0, self.w - 1))
+                py = int(np.clip(center_y + gy * spacing, 0, self.h - 1))
+                points.append((px, py))
+        return points
+
     def on_frame_change(self, value):
         frame_idx = int(float(value))
-        if self.scanning or self.scan_origin:
+        if self.scanning or self.scan_origins:
             self.finish_scan(clear_line=True)
         frame = load_frame(self.video_path, frame_idx)
         self.original_frame = frame
@@ -181,7 +204,7 @@ class DotViewer:
         self.move_dot_to_canvas(event.x, event.y)
 
     def move_dot_to_canvas(self, canvas_x, canvas_y):
-        if self.scanning or self.scan_origin:
+        if self.scanning or self.scan_origins:
             self.finish_scan(clear_line=True)
         scale_x = self.w / self.display_w
         scale_y = self.h / self.display_h
@@ -193,13 +216,13 @@ class DotViewer:
         self.schedule_scan_restart()
 
     def on_position_slider_change(self):
-        if self.scanning or self.scan_origin:
+        if self.scanning or self.scan_origins:
             self.finish_scan(clear_line=True)
         self.update_image()
         self.schedule_scan_restart()
 
     def on_param_change(self):
-        if self.scanning or self.scan_origin:
+        if self.scanning or self.scan_origins:
             self.finish_scan(clear_line=True)
         self.update_image()
         self.schedule_scan_restart()
@@ -226,42 +249,37 @@ class DotViewer:
         if self.scanning:
             self.finish_scan(clear_line=True)
         self.scanning = True
-        self.scan_origin = (int(self.x_var.get()), int(self.y_var.get()))
-        directions = [
-            ("right", 1, 0),
-            ("left", -1, 0),
-            ("up", 0, -1),
-            ("down", 0, 1),
-            ("up_right", np.sqrt(0.5), -np.sqrt(0.5)),
-            ("up_left", -np.sqrt(0.5), -np.sqrt(0.5)),
-            ("down_right", np.sqrt(0.5), np.sqrt(0.5)),
-            ("down_left", -np.sqrt(0.5), np.sqrt(0.5)),
-        ]
-        self.scan_states = {
-            name: {"dx": dx, "dy": dy, "length": 0.0, "active": True}
-            for name, dx, dy in directions
-        }
+        grid_points = self.compute_grid_points()
+        self.scan_origins = []
+        for origin in grid_points:
+            states = {
+                name: {"dx": dx, "dy": dy, "length": 0.0, "active": True}
+                for name, dx, dy in self.DIRECTIONS
+            }
+            self.scan_origins.append({"origin": origin, "states": states})
         self.search_button.config(text="Stop")
         self.schedule_scan_step()
 
     def schedule_scan_step(self):
-        if not self.scanning:
+        if not self.scanning or not self.scan_origins:
             return
         any_active = False
-        for name, state in self.scan_states.items():
-            if not state["active"]:
-                continue
-            next_len = state["length"] + 1
-            end_x = self.scan_origin[0] + state["dx"] * next_len
-            end_y = self.scan_origin[1] + state["dy"] * next_len
-            if not (0 <= end_x < self.w and 0 <= end_y < self.h):
-                state["active"] = False
-                continue
-            state["length"] = next_len
-            any_active = True
-            drop = self.log_scan_brightness(name, state)
-            if drop:
-                state["active"] = False
+        for entry in self.scan_origins:
+            base_x, base_y = entry["origin"]
+            for name, state in entry["states"].items():
+                if not state["active"]:
+                    continue
+                next_len = state["length"] + 1
+                end_x = base_x + state["dx"] * next_len
+                end_y = base_y + state["dy"] * next_len
+                if not (0 <= end_x < self.w and 0 <= end_y < self.h):
+                    state["active"] = False
+                    continue
+                state["length"] = next_len
+                any_active = True
+                drop = self.log_scan_brightness(base_x, base_y, name, state)
+                if drop:
+                    state["active"] = False
 
         self.update_image()
         if not any_active:
@@ -272,17 +290,16 @@ class DotViewer:
     def finish_scan(self, clear_line=False):
         self.scanning = False
         if clear_line:
-            self.scan_states = None
-            self.scan_origin = None
+            self.scan_origins = None
         else:
-            if self.scan_states:
-                for state in self.scan_states.values():
-                    state["active"] = False
+            if self.scan_origins:
+                for entry in self.scan_origins:
+                    for state in entry["states"].values():
+                        state["active"] = False
         self.search_button.config(text="Start")
         self.update_image()
 
-    def log_scan_brightness(self, direction, state):
-        base_x, base_y = self.scan_origin
+    def log_scan_brightness(self, base_x, base_y, direction, state):
         dx, dy = state["dx"], state["dy"]
         length = state["length"]
         history = self.history_var.get()
