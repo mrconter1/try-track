@@ -484,12 +484,23 @@ class TrainingDataBrowser:
             
             model = CrossDetectorModel().to(device)
             
+            # Calculate pos_weight for class imbalance
+            num_pos = num_positive
+            num_neg = num_negative
+            pos_weight = num_neg / max(1, num_pos)
+            print(f"[Train] Class balance - pos_weight: {pos_weight:.2f}")
+            
             # Loss and optimizer
-            criterion = CrossDetectionLoss()
-            optimizer = optim.Adam(model.parameters(), lr=0.001)
+            criterion = CrossDetectionLoss(regression_weight=5.0, pos_weight=pos_weight)
+            optimizer = optim.Adam(model.parameters(), lr=0.0003)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=3, verbose=True
+            )
             
             # Training loop
             num_epochs = 30
+            best_mae = float('inf')
+            
             for epoch in range(num_epochs):
                 model.train()
                 train_loss = 0.0
@@ -507,15 +518,27 @@ class TrainingDataBrowser:
                     
                     train_loss += loss.item()
                 
+                avg_train_loss = train_loss / len(train_loader)
+                
                 # Evaluate on test set
                 metrics = self._evaluate(model, test_loader, device)
                 
                 print(f"[Train] Epoch {epoch+1}/{num_epochs} "
-                      f"loss={train_loss/len(train_loader):.4f} "
+                      f"loss={avg_train_loss:.4f} "
                       f"acc={metrics['accuracy']:.3f} "
                       f"prec={metrics['precision']:.3f} "
                       f"rec={metrics['recall']:.3f} "
                       f"mae={metrics['mae_pixels']:.2f}px")
+                
+                # Save best model based on MAE
+                if metrics['mae_pixels'] > 0 and metrics['mae_pixels'] < best_mae:
+                    best_mae = metrics['mae_pixels']
+                    best_model_path = "cross_detector_best.pth"
+                    torch.save(model.state_dict(), best_model_path)
+                    print(f"[Train] ✓ New best MAE: {best_mae:.2f}px - saved to {best_model_path}")
+                
+                # Learning rate scheduling
+                scheduler.step(avg_train_loss)
             
             # Final evaluation
             print("\n[Train] Training complete! Final test metrics:")
@@ -755,10 +778,11 @@ class CrossDetectorModel(nn.Module):
 
 class CrossDetectionLoss(nn.Module):
     """Combined loss for classification + regression."""
-    def __init__(self, regression_weight=10.0):
+    def __init__(self, regression_weight=5.0, pos_weight=5.0):
         super().__init__()
         self.regression_weight = regression_weight
-        self.bce = nn.BCEWithLogitsLoss()
+        pos_weight_tensor = torch.tensor([pos_weight])
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
         self.smooth_l1 = nn.SmoothL1Loss()
     
     def forward(self, outputs, has_cross, coords):
