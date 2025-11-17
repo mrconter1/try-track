@@ -305,7 +305,12 @@ def main():
     args = parser.parse_args()
 
     root = tk.Tk()
-    root.geometry("1200x800")
+    try:
+        root.state('zoomed')
+    except tk.TclError:
+        # Fallback for other OSes
+        root.geometry("1200x800")
+        
     app = LineAnnotator(root, args.video)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
