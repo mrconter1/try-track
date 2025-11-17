@@ -8,21 +8,21 @@ import numpy as np
 import random
 import json
 
+def get_video_props(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open video file: {video_path}")
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return total_frames
+
 class CrossAnnotator:
-    def __init__(self, root, video_path):
+    def __init__(self, root, video_paths):
         self.root = root
-        self.video_path = os.path.abspath(video_path)
+        self.video_paths = [os.path.abspath(p) for p in video_paths]
+        self.video_frame_counts = {path: get_video_props(path) for path in self.video_paths}
 
-        try:
-            self.cap = cv2.VideoCapture(self.video_path)
-            if not self.cap.isOpened():
-                raise IOError(f"Cannot open video file: {self.video_path}")
-            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-            self.root.destroy()
-            return
-
+        self.current_video_path = None
         self.current_frame_idx = -1
         self.current_frame = None
         self.active_region_frame = None
@@ -32,7 +32,7 @@ class CrossAnnotator:
         self.offset_y = 0
 
         self.annotations = {}
-        self.history = [] # To store (frame_idx, region_idx) tuples
+        self.history = [] # To store (video_path, frame_idx, region_idx) tuples
         self.history_idx = -1
         self.current_region_idx = -1
 
@@ -56,10 +56,12 @@ class CrossAnnotator:
         
         # Build history from loaded annotations
         if self.annotations:
-            sorted_frames = sorted(self.annotations.keys())
-            for frame_idx in sorted_frames:
-                for region_idx in range(len(self.annotations[frame_idx]["regions"])):
-                    self.history.append((frame_idx, region_idx))
+            sorted_videos = sorted(self.annotations.keys())
+            for video_path in sorted_videos:
+                sorted_frames = sorted(self.annotations[video_path].keys())
+                for frame_idx in sorted_frames:
+                    for region_idx in range(len(self.annotations[video_path][frame_idx]["regions"])):
+                        self.history.append((video_path, frame_idx, region_idx))
         
         if self.history:
             self.history_idx = 0
@@ -76,9 +78,11 @@ class CrossAnnotator:
             with open(self.annotations_path, 'r') as f:
                 data = json.load(f)
             
-            video_data = next((v for v in data.get("videos", []) if os.path.abspath(v["video_path"]) == self.video_path), None)
-            
-            if video_data:
+            for video_data in data.get("videos", []):
+                video_path = os.path.abspath(video_data.get("video_path", ""))
+                if video_path not in self.video_paths:
+                    continue
+
                 for frame_info in video_data.get("frames", []):
                     frame_idx = frame_info["frame_idx"]
                     loaded_regions = frame_info.get("regions", [])
@@ -102,9 +106,11 @@ class CrossAnnotator:
                         })
 
                     if processed_regions:
-                        self.annotations[frame_idx] = {"regions": processed_regions}
+                        if video_path not in self.annotations:
+                            self.annotations[video_path] = {}
+                        self.annotations[video_path][frame_idx] = {"regions": processed_regions}
             
-            print(f"[Info] Loaded annotations for {len(self.annotations)} frames.")
+            print(f"[Info] Loaded annotations for {sum(len(v) for v in self.annotations.values())} frames across {len(self.annotations)} videos.")
 
         except (json.JSONDecodeError, KeyError) as e:
             print(f"[Warning] Could not parse annotations file: {e}")
@@ -169,35 +175,42 @@ class CrossAnnotator:
             return
 
         self.history_idx = history_idx
-        frame_idx, region_idx = self.history[self.history_idx]
+        video_path, frame_idx, region_idx = self.history[self.history_idx]
 
-        if self.current_frame_idx != frame_idx:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = self.cap.read()
+        if self.current_video_path != video_path or self.current_frame_idx != frame_idx:
+            cap = cv2.VideoCapture(video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            cap.release()
             if not ret:
                 self.current_frame = None
                 return
             self.current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.current_video_path = video_path
             self.current_frame_idx = frame_idx
         
         self.current_region_idx = region_idx
         self.display_region()
 
     def _append_new_random_frame_entry(self):
-        # This function ALWAYS finds a new random frame
-        frame_idx = random.randint(0, self.total_frames - 1)
+        # This function ALWAYS finds a new random video and frame
+        video_path = random.choice(self.video_paths)
+        total_frames = self.video_frame_counts.get(video_path, 0)
+        if total_frames <= 0:
+            print(f"[Warning] Video '{video_path}' has no frames, skipping.")
+            return
+        frame_idx = random.randint(0, total_frames - 1)
 
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = self.cap.read()
+        cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        cap.release()
         if not ret:
-            print(f"[Warning] Failed to read frame {frame_idx}, trying another.")
-            # Let's try one more time to avoid getting stuck
-            frame_idx = random.randint(0, self.total_frames - 1)
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = self.cap.read()
-            if not ret: return # Give up
+            print(f"[Warning] Failed to read frame {frame_idx} from '{video_path}'.")
+            return
 
         self.current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.current_video_path = video_path
         self.current_frame_idx = frame_idx
 
         # Now, select a random region within this new frame
@@ -212,17 +225,19 @@ class CrossAnnotator:
         
         new_region = {"rect": [x, y, rw, rh], "crosses": []}
 
-        if frame_idx not in self.annotations:
-            self.annotations[frame_idx] = {"regions": []}
+        if self.current_video_path not in self.annotations:
+            self.annotations[self.current_video_path] = {}
+        if frame_idx not in self.annotations[self.current_video_path]:
+            self.annotations[self.current_video_path][frame_idx] = {"regions": []}
         
-        self.annotations[frame_idx]["regions"].append(new_region)
-        new_region_idx = len(self.annotations[frame_idx]["regions"]) - 1
+        self.annotations[self.current_video_path][frame_idx]["regions"].append(new_region)
+        new_region_idx = len(self.annotations[self.current_video_path][frame_idx]["regions"]) - 1
         
         # This handles the case where you go back, then forward in a new direction
         # It removes any "future" history that we are now branching away from.
         self.history = self.history[:self.history_idx + 1]
 
-        self.history.append((frame_idx, new_region_idx))
+        self.history.append((self.current_video_path, frame_idx, new_region_idx))
         self.history_idx = len(self.history) - 1
         
         # We have all the info for the new state, so just display it directly
@@ -234,7 +249,7 @@ class CrossAnnotator:
             return
 
         try:
-            region_data = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]
+            region_data = self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx]
             x, y, w, h = region_data["rect"]
             self.active_region_frame = self.current_frame[y:y+h, x:x+w]
         except (KeyError, IndexError):
@@ -261,9 +276,9 @@ class CrossAnnotator:
         self.update_info_labels()
 
     def draw_annotations(self):
-        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+        if self.current_video_path in self.annotations and self.current_frame_idx in self.annotations[self.current_video_path] and self.current_region_idx != -1:
             try:
-                region = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]
+                region = self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx]
                 crosses = region.get("crosses", [])
                 for cross in crosses:
                     self.draw_cross(cross, "red")
@@ -320,15 +335,16 @@ class CrossAnnotator:
 
         final_coords = self.current_drag_point
         if final_coords:
-            if self.current_frame_idx not in self.annotations:
-                # This case should ideally not be hit with the new logic, but as a fallback:
-                self.annotations[self.current_frame_idx] = {"regions": []}
+            if self.current_video_path not in self.annotations:
+                self.annotations[self.current_video_path] = {}
+            if self.current_frame_idx not in self.annotations[self.current_video_path]:
+                self.annotations[self.current_video_path][self.current_frame_idx] = {"regions": []}
                 # Create a placeholder region if it somehow doesn't exist
-                if not self.annotations[self.current_frame_idx]["regions"]:
-                     self.annotations[self.current_frame_idx]["regions"].append({"rect": [0,0,500,500], "crosses":[]})
+                if not self.annotations[self.current_video_path][self.current_frame_idx]["regions"]:
+                     self.annotations[self.current_video_path][self.current_frame_idx]["regions"].append({"rect": [0,0,500,500], "crosses":[]})
                 self.current_region_idx = 0
             
-            self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]["crosses"].append(final_coords)
+            self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx]["crosses"].append(final_coords)
 
         self.display_region()
 
@@ -355,9 +371,9 @@ class CrossAnnotator:
         self.next_entry()
 
     def undo_last_cross(self):
-        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+        if self.current_video_path in self.annotations and self.current_frame_idx in self.annotations[self.current_video_path] and self.current_region_idx != -1:
             try:
-                crosses = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx].get("crosses", [])
+                crosses = self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx].get("crosses", [])
                 if crosses:
                     crosses.pop()
                     self.display_region()
@@ -366,18 +382,22 @@ class CrossAnnotator:
     
     def update_info_labels(self):
         total_regions_on_frame = 0
-        if self.current_frame_idx in self.annotations:
-            total_regions_on_frame = len(self.annotations[self.current_frame_idx].get("regions", []))
+        if self.current_video_path in self.annotations and self.current_frame_idx in self.annotations[self.current_video_path]:
+            total_regions_on_frame = len(self.annotations[self.current_video_path][self.current_frame_idx].get("regions", []))
         
-        frame_text = f"Frame: {self.current_frame_idx} / {self.total_frames - 1}"
+        video_name = os.path.basename(self.current_video_path) if self.current_video_path else "N/A"
+        total_frames = self.video_frame_counts.get(self.current_video_path, 0)
+
+        video_text = f"Video: {video_name}"
+        frame_text = f"Frame: {self.current_frame_idx} / {total_frames - 1}"
         region_text = f"Region: {self.current_region_idx + 1} / {total_regions_on_frame}"
 
-        self.frame_label.config(text=f"{frame_text}\n{region_text}")
+        self.frame_label.config(text=f"{video_text}\n{frame_text}\n{region_text}")
 
         num_crosses = 0
-        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+        if self.current_video_path in self.annotations and self.current_frame_idx in self.annotations[self.current_video_path] and self.current_region_idx != -1:
             try:
-                num_crosses = len(self.annotations[self.current_frame_idx]["regions"][self.current_region_idx].get("crosses", []))
+                num_crosses = len(self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx].get("crosses", []))
             except IndexError:
                 pass
         self.crosses_label.config(text=f"Crosses in region: {num_crosses}")
@@ -471,26 +491,32 @@ class CrossAnnotator:
             except json.JSONDecodeError:
                 pass
         
-        video_entry = next((v for v in existing_data["videos"] if os.path.abspath(v["video_path"]) == self.video_path), None)
-        if not video_entry:
-            video_entry = {"video_path": self.video_path, "frames": []}
-            existing_data["videos"].append(video_entry)
+        # Create a dictionary of video entries for easy lookup
+        existing_videos_map = {os.path.abspath(v["video_path"]): v for v in existing_data["videos"]}
 
-        existing_frames = {f["frame_idx"]: f for f in video_entry["frames"]}
+        # Iterate over all videos we've annotated in this session
+        for video_path, frames_data in self.annotations.items():
+            if video_path not in existing_videos_map:
+                existing_videos_map[video_path] = {"video_path": video_path, "frames": []}
+            
+            video_entry = existing_videos_map[video_path]
+            existing_frames = {f["frame_idx"]: f for f in video_entry["frames"]}
 
-        for frame_idx, data in self.annotations.items():
-            if data.get("regions"):
-                valid_regions = []
-                for r in data["regions"]:
-                    if r.get("crosses"):
-                        _, _, w, h = r["rect"]
-                        normalized_crosses = [{"x": c[0]/w, "y": c[1]/h} for c in r["crosses"]]
-                        valid_regions.append({"rect": r["rect"], "crosses": normalized_crosses})
-                
-                if valid_regions:
-                    existing_frames[frame_idx] = {"frame_idx": frame_idx, "regions": valid_regions}
-        
-        video_entry["frames"] = sorted(existing_frames.values(), key=lambda x: x["frame_idx"])
+            for frame_idx, data in frames_data.items():
+                if data.get("regions"):
+                    valid_regions = []
+                    for r in data["regions"]:
+                        if r.get("crosses"):
+                            _, _, w, h = r["rect"]
+                            normalized_crosses = [{"x": c[0]/w, "y": c[1]/h} for c in r["crosses"]]
+                            valid_regions.append({"rect": r["rect"], "crosses": normalized_crosses})
+                    
+                    if valid_regions:
+                        existing_frames[frame_idx] = {"frame_idx": frame_idx, "regions": valid_regions}
+            
+            video_entry["frames"] = sorted(existing_frames.values(), key=lambda x: x["frame_idx"])
+
+        existing_data["videos"] = list(existing_videos_map.values())
 
         try:
             with open(output_path, 'w') as f:
@@ -506,7 +532,7 @@ class CrossAnnotator:
 
 def main():
     parser = argparse.ArgumentParser(description="Annotate crosses on video frames.")
-    parser.add_argument("--video", type=str, required=True, help="Path to the video file.")
+    parser.add_argument("--videos", nargs='+', required=True, help="One or more paths to video files.")
     args = parser.parse_args()
 
     root = tk.Tk()
@@ -515,7 +541,7 @@ def main():
     except tk.TclError:
         root.geometry("1200x800")
         
-    app = CrossAnnotator(root, args.video)
+    app = CrossAnnotator(root, args.videos)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
 
