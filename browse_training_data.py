@@ -165,15 +165,20 @@ class TrainingDataBrowser:
         train_frame = ttk.Frame(container)
         train_frame.grid(row=3, column=0, pady=(20, 0))
         
-        ttk.Label(train_frame, text="Positive samples:").pack(side=tk.LEFT, padx=5)
-        self.num_positive_var = tk.StringVar(value="1000")
-        self.num_positive_entry = ttk.Entry(train_frame, textvariable=self.num_positive_var, width=10)
-        self.num_positive_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(train_frame, text="Positive:").pack(side=tk.LEFT, padx=(10, 2))
+        self.num_positive_var = tk.StringVar(value="5000")
+        self.num_positive_entry = ttk.Entry(train_frame, textvariable=self.num_positive_var, width=8)
+        self.num_positive_entry.pack(side=tk.LEFT)
         
-        ttk.Label(train_frame, text="Negative samples:").pack(side=tk.LEFT, padx=5)
-        self.num_negative_var = tk.StringVar(value="5000")
-        self.num_negative_entry = ttk.Entry(train_frame, textvariable=self.num_negative_var, width=10)
-        self.num_negative_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(train_frame, text="Hard Neg:").pack(side=tk.LEFT, padx=(10, 2))
+        self.num_hard_negative_var = tk.StringVar(value="5000")
+        self.num_hard_negative_entry = ttk.Entry(train_frame, textvariable=self.num_hard_negative_var, width=8)
+        self.num_hard_negative_entry.pack(side=tk.LEFT)
+
+        ttk.Label(train_frame, text="Easy Neg:").pack(side=tk.LEFT, padx=(10, 2))
+        self.num_negative_var = tk.StringVar(value="15000")
+        self.num_negative_entry = ttk.Entry(train_frame, textvariable=self.num_negative_var, width=8)
+        self.num_negative_entry.pack(side=tk.LEFT)
         
         self.train_button = ttk.Button(
             train_frame,
@@ -458,6 +463,15 @@ class TrainingDataBrowser:
         beta = random.uniform(-20, 20)    # brightness
         image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
         
+        # Random blur and noise augmentations
+        if random.random() < 0.3:
+            ksize = random.choice([3, 5])
+            image = cv2.GaussianBlur(image, (ksize, ksize), 0)
+            
+        if random.random() < 0.3:
+            noise = np.random.normal(0, 10, image.shape).astype(np.uint8)
+            image = cv2.add(image, noise)
+
         return image, point_x, point_y
     
     def _draw_crosshair(self, image, x, y):
@@ -509,28 +523,29 @@ class TrainingDataBrowser:
         """Train the cross detection model."""
         try:
             num_positive = int(self.num_positive_var.get())
+            num_hard_negative = int(self.num_hard_negative_var.get())
             num_negative = int(self.num_negative_var.get())
         except ValueError:
             messagebox.showerror("Error", "Please enter valid numbers for sample counts")
             return
         
-        if num_positive <= 0 or num_negative <= 0:
-            messagebox.showerror("Error", "Sample counts must be positive")
+        if num_positive <= 0 or num_negative < 0 or num_hard_negative < 0:
+            messagebox.showerror("Error", "Sample counts must be positive (or >= 0 for negatives)")
             return
         
         # Run training in a separate thread to keep UI responsive
         thread = threading.Thread(
             target=self._train_worker,
-            args=(num_positive, num_negative),
+            args=(num_positive, num_hard_negative, num_negative),
             daemon=True
         )
         thread.start()
-        messagebox.showinfo("Training", f"Training started with {num_positive} positive and {num_negative} negative samples.\nCheck console for progress.")
+        messagebox.showinfo("Training", f"Training started with {num_positive} pos, {num_hard_negative} hard neg, and {num_negative} easy neg samples.\nCheck console for progress.")
     
-    def _train_worker(self, num_positive, num_negative):
+    def _train_worker(self, num_positive, num_hard_negative, num_negative):
         """Background worker for training."""
         try:
-            print(f"\n[Train] Generating {num_positive} positive and {num_negative} negative samples...")
+            print(f"\n[Train] Generating {num_positive} pos, {num_hard_negative} hard neg, {num_negative} easy neg samples...")
             
             # Step 1: Preload all unique frames
             print("[Train] Preloading unique frames...")
@@ -572,9 +587,37 @@ class TrainingDataBrowser:
                         print(f"[Train] Positive: {completed}/{num_positive} samples ({idx}/{total_futures} batches)")
                     except Exception as e:
                         print(f"[Warning] Batch failed: {e}")
-            
+
+            # Generate hard negative samples in parallel
+            if num_hard_negative > 0:
+                print("[Train] Generating hard negative samples...")
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    futures = []
+                    chunk_size = max(1, num_hard_negative // (num_workers * 4))
+                    
+                    for i in range(0, num_hard_negative, chunk_size):
+                        count = min(chunk_size, num_hard_negative - i)
+                        future = executor.submit(
+                            generate_hard_negative_samples_batch,
+                            self.hard_negative_sources,
+                            frame_cache,
+                            count
+                        )
+                        futures.append(future)
+                    
+                    completed = 0
+                    total_futures = len(futures)
+                    for idx, future in enumerate(as_completed(futures), 1):
+                        try:
+                            samples = future.result()
+                            all_samples.extend(samples)
+                            completed += len(samples)
+                            print(f"[Train] Hard Negative: {completed}/{num_hard_negative} samples ({idx}/{total_futures} batches)")
+                        except Exception as e:
+                            print(f"[Warning] Batch failed: {e}")
+
             # Generate negative samples in parallel
-            print("[Train] Generating negative samples...")
+            print("[Train] Generating easy negative samples...")
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = []
                 chunk_size = max(1, num_negative // (num_workers * 4))
@@ -622,7 +665,7 @@ class TrainingDataBrowser:
             
             # Calculate pos_weight for class imbalance
             num_pos = num_positive
-            num_neg = num_negative
+            num_neg = num_negative + num_hard_negative
             pos_weight = num_neg / max(1, num_pos)
             print(f"[Train] Class balance - pos_weight: {pos_weight:.2f}")
             
@@ -1014,6 +1057,68 @@ def generate_negative_samples_batch(negative_samples, frame_cache, count):
     return samples
 
 
+def generate_hard_negative_samples_batch(hard_negative_sources, frame_cache, count):
+    """Generate a batch of hard negative samples. Must be top-level for pickling."""
+    import random
+    import cv2
+    import numpy as np
+    
+    samples = []
+    if not hard_negative_sources:
+        return samples
+
+    for _ in range(count):
+        try:
+            sample = random.choice(hard_negative_sources)
+            video_path = sample["video_path"]
+            frame_idx = sample["frame_idx"]
+            
+            frame = frame_cache.get((video_path, frame_idx))
+            if frame is None:
+                continue
+                
+            h, w = frame.shape[:2]
+            
+            cross = sample["cross"]
+            rect = sample["rect"]
+            
+            cx = cross["x"] * w
+            cy = cross["y"] * h
+            
+            x0, y0, x1, y1 = rect["x0"] * w, rect["y0"] * h, rect["x1"] * w, rect["y1"] * h
+            
+            crop_size = 128
+            half = crop_size / 2
+            
+            if (x1 - x0) < crop_size or (y1 - y0) < crop_size:
+                continue
+
+            target_x = np.clip(cx, x0, x1)
+            target_y = np.clip(cy, y0, y1)
+            
+            jitter_x = random.uniform(-crop_size / 4, crop_size / 4)
+            jitter_y = random.uniform(-crop_size / 4, crop_size / 4)
+            
+            center_x = target_x + jitter_x
+            center_y = target_y + jitter_y
+            
+            center_x = np.clip(center_x, x0 + half, x1 - half)
+            center_y = np.clip(center_y, y0 + half, y1 - half)
+
+            cx0, cy0 = int(center_x - half), int(center_y - half)
+            crop = frame[cy0:cy0+crop_size, cx0:cx0+crop_size]
+            
+            augmented, _, _ = augment_image(crop, None, None)
+            
+            samples.append({
+                "image": augmented, "has_cross": 0, "x": 0.0, "y": 0.0, "frame_key": "negative_hard"
+            })
+        except Exception:
+            pass
+            
+    return samples
+
+
 def augment_image(image, point_x=None, point_y=None):
     """Apply augmentations. Must be top-level for pickling."""
     import random
@@ -1061,6 +1166,15 @@ def augment_image(image, point_x=None, point_y=None):
     beta = random.uniform(-20, 20)    # brightness
     image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
     
+    # Random blur and noise augmentations
+    if random.random() < 0.3:
+        ksize = random.choice([3, 5])
+        image = cv2.GaussianBlur(image, (ksize, ksize), 0)
+        
+    if random.random() < 0.3:
+        noise = np.random.normal(0, 10, image.shape).astype(np.uint8)
+        image = cv2.add(image, noise)
+
     return image, point_x, point_y
 
 
