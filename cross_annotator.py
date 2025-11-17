@@ -318,23 +318,32 @@ class CrossAnnotator:
         self.magnifier_window.geometry(f"+{event.x_root - half_mag_size}+{event.y_root - half_mag_size}")
         
         frame_coords = self.canvas_to_frame((event.x, event.y))
-        patch_size = self.magnifier_size // self.magnifier_zoom
-        half_patch = patch_size // 2
-        patch = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
+        
+        zoomed_patch = np.zeros((self.magnifier_size, self.magnifier_size, 3), dtype=np.uint8)
 
         if frame_coords is not None:
             fx, fy = frame_coords
-            h, w = self.active_region_frame.shape[:2]
-            src_x0, src_y0, src_x1, src_y1 = int(fx - half_patch), int(fy - half_patch), int(fx + half_patch), int(fy + half_patch)
-            valid_src_x0, valid_src_y0 = max(0, src_x0), max(0, src_y0)
-            valid_src_x1, valid_src_y1 = min(w, src_x1), min(h, src_y1)
-            if valid_src_x0 < valid_src_x1 and valid_src_y0 < valid_src_y1:
-                frame_part = self.active_region_frame[valid_src_y0:valid_src_y1, valid_src_x0:valid_src_x1]
-                dest_x0, dest_y0 = valid_src_x0 - src_x0, valid_src_y0 - src_y0
-                dest_x1, dest_y1 = dest_x0 + frame_part.shape[1], dest_y0 + frame_part.shape[0]
-                patch[dest_y0:dest_y1, dest_x0:dest_x1] = frame_part
+            
+            # Create an affine transformation matrix for sub-pixel zoom and pan.
+            # This maps the cursor's precise float location (fx, fy) to the magnifier's center.
+            M = np.float32([
+                [self.magnifier_zoom, 0, self.magnifier_size/2 - self.magnifier_zoom * fx],
+                [0, self.magnifier_zoom, self.magnifier_size/2 - self.magnifier_zoom * fy]
+            ])
+            
+            # Apply the transformation. INTER_NEAREST preserves the sharp pixel look while the
+            # matrix provides the smooth sub-pixel panning. BORDER_CONSTANT creates the black
+            # background for out-of-bounds areas.
+            zoomed_patch = cv2.warpAffine(
+                self.active_region_frame,
+                M,
+                (self.magnifier_size, self.magnifier_size),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0)
+            )
 
-        zoomed_patch = cv2.resize(patch, (self.magnifier_size, self.magnifier_size), interpolation=cv2.INTER_NEAREST)
+        # Draw a central crosshair on the magnifier
         m_center = self.magnifier_size // 2
         size = 8
         cv2.line(zoomed_patch, (m_center - size, m_center), (m_center + size, m_center), (255, 0, 255), 1)
