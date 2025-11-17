@@ -42,7 +42,7 @@ class CrossAnnotator:
 
         self.magnifier_window = None
         self.magnifier_canvas = None
-        self.magnifier_size = 160
+        self.magnifier_size = 200
         self.magnifier_zoom = 4
 
         self.root.title("Cross Annotator")
