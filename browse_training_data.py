@@ -122,12 +122,12 @@ class TrainingDataBrowser:
         train_frame.grid(row=3, column=0, pady=(20, 0))
         
         ttk.Label(train_frame, text="Positive:").pack(side=tk.LEFT, padx=(10, 2))
-        self.num_positive_var = tk.StringVar(value="10000")
+        self.num_positive_var = tk.StringVar(value="25000")
         self.num_positive_entry = ttk.Entry(train_frame, textvariable=self.num_positive_var, width=8)
         self.num_positive_entry.pack(side=tk.LEFT)
         
         ttk.Label(train_frame, text="Negative:").pack(side=tk.LEFT, padx=(10, 2))
-        self.num_negative_var = tk.StringVar(value="10000")
+        self.num_negative_var = tk.StringVar(value="25000")
         self.num_negative_entry = ttk.Entry(train_frame, textvariable=self.num_negative_var, width=8)
         self.num_negative_entry.pack(side=tk.LEFT)
         
