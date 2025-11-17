@@ -432,37 +432,73 @@ class TrainingDataBrowser:
         try:
             print(f"\n[Train] Generating {num_positive} positive and {num_negative} negative samples...")
             
-            # Generate all training samples
+            # Step 1: Preload all unique frames
+            print("[Train] Preloading unique frames...")
+            frame_cache = self._preload_frames()
+            print(f"[Train] Loaded {len(frame_cache)} unique frames into memory")
+            
+            # Step 2: Generate samples in parallel
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            import multiprocessing
+            
+            num_workers = max(1, multiprocessing.cpu_count() - 1)
+            print(f"[Train] Using {num_workers} parallel workers for sample generation")
+            
             all_samples = []
             
-            # Generate positive samples
-            for i in range(num_positive):
-                if i % 100 == 0:
-                    print(f"[Train] Generated {i}/{num_positive} positive samples")
-                try:
-                    img = self._generate_single_positive()
-                    # Extract cross position from the image (we drew it, need to track it)
-                    # For now, regenerate with tracking
-                    sample_data = self._generate_single_positive_with_label()
-                    all_samples.append(sample_data)
-                except Exception as e:
-                    print(f"[Warning] Failed to generate positive sample: {e}")
+            # Generate positive samples in parallel
+            print("[Train] Generating positive samples...")
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = []
+                chunk_size = max(1, num_positive // (num_workers * 4))
+                
+                for i in range(0, num_positive, chunk_size):
+                    count = min(chunk_size, num_positive - i)
+                    future = executor.submit(
+                        generate_positive_samples_batch,
+                        self.positive_samples,
+                        frame_cache,
+                        count
+                    )
+                    futures.append(future)
+                
+                completed = 0
+                total_futures = len(futures)
+                for idx, future in enumerate(as_completed(futures), 1):
+                    try:
+                        samples = future.result()
+                        all_samples.extend(samples)
+                        completed += len(samples)
+                        print(f"[Train] Positive: {completed}/{num_positive} samples ({idx}/{total_futures} batches)")
+                    except Exception as e:
+                        print(f"[Warning] Batch failed: {e}")
             
-            # Generate negative samples
-            for i in range(num_negative):
-                if i % 100 == 0:
-                    print(f"[Train] Generated {i}/{num_negative} negative samples")
-                try:
-                    img = self._generate_single_negative()
-                    all_samples.append({
-                        "image": img,
-                        "has_cross": 0,
-                        "x": 0.0,
-                        "y": 0.0,
-                        "frame_key": "negative"
-                    })
-                except Exception as e:
-                    print(f"[Warning] Failed to generate negative sample: {e}")
+            # Generate negative samples in parallel
+            print("[Train] Generating negative samples...")
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = []
+                chunk_size = max(1, num_negative // (num_workers * 4))
+                
+                for i in range(0, num_negative, chunk_size):
+                    count = min(chunk_size, num_negative - i)
+                    future = executor.submit(
+                        generate_negative_samples_batch,
+                        self.negative_samples,
+                        frame_cache,
+                        count
+                    )
+                    futures.append(future)
+                
+                completed = 0
+                total_futures = len(futures)
+                for idx, future in enumerate(as_completed(futures), 1):
+                    try:
+                        samples = future.result()
+                        all_samples.extend(samples)
+                        completed += len(samples)
+                        print(f"[Train] Negative: {completed}/{num_negative} samples ({idx}/{total_futures} batches)")
+                    except Exception as e:
+                        print(f"[Warning] Batch failed: {e}")
             
             print(f"[Train] Generated {len(all_samples)} total samples")
             
@@ -494,7 +530,7 @@ class TrainingDataBrowser:
             criterion = CrossDetectionLoss(regression_weight=5.0, pos_weight=pos_weight)
             optimizer = optim.Adam(model.parameters(), lr=0.0003)
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min', factor=0.5, patience=3, verbose=True
+                optimizer, mode='min', factor=0.5, patience=3
             )
             
             # Training loop
@@ -717,6 +753,215 @@ class TrainingDataBrowser:
             "within_5px": within_5px,
             "within_10px": within_10px
         }
+    
+    def _preload_frames(self):
+        """Preload all unique frames from positive and negative samples."""
+        frame_cache = {}
+        unique_frames = set()
+        
+        # Collect unique frames from positive samples
+        for sample in self.positive_samples:
+            key = (sample["video_path"], sample["frame_idx"])
+            unique_frames.add(key)
+        
+        # Collect unique frames from negative samples
+        for sample in self.negative_samples:
+            key = (sample["video_path"], sample["frame_idx"])
+            unique_frames.add(key)
+        
+        # Load all unique frames
+        for video_path, frame_idx in unique_frames:
+            try:
+                frame = self._load_frame(video_path, frame_idx)
+                frame_cache[(video_path, frame_idx)] = frame
+            except Exception as e:
+                print(f"[Warning] Failed to load frame {frame_idx} from {video_path}: {e}")
+        
+        return frame_cache
+
+
+# Global functions for parallel processing
+def generate_positive_samples_batch(positive_samples, frame_cache, count):
+    """Generate a batch of positive samples. Must be top-level for pickling."""
+    import random
+    import cv2
+    import numpy as np
+    
+    samples = []
+    for _ in range(count):
+        try:
+            sample = random.choice(positive_samples)
+            video_path = sample["video_path"]
+            frame_idx = sample["frame_idx"]
+            
+            # Get frame from cache
+            frame = frame_cache.get((video_path, frame_idx))
+            if frame is None:
+                continue
+            
+            h, w = frame.shape[:2]
+            
+            # Denormalize cross coordinates
+            cross_x = sample["cross"]["x"] * w
+            cross_y = sample["cross"]["y"] * h
+            
+            crop_size = 128
+            margin = 10
+            
+            # Calculate valid offset range
+            offset_x = random.uniform(-(crop_size//2 - margin), (crop_size//2 - margin))
+            offset_y = random.uniform(-(crop_size//2 - margin), (crop_size//2 - margin))
+            
+            # Calculate crop center
+            center_x = cross_x - offset_x
+            center_y = cross_y - offset_y
+            
+            # Clamp crop center to keep crop fully inside frame
+            half = crop_size / 2
+            center_x = max(half, min(w - half, center_x))
+            center_y = max(half, min(h - half, center_y))
+            
+            # Extract crop
+            x0 = int(center_x - half)
+            y0 = int(center_y - half)
+            crop = frame[y0:y0+crop_size, x0:x0+crop_size]
+            
+            # Calculate cross position within crop
+            cross_in_crop_x = cross_x - (center_x - half)
+            cross_in_crop_y = cross_y - (center_y - half)
+            
+            # Apply augmentations
+            augmented, cross_aug_x, cross_aug_y = augment_image(
+                crop, cross_in_crop_x, cross_in_crop_y
+            )
+            
+            # Normalize coordinates to 0-1
+            norm_x = cross_aug_x / crop_size
+            norm_y = cross_aug_y / crop_size
+            
+            samples.append({
+                "image": augmented,
+                "has_cross": 1,
+                "x": float(norm_x),
+                "y": float(norm_y),
+                "frame_key": f"{video_path}_{frame_idx}"
+            })
+        except Exception as e:
+            pass
+    
+    return samples
+
+
+def generate_negative_samples_batch(negative_samples, frame_cache, count):
+    """Generate a batch of negative samples. Must be top-level for pickling."""
+    import random
+    import cv2
+    import numpy as np
+    
+    samples = []
+    for _ in range(count):
+        try:
+            sample = random.choice(negative_samples)
+            video_path = sample["video_path"]
+            frame_idx = sample["frame_idx"]
+            
+            # Get frame from cache
+            frame = frame_cache.get((video_path, frame_idx))
+            if frame is None:
+                continue
+            
+            h, w = frame.shape[:2]
+            
+            # Denormalize rect coordinates
+            rect = sample["rect"]
+            x0 = rect["x0"] * w
+            y0 = rect["y0"] * h
+            x1 = rect["x1"] * w
+            y1 = rect["y1"] * h
+            
+            rect_w = x1 - x0
+            rect_h = y1 - y0
+            
+            crop_size = 128
+            
+            # Check if rect is large enough
+            if rect_w < crop_size or rect_h < crop_size:
+                continue
+            
+            # Random position within rect for crop center
+            center_x = random.uniform(x0 + crop_size/2, x1 - crop_size/2)
+            center_y = random.uniform(y0 + crop_size/2, y1 - crop_size/2)
+            
+            # Extract crop
+            half = crop_size // 2
+            cx0 = int(center_x - half)
+            cy0 = int(center_y - half)
+            crop = frame[cy0:cy0+crop_size, cx0:cx0+crop_size]
+            
+            # Apply augmentations
+            augmented, _, _ = augment_image(crop, None, None)
+            
+            samples.append({
+                "image": augmented,
+                "has_cross": 0,
+                "x": 0.0,
+                "y": 0.0,
+                "frame_key": "negative"
+            })
+        except Exception as e:
+            pass
+    
+    return samples
+
+
+def augment_image(image, point_x=None, point_y=None):
+    """Apply augmentations. Must be top-level for pickling."""
+    import random
+    import cv2
+    import numpy as np
+    
+    h, w = image.shape[:2]
+    
+    # Random flip
+    flip_h = random.random() < 0.5
+    flip_v = random.random() < 0.5
+    
+    if flip_h:
+        image = cv2.flip(image, 1)
+        if point_x is not None:
+            point_x = w - point_x
+    
+    if flip_v:
+        image = cv2.flip(image, 0)
+        if point_y is not None:
+            point_y = h - point_y
+    
+    # Random rotation
+    angle = random.uniform(-15, 15)
+    
+    # Random scale
+    scale = random.uniform(0.9, 1.1)
+    
+    # Build transformation matrix
+    center = (w / 2, h / 2)
+    M_rot = cv2.getRotationMatrix2D(center, angle, scale)
+    
+    # Apply rotation+scale
+    image = cv2.warpAffine(image, M_rot, (w, h), borderMode=cv2.BORDER_REFLECT_101)
+    
+    # Transform point if provided
+    if point_x is not None and point_y is not None:
+        point = np.array([[[point_x, point_y]]], dtype=np.float32)
+        point_transformed = cv2.transform(point, M_rot)
+        point_x = point_transformed[0, 0, 0]
+        point_y = point_transformed[0, 0, 1]
+    
+    # Random brightness/contrast
+    alpha = random.uniform(0.8, 1.2)  # contrast
+    beta = random.uniform(-20, 20)    # brightness
+    image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+    
+    return image, point_x, point_y
 
 
 class CrossDataset(Dataset):
