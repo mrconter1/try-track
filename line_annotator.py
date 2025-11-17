@@ -161,7 +161,10 @@ class LineAnnotator:
         # If a line is partially drawn, show its first point
         if self.first_point:
             canvas_p1 = self.frame_to_canvas(self.first_point)
-            self.canvas.create_oval(canvas_p1[0]-4, canvas_p1[1]-4, canvas_p1[0]+4, canvas_p1[1]+4, fill="lime", outline="lime")
+            x, y = canvas_p1
+            size = 6
+            self.canvas.create_line(x - size, y, x + size, y, fill="lime", width=2)
+            self.canvas.create_line(x, y - size, x, y + size, fill="lime", width=2)
 
         self.update_info_labels()
 
@@ -185,19 +188,27 @@ class LineAnnotator:
         if self.first_point is None:
             # Starting to place the first point
             canvas_coords = (event.x, event.y)
-            self.current_drag_item = self.canvas.create_oval(canvas_coords[0]-4, canvas_coords[1]-4, canvas_coords[0]+4, canvas_coords[1]+4, fill="yellow", outline="yellow", tags="drag_marker")
+            x, y = canvas_coords
+            size = 6
+            self.current_drag_item = [
+                self.canvas.create_line(x - size, y, x + size, y, fill="yellow", width=2, tags="drag_marker"),
+                self.canvas.create_line(x, y - size, x, y + size, fill="yellow", width=2, tags="drag_marker")
+            ]
         else:
             # Starting to place the second point
             canvas_p1 = self.frame_to_canvas(self.first_point)
             self.current_drag_item = self.canvas.create_line(canvas_p1, (event.x, event.y), fill="lime", dash=(4, 2), tags="drag_marker")
 
     def on_drag(self, event):
-        if not self.is_dragging or self.current_drag_item is None:
+        if not self.is_dragging or not self.current_drag_item:
             return
 
         if self.first_point is None:
-            # Dragging the first point's marker
-            self.canvas.coords(self.current_drag_item, event.x-4, event.y-4, event.x+4, event.y+4)
+            # Dragging the first point's marker (a cross made of two lines)
+            x, y = event.x, event.y
+            size = 6
+            self.canvas.coords(self.current_drag_item[0], x - size, y, x + size, y)
+            self.canvas.coords(self.current_drag_item[1], x, y - size, x, y + size)
         else:
             # Dragging the end of the preview line
             canvas_p1 = self.frame_to_canvas(self.first_point)
