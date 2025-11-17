@@ -22,6 +22,7 @@ class TrainingDataBrowser:
         self.annotations_path = annotations_path
         self.positive_samples = []
         self.negative_samples = []
+        self.hard_negative_sources = []
         self.current_images = []
         self.current_info = ""
         self.photo_images = []
@@ -72,8 +73,19 @@ class TrainingDataBrowser:
                                 "frame_idx": frame_idx,
                                 "rect": rect
                             })
+
+                    # Add sources for hard negatives (frames with both)
+                    if crosses and negative_rects:
+                        for cross in crosses:
+                            for rect in negative_rects:
+                                self.hard_negative_sources.append({
+                                    "video_path": video_path,
+                                    "frame_idx": frame_idx,
+                                    "cross": cross,
+                                    "rect": rect
+                                })
             
-            print(f"[Info] Loaded {len(self.positive_samples)} positive samples and {len(self.negative_samples)} negative samples")
+            print(f"[Info] Loaded {len(self.positive_samples)} positive samples, {len(self.negative_samples)} negative samples, and {len(self.hard_negative_sources)} hard negative sources.")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load annotations: {e}")
@@ -94,6 +106,8 @@ class TrainingDataBrowser:
         self.root.bind("<P>", lambda e: self.generate_positive_batch())
         self.root.bind("<n>", lambda e: self.generate_negative_batch())
         self.root.bind("<N>", lambda e: self.generate_negative_batch())
+        self.root.bind("<h>", lambda e: self.generate_hard_negative_batch())
+        self.root.bind("<H>", lambda e: self.generate_hard_negative_batch())
         
         # Info label
         self.info_label = ttk.Label(
@@ -139,6 +153,13 @@ class TrainingDataBrowser:
             command=self.generate_negative_batch
         )
         self.negative_button.pack(side=tk.LEFT, padx=5)
+
+        self.hard_negative_button = ttk.Button(
+            button_frame,
+            text="Generate Hard Negative (H)",
+            command=self.generate_hard_negative_batch
+        )
+        self.hard_negative_button.pack(side=tk.LEFT, padx=5)
         
         # Training controls
         train_frame = ttk.Frame(container)
@@ -202,6 +223,26 @@ class TrainingDataBrowser:
         
         self.current_info = f"Type: NEGATIVE (No Cross) - {num_samples} samples"
         self._display_batch()
+
+    def generate_hard_negative_batch(self):
+        """Generate and display 10 hard negative training samples."""
+        if not self.hard_negative_sources:
+            messagebox.showwarning("No Data", "No frames with both crosses and negative rects found. Cannot generate hard negatives.")
+            return
+        
+        self.current_images = []
+        num_samples = self.grid_cols * self.grid_rows
+        
+        for _ in range(num_samples):
+            try:
+                img = self._generate_single_hard_negative()
+                self.current_images.append(img)
+            except Exception as e:
+                print(f"[Warning] Failed to generate hard negative sample: {e}")
+                self.current_images.append(np.zeros((128, 128, 3), dtype=np.uint8))
+        
+        self.current_info = f"Type: HARD NEGATIVE - {num_samples} samples"
+        self._display_batch()
     
     def _generate_single_positive(self):
         """Generate a single positive training sample (has cross)."""
@@ -247,6 +288,65 @@ class TrainingDataBrowser:
         
         # Draw crosshair overlay
         augmented = self._draw_crosshair(augmented, cross_aug_x, cross_aug_y)
+        
+        return augmented
+    
+    def _generate_single_hard_negative(self):
+        """
+        Generate a single hard negative sample.
+        This is a sample from a 'no-cross' rect, but biased to be close to a real cross.
+        """
+        if not self.hard_negative_sources:
+            raise ValueError("No hard negative sources available.")
+
+        # Hard negatives are derived from positives
+        sample = random.choice(self.hard_negative_sources)
+        
+        # Load frame
+        frame = self._load_frame(sample["video_path"], sample["frame_idx"])
+        h, w = frame.shape[:2]
+        
+        # Denormalize cross and rect coordinates
+        cross = sample["cross"]
+        rect = sample["rect"]
+        
+        cx = cross["x"] * w
+        cy = cross["y"] * h
+        
+        x0 = rect["x0"] * w
+        y0 = rect["y0"] * h
+        x1 = rect["x1"] * w
+        y1 = rect["y1"] * h
+
+        crop_size = 128
+        half = crop_size / 2
+        
+        # Ensure the rect is large enough to source a crop from
+        if (x1 - x0) < crop_size or (y1 - y0) < crop_size:
+            # Fallback to a random easy negative if the rect is too small
+            return self._generate_single_negative()
+
+        # Find the point in the rect closest to the cross
+        # This becomes the ideal center of our hard negative crop
+        target_x = np.clip(cx, x0, x1)
+        target_y = np.clip(cy, y0, y1)
+        
+        # Add some jitter so we don't always sample the exact same spot
+        jitter_x = random.uniform(-crop_size / 4, crop_size / 4)
+        jitter_y = random.uniform(-crop_size / 4, crop_size / 4)
+        
+        center_x = target_x + jitter_x
+        center_y = target_y + jitter_y
+        
+        # Clamp the center so the entire crop stays inside the negative rect
+        center_x = np.clip(center_x, x0 + half, x1 - half)
+        center_y = np.clip(center_y, y0 + half, y1 - half)
+
+        # Extract crop
+        crop = self._extract_crop_clamped(frame, center_x, center_y, crop_size)
+        
+        # Apply augmentations (no cross to track)
+        augmented, _, _ = self._augment_image(crop, None, None)
         
         return augmented
     
