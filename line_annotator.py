@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import cv2
 from PIL import Image, ImageTk
+import numpy as np # Added for padding in magnifier
 
 class LineAnnotator:
     def __init__(self, root, video_path):
@@ -29,6 +30,12 @@ class LineAnnotator:
         self.first_point = None
         self.is_dragging = False
         self.current_drag_item = None # Holds the ID of the circle or line being dragged
+
+        # Magnifier state
+        self.magnifier_window = None
+        self.magnifier_canvas = None
+        self.magnifier_size = 160 # Display size of magnifier
+        self.magnifier_zoom = 4 # Zoom level
 
         self.root.title("Line Annotator")
         self._build_ui()
@@ -185,6 +192,9 @@ class LineAnnotator:
         if frame_coords is None: return
 
         self.is_dragging = True
+        self.canvas.config(cursor="none")
+        self._show_magnifier(event)
+
         if self.first_point is None:
             # Starting to place the first point
             canvas_coords = (event.x, event.y)
@@ -203,6 +213,8 @@ class LineAnnotator:
         if not self.is_dragging or not self.current_drag_item:
             return
 
+        self._update_magnifier(event)
+
         if self.first_point is None:
             # Dragging the first point's marker (a cross made of two lines)
             x, y = event.x, event.y
@@ -218,6 +230,8 @@ class LineAnnotator:
         if not self.is_dragging:
             return
         
+        self._hide_magnifier()
+        self.canvas.config(cursor="")
         self.is_dragging = False
         frame_coords = self.canvas_to_frame((event.x, event.y))
         if frame_coords is None:
@@ -245,11 +259,89 @@ class LineAnnotator:
     def on_mouse_move(self, event):
         pass # No longer needed for rubber-band, handled by on_drag
 
+    def _show_magnifier(self, event):
+        if self.magnifier_window:
+            self._hide_magnifier()
+
+        self.magnifier_window = tk.Toplevel(self.root)
+        self.magnifier_window.overrideredirect(True) # Borderless
+        
+        self.magnifier_canvas = tk.Canvas(self.magnifier_window, width=self.magnifier_size, height=self.magnifier_size)
+        self.magnifier_canvas.pack()
+        
+        self._update_magnifier(event)
+
+    def _hide_magnifier(self):
+        if self.magnifier_window:
+            self.magnifier_window.destroy()
+            self.magnifier_window = None
+            self.magnifier_canvas = None
+    
+    def _update_magnifier(self, event):
+        if not self.magnifier_window or self.current_frame is None:
+            return
+
+        # Center window on cursor
+        half_mag_size = self.magnifier_size // 2
+        self.magnifier_window.geometry(f"+{event.x_root - half_mag_size}+{event.y_root - half_mag_size}")
+        
+        # Get coordinates in original frame
+        frame_coords = self.canvas_to_frame((event.x, event.y))
+        
+        # --- New logic for handling out-of-bounds ---
+        patch_size = self.magnifier_size // self.magnifier_zoom
+        half_patch = patch_size // 2
+        
+        # Create a black background for our patch
+        patch = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
+
+        if frame_coords is not None:
+            fx, fy = frame_coords
+            h, w = self.current_frame.shape[:2]
+            
+            # Define the source rectangle in frame coordinates (can be out of bounds)
+            src_x0, src_y0 = int(fx - half_patch), int(fy - half_patch)
+            src_x1, src_y1 = src_x0 + patch_size, src_y0 + patch_size
+            
+            # Find the valid intersection of the source rect and the frame
+            valid_src_x0 = max(0, src_x0)
+            valid_src_y0 = max(0, src_y0)
+            valid_src_x1 = min(w, src_x1)
+            valid_src_y1 = min(h, src_y1)
+            
+            # If there is an intersection, copy the valid part
+            if valid_src_x0 < valid_src_x1 and valid_src_y0 < valid_src_y1:
+                # Region to copy from the source frame
+                frame_part = self.current_frame[valid_src_y0:valid_src_y1, valid_src_x0:valid_src_x1]
+                
+                # Define where to paste this part onto our black background patch
+                dest_x0 = valid_src_x0 - src_x0
+                dest_y0 = valid_src_y0 - src_y0
+                dest_x1 = dest_x0 + (valid_src_x1 - valid_src_x0)
+                dest_y1 = dest_y0 + (valid_src_y1 - valid_src_y0)
+                
+                patch[dest_y0:dest_y1, dest_x0:dest_x1] = frame_part
+
+        # Zoom the patch (which may be all or partially black)
+        zoomed_patch = cv2.resize(patch, (self.magnifier_size, self.magnifier_size), interpolation=cv2.INTER_NEAREST)
+        
+        # Draw a central crosshair on the magnifier
+        m_center = self.magnifier_size // 2
+        size = 8
+        cv2.line(zoomed_patch, (m_center - size, m_center), (m_center + size, m_center), (255, 0, 255), 1)
+        cv2.line(zoomed_patch, (m_center, m_center - size), (m_center, m_center + size), (255, 0, 255), 1)
+
+        # Display on magnifier canvas
+        self.magnifier_photo = ImageTk.PhotoImage(Image.fromarray(zoomed_patch))
+        self.magnifier_canvas.create_image(0, 0, anchor="nw", image=self.magnifier_photo)
+
     def prev_frame(self):
+        self._hide_magnifier()
         self.first_point = None # Reset line drawing state when changing frames
         self.load_frame(self.current_frame_idx - 1)
 
     def next_frame(self):
+        self._hide_magnifier()
         self.first_point = None # Reset line drawing state when changing frames
         self.load_frame(self.current_frame_idx + 1)
 
@@ -281,6 +373,7 @@ class LineAnnotator:
         self.lines_label.config(text=f"Lines on frame: {num_lines}")
 
     def on_resize(self, event):
+        self._hide_magnifier()
         self.display_frame()
 
     def frame_to_canvas(self, point):
