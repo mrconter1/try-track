@@ -27,7 +27,8 @@ class LineAnnotator:
 
         # State for drawing a new line
         self.first_point = None
-        self.preview_line = None
+        self.is_dragging = False
+        self.current_drag_item = None # Holds the ID of the circle or line being dragged
 
         self.root.title("Line Annotator")
         self._build_ui()
@@ -113,8 +114,9 @@ class LineAnnotator:
         self.root.bind("<Control-z>", lambda e: self.undo_last_line())
         self.root.bind("<a>", lambda e: self.prev_frame())
         self.root.bind("<d>", lambda e: self.next_frame())
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
-        self.canvas.bind("<Motion>", self.on_mouse_move)
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
 
     def load_frame(self, frame_idx):
         if not (0 <= frame_idx < self.total_frames):
@@ -155,6 +157,12 @@ class LineAnnotator:
         self.canvas.create_image(self.offset_x, self.offset_y, anchor="nw", image=self.photo_image)
 
         self.draw_annotations()
+        
+        # If a line is partially drawn, show its first point
+        if self.first_point:
+            canvas_p1 = self.frame_to_canvas(self.first_point)
+            self.canvas.create_oval(canvas_p1[0]-4, canvas_p1[1]-4, canvas_p1[0]+4, canvas_p1[1]+4, fill="lime", outline="lime")
+
         self.update_info_labels()
 
     def draw_annotations(self):
@@ -169,51 +177,79 @@ class LineAnnotator:
                 
                 self.canvas.create_line(canvas_p1, canvas_p2, fill="cyan", width=2)
     
-    def on_canvas_click(self, event):
+    def on_press(self, event):
         frame_coords = self.canvas_to_frame((event.x, event.y))
-        if frame_coords is None:
+        if frame_coords is None: return
+
+        self.is_dragging = True
+        if self.first_point is None:
+            # Starting to place the first point
+            canvas_coords = (event.x, event.y)
+            self.current_drag_item = self.canvas.create_oval(canvas_coords[0]-4, canvas_coords[1]-4, canvas_coords[0]+4, canvas_coords[1]+4, fill="yellow", outline="yellow", tags="drag_marker")
+        else:
+            # Starting to place the second point
+            canvas_p1 = self.frame_to_canvas(self.first_point)
+            self.current_drag_item = self.canvas.create_line(canvas_p1, (event.x, event.y), fill="lime", dash=(4, 2), tags="drag_marker")
+
+    def on_drag(self, event):
+        if not self.is_dragging or self.current_drag_item is None:
             return
 
         if self.first_point is None:
-            # Start a new line
-            self.first_point = frame_coords
-            # Draw a temporary circle to mark the first point
-            canvas_p1 = self.frame_to_canvas(self.first_point)
-            self.canvas.create_oval(canvas_p1[0]-4, canvas_p1[1]-4, canvas_p1[0]+4, canvas_p1[1]+4, fill="lime", outline="lime", tags="first_point_marker")
+            # Dragging the first point's marker
+            self.canvas.coords(self.current_drag_item, event.x-4, event.y-4, event.x+4, event.y+4)
         else:
-            # Finish the line
+            # Dragging the end of the preview line
+            canvas_p1 = self.frame_to_canvas(self.first_point)
+            self.canvas.coords(self.current_drag_item, canvas_p1[0], canvas_p1[1], event.x, event.y)
+
+    def on_release(self, event):
+        if not self.is_dragging:
+            return
+        
+        self.is_dragging = False
+        frame_coords = self.canvas_to_frame((event.x, event.y))
+        if frame_coords is None:
+            self.canvas.delete("drag_marker")
+            self.current_drag_item = None
+            return
+
+        if self.first_point is None:
+            # Finalized the first point
+            self.first_point = frame_coords
+            self.canvas.delete("drag_marker") # remove yellow preview
+            self.display_frame() # Redraw to show permanent green marker
+        else:
+            # Finalized the second point
             second_point = frame_coords
             
-            # Add to annotations
             if self.current_frame_idx not in self.annotations:
                 self.annotations[self.current_frame_idx] = {"lines": []}
             self.annotations[self.current_frame_idx]["lines"].append([self.first_point, second_point])
             
-            # Reset state and redraw
             self.first_point = None
-            if self.preview_line:
-                self.canvas.delete(self.preview_line)
-                self.preview_line = None
-            self.canvas.delete("first_point_marker")
+            self.canvas.delete("drag_marker")
             self.display_frame()
 
     def on_mouse_move(self, event):
-        if self.first_point:
-            # Delete old preview line
-            if self.preview_line:
-                self.canvas.delete(self.preview_line)
-            
-            # Draw new preview line
-            canvas_p1 = self.frame_to_canvas(self.first_point)
-            self.preview_line = self.canvas.create_line(canvas_p1, (event.x, event.y), fill="lime", dash=(4, 2), tags="preview_line")
+        pass # No longer needed for rubber-band, handled by on_drag
 
     def prev_frame(self):
+        self.first_point = None # Reset line drawing state when changing frames
         self.load_frame(self.current_frame_idx - 1)
 
     def next_frame(self):
+        self.first_point = None # Reset line drawing state when changing frames
         self.load_frame(self.current_frame_idx + 1)
 
     def undo_last_line(self):
+        # If currently drawing a line, undo just the first point
+        if self.first_point:
+            self.first_point = None
+            self.canvas.delete("drag_marker")
+            self.display_frame()
+            return
+
         if self.current_frame_idx in self.annotations:
             lines = self.annotations[self.current_frame_idx].get("lines", [])
             if lines:
@@ -221,6 +257,7 @@ class LineAnnotator:
                 self.display_frame()
 
     def clear_frame_annotations(self):
+        self.first_point = None
         if self.current_frame_idx in self.annotations:
             self.annotations[self.current_frame_idx]["lines"] = []
             self.display_frame()
