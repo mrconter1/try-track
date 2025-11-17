@@ -4,8 +4,41 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import os
+import random
+import bisect
+import tkinter as tk
+from tkinter import ttk, messagebox
+from PIL import Image, ImageTk
 
-# Re-define the model architecture class here so the script is self-contained
+# --- Helper Functions (from annotator) ---
+
+def find_videos_in_paths(paths):
+    video_files = []
+    supported_extensions = {".mp4", ".avi", ".mov", ".mkv"}
+    for path in paths:
+        path = os.path.abspath(path)
+        if os.path.isfile(path):
+            if os.path.splitext(path)[1].lower() in supported_extensions:
+                video_files.append(path)
+        elif os.path.isdir(path):
+            for item in os.listdir(path):
+                full_path = os.path.join(path, item)
+                if os.path.isfile(full_path) and os.path.splitext(full_path)[1].lower() in supported_extensions:
+                    video_files.append(full_path)
+    print(f"Found {len(video_files)} videos to process.")
+    return sorted(list(set(video_files)))
+
+def get_video_props(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open video file: {video_path}")
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return total_frames
+
+# --- Model Definition ---
+
 class CrossDetectorModel(nn.Module):
     """Mobile-friendly cross detection model."""
     def __init__(self):
@@ -14,145 +47,181 @@ class CrossDetectorModel(nn.Module):
         self.features = mobilenet.features
         self.avgpool = mobilenet.avgpool
         self.head = nn.Sequential(
-            nn.Linear(576, 256),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 64),
-            nn.ReLU(),
+            nn.Linear(576, 256), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(256, 64), nn.ReLU(),
             nn.Linear(64, 3)
         )
-    
     def forward(self, x):
         x = self.features(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.head(x)
-        return x
+        return self.head(x)
 
-def run_inference(video_path, model_path, frame_number, stride, threshold):
-    """Load a model and run inference on a specific video frame."""
-    
-    # --- 1. Load Model ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Info] Using device: {device}")
+# --- GUI Application ---
 
-    model = CrossDetectorModel().to(device)
-    try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
-    except FileNotFoundError:
-        print(f"[Error] Model file not found at '{model_path}'. Please train a model first.")
-        return
-    
-    model.eval()
-    print(f"[Info] Model '{model_path}' loaded successfully.")
+class InferenceViewer:
+    def __init__(self, root, video_paths, model_path, stride, threshold):
+        self.root = root
+        self.model_path = model_path
+        self.stride = stride
+        self.threshold = threshold
 
-    # --- 2. Load Frame ---
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"[Error] Could not open video file: {video_path}")
-        return
-    
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if frame_number >= total_frames:
-        print(f"[Error] Invalid frame number. Video has {total_frames} frames (0-indexed).")
-        return
+        self.video_paths = [os.path.abspath(p) for p in video_paths]
+        self.video_frame_counts = {path: get_video_props(path) for path in self.video_paths}
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    ret, frame = cap.read()
-    if not ret:
-        print(f"[Error] Failed to read frame {frame_number}.")
-        return
-    cap.release()
-    print(f"[Info] Loaded frame {frame_number} from '{video_path}'.")
+        # Proportional Sampling Setup
+        self.cumulative_frames = []
+        current_total = 0
+        for path in self.video_paths:
+            count = self.video_frame_counts.get(path, 0)
+            current_total += count
+            self.cumulative_frames.append(current_total)
+        self.total_combined_frames = current_total
 
-    # --- 3. Create Overlapping Tiles ---
-    img_h, img_w = frame.shape[:2]
-    tile_size = 128
-    tiles = []
-    tile_coords = []
+        self.root.title("Inference Viewer")
+        self._build_ui()
+        self._load_model()
 
-    for y in range(0, img_h - tile_size + 1, stride):
-        for x in range(0, img_w - tile_size + 1, stride):
-            tile = frame[y:y+tile_size, x:x+tile_size]
-            tiles.append(tile)
-            tile_coords.append((x, y))
-    
-    if not tiles:
-        print("[Error] Frame is smaller than tile size (128x128). Cannot run inference.")
-        return
+    def _build_ui(self):
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
 
-    print(f"[Info] Generated {len(tiles)} overlapping tiles.")
+        self.canvas = tk.Canvas(main_frame, bg="black", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
 
-    # --- 4. Pre-process Tiles and Run Inference ---
-    batch = []
-    for tile in tiles:
-        img = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))
-        batch.append(torch.from_numpy(img))
-    
-    batch_tensor = torch.stack(batch).to(device)
+        controls_frame = ttk.Frame(main_frame)
+        controls_frame.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
 
-    with torch.no_grad():
-        outputs = model(batch_tensor)
-    
-    # --- 5. Post-process Predictions ---
-    detections = []
-    scores = torch.sigmoid(outputs[:, 0])
-
-    for i in range(len(scores)):
-        if scores[i] > threshold:
-            tile_x, tile_y = tile_coords[i]
-            
-            # Get coordinates within the tile (normalized)
-            pred_x_norm, pred_y_norm = outputs[i, 1:].cpu().numpy()
-            
-            # Convert to pixel coordinates within the tile
-            pred_x_tile = pred_x_norm * tile_size
-            pred_y_tile = pred_y_norm * tile_size
-            
-            # Convert to global coordinates on the full frame
-            global_x = tile_x + pred_x_tile
-            global_y = tile_y + pred_y_tile
-            
-            detections.append((global_x, global_y, scores[i]))
-
-    print(f"[Info] Found {len(detections)} potential crosses above threshold {threshold}.")
-
-    # --- Optional: Non-Maximum Suppression (if you have many overlapping detections) ---
-    # (Skipping for now for simplicity, but could be added if needed)
-
-    # --- 6. Visualize Detections ---
-    output_image = frame.copy()
-    for x, y, score in detections:
-        # Draw a crosshair
-        px, py = int(x), int(y)
-        color = (0, 255, 0) # Green
-        size = 15
-        thickness = 2
-        cv2.line(output_image, (px - size, py), (px + size, py), color, thickness)
-        cv2.line(output_image, (px, py - size), (px, py + size), color, thickness)
+        self.run_button = ttk.Button(controls_frame, text="Run Inference on New Random Frame", command=self.run_new_inference)
+        self.run_button.pack(side=tk.LEFT, padx=10, pady=5)
         
-        # You can also add the score text if you want
-        # cv2.putText(output_image, f"{score:.2f}", (px + 5, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        self.info_label = ttk.Label(controls_frame, text="Click the button to start.")
+        self.info_label.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        self.root.bind("<Configure>", self._on_resize)
+        self.photo_image = None
+        self.current_frame_with_detections = None
 
-    window_name = f"Detections on Frame {frame_number}"
-    cv2.imshow(window_name, output_image)
-    print("[Info] Displaying results. Press any key to exit.")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    def _load_model(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = CrossDetectorModel().to(self.device)
+        try:
+            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+            self.model.eval()
+            print(f"[Info] Model '{self.model_path}' loaded successfully on {self.device}.")
+        except FileNotFoundError:
+            messagebox.showerror("Error", f"Model file not found: {self.model_path}")
+            self.run_button.config(state=tk.DISABLED)
+
+    def run_new_inference(self):
+        if self.total_combined_frames <= 0:
+            messagebox.showerror("Error", "No frames found in videos.")
+            return
+
+        # 1. Pick a random frame proportionally
+        global_frame_idx = random.randint(0, self.total_combined_frames - 1)
+        video_idx = bisect.bisect_left(self.cumulative_frames, global_frame_idx)
+        video_path = self.video_paths[video_idx]
+        previous_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
+        frame_idx = global_frame_idx - previous_cumulative
+
+        # 2. Load the frame
+        cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            messagebox.showerror("Error", f"Failed to read frame {frame_idx} from {video_path}")
+            return
+
+        # 3. Run inference logic
+        frame_with_detections, num_detections = self._run_inference_on_frame(frame)
+        self.current_frame_with_detections = frame_with_detections
+        
+        # 4. Display results
+        self._display_frame()
+        self.info_label.config(text=f"Video: {os.path.basename(video_path)}\nFrame: {frame_idx}\nDetections: {num_detections}")
+
+    def _run_inference_on_frame(self, frame):
+        img_h, img_w = frame.shape[:2]
+        tile_size = 128
+        tiles, tile_coords = [], []
+
+        for y in range(0, img_h - tile_size + 1, self.stride):
+            for x in range(0, img_w - tile_size + 1, self.stride):
+                tiles.append(frame[y:y+tile_size, x:x+tile_size])
+                tile_coords.append((x, y))
+        
+        if not tiles: return frame, 0
+
+        batch = []
+        for tile in tiles:
+            img = cv2.cvtColor(tile, cv2.COLOR_BGR2RGB)
+            img = np.transpose(img.astype(np.float32) / 255.0, (2, 0, 1))
+            batch.append(torch.from_numpy(img))
+        
+        batch_tensor = torch.stack(batch).to(self.device)
+        with torch.no_grad():
+            outputs = self.model(batch_tensor)
+
+        detections = []
+        scores = torch.sigmoid(outputs[:, 0])
+        for i in range(len(scores)):
+            if scores[i] > self.threshold:
+                tile_x, tile_y = tile_coords[i]
+                pred_x_norm, pred_y_norm = outputs[i, 1:].cpu().numpy()
+                global_x = tile_x + pred_x_norm * tile_size
+                global_y = tile_y + pred_y_norm * tile_size
+                detections.append((global_x, global_y))
+
+        output_image = frame.copy()
+        for x, y in detections:
+            px, py = int(x), int(y)
+            cv2.line(output_image, (px - 15, py), (px + 15, py), (0, 255, 0), 2)
+            cv2.line(output_image, (px, py - 15), (px, py + 15), (0, 255, 0), 2)
+        
+        return output_image, len(detections)
+
+    def _display_frame(self):
+        if self.current_frame_with_detections is None: return
+
+        frame_rgb = cv2.cvtColor(self.current_frame_with_detections, cv2.COLOR_BGR2RGB)
+        
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if canvas_w < 2 or canvas_h < 2: return
+
+        img_h, img_w = frame_rgb.shape[:2]
+        scale = min(canvas_w / img_w, canvas_h / img_h)
+        disp_w, disp_h = int(img_w * scale), int(img_h * scale)
+        offset_x, offset_y = (canvas_w - disp_w) // 2, (canvas_h - disp_h) // 2
+
+        resized = cv2.resize(frame_rgb, (disp_w, disp_h))
+        self.photo_image = ImageTk.PhotoImage(Image.fromarray(resized))
+        self.canvas.delete("all")
+        self.canvas.create_image(offset_x, offset_y, anchor="nw", image=self.photo_image)
+    
+    def _on_resize(self, event):
+        self._display_frame()
 
 def main():
-    parser = argparse.ArgumentParser(description="Run cross detection inference on a video frame.")
-    parser.add_argument("--video", type=str, required=True, help="Path to the video file.")
+    parser = argparse.ArgumentParser(description="Run cross detection inference on random video frames.")
+    parser.add_argument("--input", nargs='+', required=True, help="Path to video file(s) or folder(s) containing videos.")
     parser.add_argument("--model", type=str, default="cross_detector_best.pth", help="Path to the trained model .pth file.")
-    parser.add_argument("--frame", type=int, required=True, help="The frame number to process.")
-    parser.add_argument("--stride", type=int, default=64, help="Stride for overlapping tiles. Smaller stride = more detections.")
-    parser.add_argument("--threshold", type=float, default=0.8, help="Confidence threshold for a detection to be considered valid (0.0 to 1.0).")
-    
+    parser.add_argument("--stride", type=int, default=64, help="Stride for overlapping tiles.")
+    parser.add_argument("--threshold", type=float, default=0.8, help="Confidence threshold for detection.")
     args = parser.parse_args()
 
-    run_inference(args.video, args.model, args.frame, args.stride, args.threshold)
+    video_paths = find_videos_in_paths(args.input)
+    if not video_paths:
+        print("[Error] No video files found in the specified paths.")
+        return
+
+    root = tk.Tk()
+    root.geometry("1200x800")
+    app = InferenceViewer(root, video_paths, args.model, args.stride, args.threshold)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
