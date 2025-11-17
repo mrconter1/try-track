@@ -693,6 +693,30 @@ class CrossDetectionLoss(nn.Module):
         return total_loss
 
 
+class CrossDetectorModel(nn.Module):
+    """Mobile-friendly cross detection model."""
+    def __init__(self):
+        super().__init__()
+        mobilenet = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        self.features = mobilenet.features
+        self.avgpool = mobilenet.avgpool
+        self.head = nn.Sequential(
+            nn.Linear(576, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, 3) # [has_cross_logit, x_norm, y_norm]
+        )
+    
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.head(x)
+        return x
+
+
 def extract_crop_clamped(image, center_x, center_y, crop_size):
     """Helper for multiprocessing. Extracts a crop, handling boundary conditions by clamping."""
     h, w = image.shape[:2]
