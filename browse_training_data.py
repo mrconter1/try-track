@@ -523,7 +523,7 @@ class TrainingDataBrowser:
             val_loss = val_metrics["loss"]
             
             print(f"[Train] Epoch {epoch+1}/{epochs} loss={avg_loss:.4f} "
-                  f"acc={val_metrics['acc']:.3f} prec={val_metrics['prec']:.3f} rec={val_metrics['rec']:.3f} "
+                  f"acc={val_metrics['acc']:.5f} prec={val_metrics['prec']:.5f} rec={val_metrics['rec']:.5f} "
                   f"mae={val_metrics['mae_px']:.2f}px")
             
             scheduler.step(val_loss)
