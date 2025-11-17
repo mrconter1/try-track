@@ -6,6 +6,7 @@ from tkinter import ttk, messagebox
 import cv2
 from PIL import Image, ImageTk
 import numpy as np # Added for padding in magnifier
+import random # Added for random region selection
 
 class LineAnnotator:
     def __init__(self, root, video_path):
@@ -24,7 +25,8 @@ class LineAnnotator:
         self.photo_image = None
 
         # Data structure for annotations
-        self.annotations = {} # {frame_idx: {"lines": [[[x1, y1], [x2, y2]], ...]}}
+        self.annotations = {} # {frame_idx: {"regions": [{"rect": [x,y,w,h], "lines": [...]}]}}
+        self.current_region_idx = -1
 
         # State for drawing a new line
         self.first_point = None
@@ -41,7 +43,7 @@ class LineAnnotator:
         self._build_ui()
         self._load_existing_annotations()
         
-        self.load_frame(0)
+        self.load_frame_and_region(0, new_region=True)
 
     def _load_existing_annotations(self):
         output_path = "line_annotations.json"
@@ -62,9 +64,9 @@ class LineAnnotator:
             if video_data:
                 for frame_info in video_data.get("frames", []):
                     frame_idx = frame_info["frame_idx"]
-                    lines = frame_info["lines"]
-                    # Convert to pixel coordinates on load? No, they are already pixel coords.
-                    self.annotations[frame_idx] = {"lines": lines}
+                    regions = frame_info.get("regions", [])
+                    if regions:
+                        self.annotations[frame_idx] = {"regions": regions}
             
             print(f"[Info] Loaded annotations for {len(self.annotations)} frames.")
 
@@ -92,6 +94,9 @@ class LineAnnotator:
         
         self.next_button = ttk.Button(nav_frame, text="Next (D) >>", command=self.next_frame)
         self.next_button.pack(side=tk.LEFT, padx=5)
+
+        self.new_region_button = ttk.Button(nav_frame, text="New Random Region (N)", command=self.select_new_random_region)
+        self.new_region_button.pack(side=tk.LEFT, padx=5)
 
         self.frame_label = ttk.Label(nav_frame, text="Frame: 0 / 0", width=20)
         self.frame_label.pack(side=tk.LEFT, padx=5)
@@ -121,43 +126,95 @@ class LineAnnotator:
         self.root.bind("<Control-z>", lambda e: self.undo_last_line())
         self.root.bind("<a>", lambda e: self.prev_frame())
         self.root.bind("<d>", lambda e: self.next_frame())
+        self.root.bind("<n>", lambda e: self.select_new_random_region())
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
 
-    def load_frame(self, frame_idx):
+    def load_frame_and_region(self, frame_idx, region_idx=None, new_region=False):
         if not (0 <= frame_idx < self.total_frames):
             return
 
         self.current_frame_idx = frame_idx
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
         ret, frame = self.cap.read()
-        if ret:
-            self.current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.display_frame()
+        if not ret:
+            self.current_frame = None
+            return
+            
+        self.current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    def display_frame(self):
+        if new_region:
+            self.select_new_random_region(add_to_history=False)
+        else:
+            if self.current_frame_idx not in self.annotations or not self.annotations[self.current_frame_idx]["regions"]:
+                self.select_new_random_region(add_to_history=False)
+            else:
+                self.current_region_idx = region_idx if region_idx is not None else 0
+                self.display_region()
+
+    def select_new_random_region(self, add_to_history=True):
         if self.current_frame is None:
             return
 
+        h, w = self.current_frame.shape[:2]
+        region_size = 300
+        if w < region_size or h < region_size:
+            messagebox.showwarning("Warning", f"Frame is smaller than {region_size}x{region_size}, using full frame.")
+            x, y = 0, 0
+            rw, rh = w, h
+        else:
+            x = random.randint(0, w - region_size)
+            y = random.randint(0, h - region_size)
+            rw, rh = region_size, region_size
+        
+        new_region = {"rect": [x, y, rw, rh], "lines": []}
+
+        if add_to_history:
+            if self.current_frame_idx not in self.annotations:
+                self.annotations[self.current_frame_idx] = {"regions": []}
+            self.annotations[self.current_frame_idx]["regions"].append(new_region)
+            self.current_region_idx = len(self.annotations[self.current_frame_idx]["regions"]) - 1
+        else:
+            # Temporarily use this region without saving it yet
+            if self.current_frame_idx not in self.annotations:
+                self.annotations[self.current_frame_idx] = {"regions": [new_region]}
+            else:
+                 self.annotations[self.current_frame_idx]["regions"].insert(0, new_region)
+            self.current_region_idx = 0
+
+        self.display_region()
+
+    def display_region(self):
+        if self.current_frame is None or self.current_region_idx == -1:
+            return
+
+        # Extract the region
+        try:
+            region_data = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]
+            x, y, w, h = region_data["rect"]
+            self.active_region_frame = self.current_frame[y:y+h, x:x+w]
+        except (KeyError, IndexError):
+            self.canvas.delete("all")
+            self.update_info_labels()
+            return
+        
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
         
-        if canvas_w < 2 or canvas_h < 2: # Don't draw if canvas not visible yet
+        if canvas_w < 2 or canvas_h < 2:
             return
 
-        img_h, img_w = self.current_frame.shape[:2]
+        img_h, img_w = self.active_region_frame.shape[:2]
         
-        # Calculate scale to fit frame in canvas while maintaining aspect ratio
         scale = min(canvas_w / img_w, canvas_h / img_h)
         disp_w, disp_h = int(img_w * scale), int(img_h * scale)
         
-        # Store scale for converting mouse clicks to frame coordinates
         self.scale = scale
         self.offset_x = (canvas_w - disp_w) // 2
         self.offset_y = (canvas_h - disp_h) // 2
 
-        resized = cv2.resize(self.current_frame, (disp_w, disp_h))
+        resized = cv2.resize(self.active_region_frame, (disp_w, disp_h))
         
         self.photo_image = ImageTk.PhotoImage(Image.fromarray(resized))
         self.canvas.delete("all")
@@ -165,7 +222,6 @@ class LineAnnotator:
 
         self.draw_annotations()
         
-        # If a line is partially drawn, show its first point
         if self.first_point:
             canvas_p1 = self.frame_to_canvas(self.first_point)
             x, y = canvas_p1
@@ -177,62 +233,68 @@ class LineAnnotator:
 
     def draw_annotations(self):
         # First, draw the originally placed line segments faintly
-        if self.current_frame_idx in self.annotations:
-            lines = self.annotations[self.current_frame_idx].get("lines", [])
-            for line in lines:
-                p1, p2 = line
-                canvas_p1 = self.frame_to_canvas(p1)
-                canvas_p2 = self.frame_to_canvas(p2)
-                self.canvas.create_line(canvas_p1, canvas_p2, fill="#444444", width=1, dash=(2,4))
+        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+            try:
+                lines = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx].get("lines", [])
+                for line in lines:
+                    p1, p2 = line
+                    canvas_p1 = self.frame_to_canvas(p1)
+                    canvas_p2 = self.frame_to_canvas(p2)
+                    self.canvas.create_line(canvas_p1, canvas_p2, fill="#444444", width=1, dash=(2,4))
+            except IndexError:
+                pass # Region might not exist yet
 
-        if self.current_frame_idx in self.annotations:
-            lines = self.annotations[self.current_frame_idx].get("lines", [])
-            if not lines:
-                return
-            
-            h, w = self.current_frame.shape[:2]
-
-            # 1. Draw clipped, extended lines
-            for line in lines:
-                p1, p2 = np.array(line[0]), np.array(line[1])
+        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+            try:
+                region_data = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]
+                lines = region_data.get("lines", [])
+                if not lines:
+                    return
                 
-                # Create a very long line segment along the same trajectory
-                direction = p2 - p1
-                if np.linalg.norm(direction) < 1e-6: continue
-                
-                p_start = p1 - 10000 * direction
-                p_end = p1 + 10000 * direction
+                _, _, w, h = region_data["rect"]
 
-                clipped_points = self.clip_line_to_frame(p_start, p_end, (0, 0, w, h))
-                if clipped_points:
-                    start_point, end_point = clipped_points
-                    canvas_p1 = self.frame_to_canvas(start_point)
-                    canvas_p2 = self.frame_to_canvas(end_point)
-                    self.canvas.create_line(canvas_p1, canvas_p2, fill="cyan", width=2)
-            
-            # 2. Calculate and draw intersections
-            intersections = []
-            for i in range(len(lines)):
-                for j in range(i + 1, len(lines)):
-                    p1, p2 = lines[i]
-                    p3, p4 = lines[j]
-                    x1, y1 = p1; x2, y2 = p2
-                    x3, y3 = p3; x4, y4 = p4
-
-                    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-                    if abs(den) < 1e-6: continue
-
-                    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
-                    ix = x1 + t * (x2 - x1)
-                    iy = y1 + t * (y2 - y1)
+                # 1. Draw clipped, extended lines
+                for line in lines:
+                    p1, p2 = np.array(line[0]), np.array(line[1])
                     
-                    if 0 <= ix <= w and 0 <= iy <= h:
-                        intersections.append([ix, iy])
+                    direction = p2 - p1
+                    if np.linalg.norm(direction) < 1e-6: continue
+                    
+                    p_start = p1 - 10000 * direction
+                    p_end = p1 + 10000 * direction
 
-            for point in intersections:
-                canvas_p = self.frame_to_canvas(point)
-                x, y = canvas_p
-                self.canvas.create_oval(x-4, y-4, x+4, y+4, fill="red", outline="red")
+                    clipped_points = self.clip_line_to_frame(p_start, p_end, (0, 0, w, h))
+                    if clipped_points:
+                        start_point, end_point = clipped_points
+                        canvas_p1 = self.frame_to_canvas(start_point)
+                        canvas_p2 = self.frame_to_canvas(end_point)
+                        self.canvas.create_line(canvas_p1, canvas_p2, fill="cyan", width=2)
+                
+                # 2. Calculate and draw intersections
+                intersections = []
+                for i in range(len(lines)):
+                    for j in range(i + 1, len(lines)):
+                        p1, p2 = lines[i]
+                        p3, p4 = lines[j]
+                        x1, y1 = p1; x2, y2 = p2
+                        x3, y3 = p3; x4, y4 = p4
+
+                        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+                        if abs(den) < 1e-6: continue
+
+                        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+                        ix = x1 + t * (x2 - x1)
+                        iy = y1 + t * (y2 - y1)
+                        
+                        if 0 <= ix <= w and 0 <= iy <= h:
+                            intersections.append([ix, iy])
+
+                for point in intersections:
+                    canvas_p = self.frame_to_canvas(point)
+                    x, y = canvas_p
+                    self.canvas.create_oval(x-4, y-4, x+4, y+4, fill="red", outline="red")
+            except IndexError:
+                pass
 
     def on_press(self, event):
         frame_coords = self.canvas_to_frame((event.x, event.y))
@@ -290,18 +352,22 @@ class LineAnnotator:
             # Finalized the first point
             self.first_point = frame_coords
             self.canvas.delete("drag_marker") # remove yellow preview
-            self.display_frame() # Redraw to show permanent green marker
+            self.display_region() # Redraw to show permanent green marker
         else:
             # Finalized the second point
             second_point = frame_coords
             
             if self.current_frame_idx not in self.annotations:
-                self.annotations[self.current_frame_idx] = {"lines": []}
-            self.annotations[self.current_frame_idx]["lines"].append([self.first_point, second_point])
+                self.annotations[self.current_frame_idx] = {"regions": []}
+            if not self.annotations[self.current_frame_idx]["regions"]:
+                # This must be the first region for this frame
+                self.select_new_random_region()
+
+            self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]["lines"].append([self.first_point, second_point])
             
             self.first_point = None
             self.canvas.delete("drag_marker")
-            self.display_frame()
+            self.display_region()
 
     def on_mouse_move(self, event):
         pass # No longer needed for rubber-band, handled by on_drag
@@ -384,44 +450,53 @@ class LineAnnotator:
 
     def prev_frame(self):
         self._hide_magnifier()
-        self.first_point = None # Reset line drawing state when changing frames
-        self.load_frame(self.current_frame_idx - 1)
+        self.first_point = None
+        self.load_frame_and_region(self.current_frame_idx - 1)
 
     def next_frame(self):
         self._hide_magnifier()
-        self.first_point = None # Reset line drawing state when changing frames
-        self.load_frame(self.current_frame_idx + 1)
+        self.first_point = None
+        self.load_frame_and_region(self.current_frame_idx + 1)
 
     def undo_last_line(self):
         # If currently drawing a line, undo just the first point
         if self.first_point:
             self.first_point = None
             self.canvas.delete("drag_marker")
-            self.display_frame()
+            self.display_region()
             return
 
-        if self.current_frame_idx in self.annotations:
-            lines = self.annotations[self.current_frame_idx].get("lines", [])
-            if lines:
-                lines.pop()
-                self.display_frame()
+        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+            try:
+                lines = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx].get("lines", [])
+                if lines:
+                    lines.pop()
+                    self.display_region()
+            except IndexError:
+                pass
 
     def clear_frame_annotations(self):
         self.first_point = None
-        if self.current_frame_idx in self.annotations:
-            self.annotations[self.current_frame_idx]["lines"] = []
-            self.display_frame()
+        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+            try:
+                self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]["lines"] = []
+                self.display_region()
+            except IndexError:
+                pass
     
     def update_info_labels(self):
         self.frame_label.config(text=f"Frame: {self.current_frame_idx} / {self.total_frames - 1}")
         num_lines = 0
-        if self.current_frame_idx in self.annotations:
-            num_lines = len(self.annotations[self.current_frame_idx].get("lines", []))
+        if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
+            try:
+                num_lines = len(self.annotations[self.current_frame_idx]["regions"][self.current_region_idx].get("lines", []))
+            except IndexError:
+                pass
         self.lines_label.config(text=f"Lines on frame: {num_lines}")
 
     def on_resize(self, event):
         self._hide_magnifier()
-        self.display_frame()
+        self.display_region()
 
     def clip_line_to_frame(self, p1, p2, frame_rect):
         """Clips a line segment to a rectangular area."""
@@ -482,8 +557,8 @@ class LineAnnotator:
         canvas_x, canvas_y = point
         
         # Check if click is inside the displayed image area
-        if not (self.offset_x <= canvas_x <= self.offset_x + (self.current_frame.shape[1] * self.scale) and
-                self.offset_y <= canvas_y <= self.offset_y + (self.current_frame.shape[0] * self.scale)):
+        if not (self.offset_x <= canvas_x <= self.offset_x + (self.active_region_frame.shape[1] * self.scale) and
+                self.offset_y <= canvas_y <= self.offset_y + (self.active_region_frame.shape[0] * self.scale)):
             return None
 
         frame_x = (canvas_x - self.offset_x) / self.scale
@@ -518,8 +593,11 @@ class LineAnnotator:
 
         # Update or add frames from current session
         for frame_idx, data in self.annotations.items():
-            if data.get("lines"): # Only save frames that have lines
-                existing_frames[frame_idx] = {"frame_idx": frame_idx, "lines": data["lines"]}
+            if data.get("regions"):
+                # Filter out regions with no lines
+                valid_regions = [r for r in data["regions"] if r.get("lines")]
+                if valid_regions:
+                    existing_frames[frame_idx] = {"frame_idx": frame_idx, "regions": valid_regions}
         
         # Sort frames by index and update video entry
         video_entry["frames"] = sorted(existing_frames.values(), key=lambda f: f["frame_idx"])
