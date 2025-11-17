@@ -7,6 +7,7 @@ from PIL import Image, ImageTk
 import numpy as np
 import random
 import json
+import bisect
 
 def get_video_props(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -21,6 +22,17 @@ class CrossAnnotator:
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.video_frame_counts = {path: get_video_props(path) for path in self.video_paths}
+        
+        # --- Proportional Sampling Setup ---
+        self.cumulative_frames = []
+        self.total_combined_frames = 0
+        current_total = 0
+        for path in self.video_paths:
+            count = self.video_frame_counts.get(path, 0)
+            current_total += count
+            self.cumulative_frames.append(current_total)
+        self.total_combined_frames = current_total
+        # --- End Proportional Sampling ---
 
         self.current_video_path = None
         self.current_frame_idx = -1
@@ -193,14 +205,23 @@ class CrossAnnotator:
         self.display_region()
 
     def _append_new_random_frame_entry(self):
-        # This function ALWAYS finds a new random video and frame
-        video_path = random.choice(self.video_paths)
-        total_frames = self.video_frame_counts.get(video_path, 0)
-        if total_frames <= 0:
-            print(f"[Warning] Video '{video_path}' has no frames, skipping.")
+        if self.total_combined_frames <= 0:
+            messagebox.showerror("Error", "No frames found in any of the provided videos.")
             return
-        frame_idx = random.randint(0, total_frames - 1)
 
+        # --- Proportional Sampling Logic ---
+        # 1. Pick a random frame index from the combined total
+        global_frame_idx = random.randint(0, self.total_combined_frames - 1)
+
+        # 2. Find which video this global index falls into
+        video_idx = bisect.bisect_left(self.cumulative_frames, global_frame_idx)
+        video_path = self.video_paths[video_idx]
+
+        # 3. Calculate the local frame index within that video
+        previous_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
+        frame_idx = global_frame_idx - previous_cumulative
+        # --- End Proportional Sampling Logic ---
+        
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
