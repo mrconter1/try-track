@@ -166,23 +166,51 @@ class InferenceViewer:
         with torch.no_grad():
             outputs = self.model(batch_tensor)
 
-        detections = []
         scores = torch.sigmoid(outputs[:, 0])
+        raw_detections = []
         for i in range(len(scores)):
             if scores[i] > self.threshold:
                 tile_x, tile_y = tile_coords[i]
                 pred_x_norm, pred_y_norm = outputs[i, 1:].cpu().numpy()
                 global_x = tile_x + pred_x_norm * tile_size
                 global_y = tile_y + pred_y_norm * tile_size
-                detections.append((global_x, global_y))
+                raw_detections.append((global_x, global_y))
+
+        # --- Cluster raw detections ---
+        final_detections = self._cluster_detections(raw_detections)
 
         output_image = frame.copy()
-        for x, y in detections:
+        for x, y in final_detections:
             px, py = int(x), int(y)
             cv2.line(output_image, (px - 15, py), (px + 15, py), (0, 255, 0), 2)
             cv2.line(output_image, (px, py - 15), (px, py + 15), (0, 255, 0), 2)
         
-        return output_image, len(detections)
+        return output_image, len(final_detections)
+
+    def _cluster_detections(self, detections, radius=32):
+        """Group nearby detections into clusters and average them."""
+        clusters = []
+        for (x, y) in detections:
+            found_cluster = False
+            for cluster in clusters:
+                # Check distance to the cluster's center
+                center_x = np.mean([p[0] for p in cluster])
+                center_y = np.mean([p[1] for p in cluster])
+                if np.sqrt((x - center_x)**2 + (y - center_y)**2) < radius:
+                    cluster.append((x, y))
+                    found_cluster = True
+                    break
+            if not found_cluster:
+                clusters.append([(x, y)])
+        
+        # Average the points in each cluster to get the final detection
+        final_detections = []
+        for cluster in clusters:
+            avg_x = np.mean([p[0] for p in cluster])
+            avg_y = np.mean([p[1] for p in cluster])
+            final_detections.append((avg_x, avg_y))
+            
+        return final_detections
 
     def _display_frame(self):
         if self.current_frame_with_detections is None: return
