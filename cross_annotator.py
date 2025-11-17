@@ -81,32 +81,38 @@ class CrossAnnotator:
         self.canvas = tk.Canvas(main_frame, bg="black", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        controls_frame = ttk.Frame(main_frame)
-        controls_frame.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
+        sidebar_frame = ttk.Frame(main_frame)
+        sidebar_frame.grid(row=0, column=1, sticky="ns", pady=5, padx=5)
 
-        nav_frame = ttk.LabelFrame(controls_frame, text="Navigation")
-        nav_frame.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        # --- Navigation Controls ---
+        nav_frame = ttk.LabelFrame(sidebar_frame, text="Navigation")
+        nav_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10), anchor="n")
 
         self.prev_button = ttk.Button(nav_frame, text="<< Prev (A)", command=self.prev_frame)
-        self.prev_button.pack(side=tk.LEFT, padx=5)
+        self.prev_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
         
         self.next_button = ttk.Button(nav_frame, text="Next (D) >>", command=self.next_frame)
-        self.next_button.pack(side=tk.LEFT, padx=5)
+        self.next_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
 
         self.new_region_button = ttk.Button(nav_frame, text="New Random Region (N)", command=lambda: self.load_frame_and_region(self.current_frame_idx, new_region=True))
-        self.new_region_button.pack(side=tk.LEFT, padx=5)
+        self.new_region_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
 
-        self.frame_label = ttk.Label(nav_frame, text="Frame: 0 / 0", width=20)
-        self.frame_label.pack(side=tk.LEFT, padx=10)
+        # --- Info Labels ---
+        info_frame = ttk.LabelFrame(sidebar_frame, text="Info")
+        info_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10), anchor="n")
+
+        self.frame_label = ttk.Label(info_frame, text="Frame: 0 / 0")
+        self.frame_label.pack(side=tk.TOP, anchor="w", padx=5, pady=2)
         
-        self.crosses_label = ttk.Label(nav_frame, text="Crosses in region: 0")
-        self.crosses_label.pack(side=tk.LEFT, padx=10)
+        self.crosses_label = ttk.Label(info_frame, text="Crosses in region: 0")
+        self.crosses_label.pack(side=tk.TOP, anchor="w", padx=5, pady=2)
 
-        actions_frame = ttk.LabelFrame(controls_frame, text="Actions")
-        actions_frame.pack(side=tk.LEFT, padx=5)
+        # --- Action Controls ---
+        actions_frame = ttk.LabelFrame(sidebar_frame, text="Actions")
+        actions_frame.pack(side=tk.TOP, fill=tk.X, anchor="n")
         
         self.undo_button = ttk.Button(actions_frame, text="Undo (Ctrl+Z)", command=self.undo_last_cross)
-        self.undo_button.pack(side=tk.LEFT, padx=5)
+        self.undo_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
         self.root.bind("<Configure>", self.on_resize)
         self.root.bind("<Control-z>", lambda e: self.undo_last_cross())
