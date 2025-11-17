@@ -60,11 +60,13 @@ class CrossDetectorModel(nn.Module):
 # --- GUI Application ---
 
 class InferenceViewer:
-    def __init__(self, root, video_paths, model_path, stride, threshold):
+    def __init__(self, root, video_paths, model_path, stride, threshold, cluster_radius, min_hits):
         self.root = root
         self.model_path = model_path
         self.stride = stride
         self.threshold = threshold
+        self.cluster_radius = cluster_radius
+        self.min_hits = min_hits
 
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.video_frame_counts = {path: get_video_props(path) for path in self.video_paths}
@@ -177,7 +179,7 @@ class InferenceViewer:
                 raw_detections.append((global_x, global_y))
 
         # --- Cluster raw detections ---
-        final_detections = self._cluster_detections(raw_detections)
+        final_detections = self._cluster_detections(raw_detections, radius=self.cluster_radius, min_hits=self.min_hits)
 
         output_image = frame.copy()
         for x, y in final_detections:
@@ -187,7 +189,7 @@ class InferenceViewer:
         
         return output_image, len(final_detections)
 
-    def _cluster_detections(self, detections, radius=32):
+    def _cluster_detections(self, detections, radius=32, min_hits=3):
         """Group nearby detections into clusters and average them."""
         clusters = []
         for (x, y) in detections:
@@ -206,9 +208,10 @@ class InferenceViewer:
         # Average the points in each cluster to get the final detection
         final_detections = []
         for cluster in clusters:
-            avg_x = np.mean([p[0] for p in cluster])
-            avg_y = np.mean([p[1] for p in cluster])
-            final_detections.append((avg_x, avg_y))
+            if len(cluster) >= min_hits:
+                avg_x = np.mean([p[0] for p in cluster])
+                avg_y = np.mean([p[1] for p in cluster])
+                final_detections.append((avg_x, avg_y))
             
         return final_detections
 
@@ -239,6 +242,8 @@ def main():
     parser.add_argument("--model", type=str, default="cross_detector_best.pth", help="Path to the trained model .pth file.")
     parser.add_argument("--stride", type=int, default=64, help="Stride for overlapping tiles.")
     parser.add_argument("--threshold", type=float, default=0.8, help="Confidence threshold for detection.")
+    parser.add_argument("--cluster-radius", type=int, default=32, help="Radius in pixels to group multiple detections into a single cluster.")
+    parser.add_argument("--min-hits", type=int, default=3, help="Minimum number of raw detections required to form a valid cluster.")
     args = parser.parse_args()
 
     video_paths = find_videos_in_paths(args.input)
@@ -248,7 +253,7 @@ def main():
 
     root = tk.Tk()
     root.geometry("1200x800")
-    app = InferenceViewer(root, video_paths, args.model, args.stride, args.threshold)
+    app = InferenceViewer(root, video_paths, args.model, args.stride, args.threshold, args.cluster_radius, args.min_hits)
     root.mainloop()
 
 if __name__ == "__main__":
