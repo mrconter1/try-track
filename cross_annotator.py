@@ -532,18 +532,41 @@ class CrossAnnotator:
 
 def main():
     parser = argparse.ArgumentParser(description="Annotate crosses on video frames.")
-    parser.add_argument("--videos", nargs='+', required=True, help="One or more paths to video files.")
+    parser.add_argument("--input", nargs='+', required=True, help="One or more paths to video files or directories containing videos.")
     args = parser.parse_args()
+
+    video_paths = find_videos_in_paths(args.input)
+    if not video_paths:
+        messagebox.showerror("Error", "No video files found in the specified paths.")
+        return
 
     root = tk.Tk()
     try:
         root.state('zoomed')
-    except tk.TclError:
+    except tk.TTclError:
         root.geometry("1200x800")
         
-    app = CrossAnnotator(root, args.videos)
+    app = CrossAnnotator(root, video_paths)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
+
+def find_videos_in_paths(paths):
+    video_files = []
+    supported_extensions = {".mp4", ".avi", ".mov", ".mkv"}
+    for path in paths:
+        path = os.path.abspath(path)
+        if os.path.isfile(path):
+            if os.path.splitext(path)[1].lower() in supported_extensions:
+                video_files.append(path)
+        elif os.path.isdir(path):
+            for item in os.listdir(path):
+                full_path = os.path.join(path, item)
+                if os.path.isfile(full_path) and os.path.splitext(full_path)[1].lower() in supported_extensions:
+                    video_files.append(full_path)
+    
+    print(f"Found {len(video_files)} videos to process.")
+    return sorted(list(set(video_files)))
+
 
 if __name__ == "__main__":
     main()
