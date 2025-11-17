@@ -4,3 +4,5 @@
 *.png
 *.json
 profile.pstats
+cross_detector_best.pth
+cross_detector_best.pth
