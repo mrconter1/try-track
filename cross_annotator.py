@@ -32,6 +32,8 @@ class CrossAnnotator:
         self.offset_y = 0
 
         self.annotations = {}
+        self.history = [] # To store (frame_idx, region_idx) tuples
+        self.history_idx = -1
         self.current_region_idx = -1
 
         self.is_dragging = False
@@ -45,9 +47,25 @@ class CrossAnnotator:
 
         self.root.title("Cross Annotator")
         self._build_ui()
+        self._load_and_build_history()
+        
+        # The initial load_frame_and_region call is now handled by _load_and_build_history
+
+    def _load_and_build_history(self):
         self._load_existing_annotations()
         
-        self.load_frame_and_region(0, new_region=True)
+        # Build history from loaded annotations
+        if self.annotations:
+            sorted_frames = sorted(self.annotations.keys())
+            for frame_idx in sorted_frames:
+                for region_idx in range(len(self.annotations[frame_idx]["regions"])):
+                    self.history.append((frame_idx, region_idx))
+        
+        if self.history:
+            self.history_idx = 0
+            self._load_history_entry(self.history_idx)
+        else:
+            self._append_new_random_frame_entry()
 
     def _load_existing_annotations(self):
         self.annotations_path = "cross_annotations.json"
@@ -107,20 +125,20 @@ class CrossAnnotator:
         nav_frame = ttk.LabelFrame(sidebar_frame, text="Navigation")
         nav_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10), anchor="n")
 
-        self.prev_button = ttk.Button(nav_frame, text="<< Prev (A)", command=self.prev_frame)
+        self.prev_button = ttk.Button(nav_frame, text="<< Prev (A)", command=self.prev_entry)
         self.prev_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
         
-        self.next_button = ttk.Button(nav_frame, text="Next (D) >>", command=self.next_frame)
+        self.next_button = ttk.Button(nav_frame, text="Next (D) >>", command=self.next_entry)
         self.next_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
 
-        self.new_region_button = ttk.Button(nav_frame, text="New Random Region (N)", command=lambda: self.load_frame_and_region(self.current_frame_idx, new_region=True))
+        self.new_region_button = ttk.Button(nav_frame, text="New Random Region (N)", command=self.next_entry)
         self.new_region_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
 
         # --- Info Labels ---
         info_frame = ttk.LabelFrame(sidebar_frame, text="Info")
         info_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10), anchor="n")
 
-        self.frame_label = ttk.Label(info_frame, text="Frame: 0 / 0")
+        self.frame_label = ttk.Label(info_frame, text="Frame: ...\nRegion: ...", justify=tk.LEFT)
         self.frame_label.pack(side=tk.TOP, anchor="w", padx=5, pady=2)
         
         self.crosses_label = ttk.Label(info_frame, text="Crosses in region: 0")
@@ -138,40 +156,51 @@ class CrossAnnotator:
 
         self.root.bind("<Configure>", self.on_resize)
         self.root.bind("<Control-z>", lambda e: self.undo_last_cross())
-        self.root.bind("<a>", lambda e: self.prev_frame())
-        self.root.bind("<d>", lambda e: self.next_frame())
-        self.root.bind("<n>", lambda e: self.load_frame_and_region(self.current_frame_idx, new_region=True))
+        self.root.bind("<a>", lambda e: self.prev_entry())
+        self.root.bind("<d>", lambda e: self.next_entry())
+        self.root.bind("<n>", lambda e: self.next_entry())
         
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
 
-    def load_frame_and_region(self, frame_idx, region_idx=None, new_region=False):
-        if not (0 <= frame_idx < self.total_frames):
+    def _load_history_entry(self, history_idx):
+        if not (0 <= history_idx < len(self.history)):
             return
 
-        self.current_frame_idx = frame_idx
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
+        self.history_idx = history_idx
+        frame_idx, region_idx = self.history[self.history_idx]
+
+        if self.current_frame_idx != frame_idx:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = self.cap.read()
+            if not ret:
+                self.current_frame = None
+                return
+            self.current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.current_frame_idx = frame_idx
+        
+        self.current_region_idx = region_idx
+        self.display_region()
+
+    def _append_new_random_frame_entry(self):
+        # This function ALWAYS finds a new random frame
+        frame_idx = random.randint(0, self.total_frames - 1)
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = self.cap.read()
         if not ret:
-            self.current_frame = None
-            return
-            
+            print(f"[Warning] Failed to read frame {frame_idx}, trying another.")
+            # Let's try one more time to avoid getting stuck
+            frame_idx = random.randint(0, self.total_frames - 1)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = self.cap.read()
+            if not ret: return # Give up
+
         self.current_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.current_frame_idx = frame_idx
 
-        if new_region:
-            self._select_new_random_region()
-        else:
-            if self.current_frame_idx not in self.annotations or not self.annotations[self.current_frame_idx]["regions"]:
-                self._select_new_random_region()
-            else:
-                self.current_region_idx = region_idx if region_idx is not None else 0
-                self.display_region()
-
-    def _select_new_random_region(self):
-        if self.current_frame is None:
-            return
-
+        # Now, select a random region within this new frame
         h, w = self.current_frame.shape[:2]
         region_size = 500
         if w < region_size or h < region_size:
@@ -183,12 +212,21 @@ class CrossAnnotator:
         
         new_region = {"rect": [x, y, rw, rh], "crosses": []}
 
-        if self.current_frame_idx not in self.annotations:
-            self.annotations[self.current_frame_idx] = {"regions": []}
+        if frame_idx not in self.annotations:
+            self.annotations[frame_idx] = {"regions": []}
         
-        self.annotations[self.current_frame_idx]["regions"].append(new_region)
-        self.current_region_idx = len(self.annotations[self.current_frame_idx]["regions"]) - 1
+        self.annotations[frame_idx]["regions"].append(new_region)
+        new_region_idx = len(self.annotations[frame_idx]["regions"]) - 1
         
+        # This handles the case where you go back, then forward in a new direction
+        # It removes any "future" history that we are now branching away from.
+        self.history = self.history[:self.history_idx + 1]
+
+        self.history.append((frame_idx, new_region_idx))
+        self.history_idx = len(self.history) - 1
+        
+        # We have all the info for the new state, so just display it directly
+        self.current_region_idx = new_region_idx
         self.display_region()
 
     def display_region(self):
@@ -283,19 +321,38 @@ class CrossAnnotator:
         final_coords = self.current_drag_point
         if final_coords:
             if self.current_frame_idx not in self.annotations:
-                self._select_new_random_region()
+                # This case should ideally not be hit with the new logic, but as a fallback:
+                self.annotations[self.current_frame_idx] = {"regions": []}
+                # Create a placeholder region if it somehow doesn't exist
+                if not self.annotations[self.current_frame_idx]["regions"]:
+                     self.annotations[self.current_frame_idx]["regions"].append({"rect": [0,0,500,500], "crosses":[]})
+                self.current_region_idx = 0
             
             self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]["crosses"].append(final_coords)
 
         self.display_region()
 
+    def prev_entry(self):
+        self._hide_magnifier()
+        if self.history_idx > 0:
+            self._load_history_entry(self.history_idx - 1)
+
+    def next_entry(self):
+        self._hide_magnifier()
+        if self.history_idx < len(self.history) - 1:
+            # We are in the middle of history, just move forward
+            self._load_history_entry(self.history_idx + 1)
+        else:
+            # We are at the end, append a new random entry
+            self._append_new_random_frame_entry()
+
     def prev_frame(self):
         self._hide_magnifier()
-        self.load_frame_and_region(self.current_frame_idx - 1)
+        self.prev_entry()
 
     def next_frame(self):
         self._hide_magnifier()
-        self.load_frame_and_region(self.current_frame_idx + 1)
+        self.next_entry()
 
     def undo_last_cross(self):
         if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
@@ -308,7 +365,15 @@ class CrossAnnotator:
                 pass
     
     def update_info_labels(self):
-        self.frame_label.config(text=f"Frame: {self.current_frame_idx} / {self.total_frames - 1}")
+        total_regions_on_frame = 0
+        if self.current_frame_idx in self.annotations:
+            total_regions_on_frame = len(self.annotations[self.current_frame_idx].get("regions", []))
+        
+        frame_text = f"Frame: {self.current_frame_idx} / {self.total_frames - 1}"
+        region_text = f"Region: {self.current_region_idx + 1} / {total_regions_on_frame}"
+
+        self.frame_label.config(text=f"{frame_text}\n{region_text}")
+
         num_crosses = 0
         if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
             try:
