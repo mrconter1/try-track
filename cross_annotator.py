@@ -159,7 +159,7 @@ class CrossAnnotator:
         self.frame_label = ttk.Label(info_frame, text="Frame: ...\nRegion: ...", justify=tk.LEFT)
         self.frame_label.pack(side=tk.TOP, anchor="w", padx=5, pady=2)
         
-        self.crosses_label = ttk.Label(info_frame, text="Crosses in region: 0")
+        self.crosses_label = ttk.Label(info_frame, text="Crosses in region: 0", justify=tk.LEFT)
         self.crosses_label.pack(side=tk.TOP, anchor="w", padx=5, pady=2)
 
         # --- Action Controls ---
@@ -415,13 +415,36 @@ class CrossAnnotator:
 
         self.frame_label.config(text=f"{video_text}\n{frame_text}\n{region_text}")
 
-        num_crosses = 0
+        # --- Calculate and display total stats ---
+        total_crosses = 0
+        total_annotated_frames = 0
+        for video_path, frames in self.annotations.items():
+            annotated_frames_in_video = 0
+            for frame_idx, data in frames.items():
+                has_crosses_in_frame = False
+                for region in data.get("regions", []):
+                    num_crosses_in_region = len(region.get("crosses", []))
+                    if num_crosses_in_region > 0:
+                        total_crosses += num_crosses_in_region
+                        has_crosses_in_frame = True
+                if has_crosses_in_frame:
+                    annotated_frames_in_video += 1
+            total_annotated_frames += annotated_frames_in_video
+
+        # --- Display current and total stats ---
+        num_crosses_in_current_region = 0
         if self.current_video_path in self.annotations and self.current_frame_idx in self.annotations[self.current_video_path] and self.current_region_idx != -1:
             try:
-                num_crosses = len(self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx].get("crosses", []))
+                num_crosses_in_current_region = len(self.annotations[self.current_video_path][self.current_frame_idx]["regions"][self.current_region_idx].get("crosses", []))
             except IndexError:
                 pass
-        self.crosses_label.config(text=f"Crosses in region: {num_crosses}")
+        
+        stats_text = (
+            f"Crosses in region: {num_crosses_in_current_region}\n"
+            f"Total crosses: {total_crosses}\n"
+            f"Total marked frames: {total_annotated_frames}"
+        )
+        self.crosses_label.config(text=stats_text)
 
     def on_resize(self, event):
         self._hide_magnifier()
