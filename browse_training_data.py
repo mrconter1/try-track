@@ -684,8 +684,61 @@ def extract_crop_clamped(image, center_x, center_y, crop_size):
     return crop, (clamped_center_x, clamped_center_y)
 
 
+def generate_negative_samples_batch(sample_sources, frame_cache, count):
+    """Generate a batch of negative samples. Must be top-level for pickling."""
+    import random
+    import cv2
+    import numpy as np
+    
+    samples = []
+    for source in sample_sources:
+        video_path = source["video_path"]
+        frame_idx = source["frame_idx"]
+        frame = frame_cache.get((video_path, frame_idx))
+        if frame is None:
+            frame = cv2.imread(f"{video_path}/{frame_idx:06d}.jpg") # Assuming frame_idx is 0-indexed
+            if frame is None:
+                print(f"[Warning] Could not load frame {frame_idx} from {video_path}")
+                continue
+            frame_cache[(video_path, frame_idx)] = frame
+
+        x, y, w, h = source["rect"]
+        if region_frame.shape[0] < 1 or region_frame.shape[1] < 1: continue
+            
+        crop_size = 128
+        if region_frame.shape[0] < crop_size or region_frame.shape[1] < crop_size: continue
+
+        crosses = [[c["x"] * w, c["y"] * h] for c in source["crosses"]]
+        
+        w_region, h_region = region_frame.shape[:2]
+        
+        is_valid = False
+        for _ in range(20):
+            # Pick a random center for the crop
+            center_x = random.uniform(0, w_region)
+            center_y = random.uniform(0, h_region)
+            
+            # Get a random transform centered on this point
+            transform_matrix = get_random_affine_transform((center_x, center_y), (crop_size, crop_size))
+
+            # Check if any cross would land inside the crop
+            transformed_crosses = cv2.transform(np.array([[c] for c in crosses]), transform_matrix)
+            
+            if not any(0 <= tc[0][0] < crop_size and 0 <= tc[0][1] < crop_size for tc in transformed_crosses):
+                is_valid = True
+                break
+        
+        if is_valid:
+            crop = cv2.warpAffine(region_frame, transform_matrix, (crop_size, crop_size), borderMode=cv2.BORDER_REFLECT_101)
+            augmented_crop, _, _ = augment_image(crop, None, None)
+            samples.append({
+                "image": augmented_crop, "has_cross": 0, "x": 0.0, "y": 0.0, "frame_key": "negative"
+            })
+    return samples
+
+
 def augment_image(image, point_x=None, point_y=None):
-    """Apply augmentations. Must be top-level for pickling."""
+    """Apply color, noise, and flip augmentations. Must be top-level for pickling."""
     import random
     import cv2
     import numpy as np
@@ -702,22 +755,7 @@ def augment_image(image, point_x=None, point_y=None):
         image = cv2.flip(image, 0) # Vertical
         if point_y is not None:
             point_y = h - point_y
-    
-    # Random rotation and scale
-    angle = random.uniform(-15, 15)
-    scale = random.uniform(0.9, 1.1)
-    
-    center = (w / 2, h / 2)
-    M = cv2.getRotationMatrix2D(center, angle, scale)
-    
-    image = cv2.warpAffine(image, M, (w, h), borderMode=cv2.BORDER_REFLECT_101)
-    
-    if point_x is not None and point_y is not None:
-        point = np.array([[[point_x, point_y]]], dtype=np.float32)
-        point_transformed = cv2.transform(point, M)
-        point_x = point_transformed[0, 0, 0]
-        point_y = point_transformed[0, 0, 1]
-    
+            
     # Random brightness/contrast
     alpha = random.uniform(0.8, 1.2)  # contrast
     beta = random.uniform(-20, 20)    # brightness
@@ -735,6 +773,58 @@ def augment_image(image, point_x=None, point_y=None):
     return image, point_x, point_y
 
 
+def get_random_affine_transform(center, output_size):
+    """Generate a random affine transformation matrix."""
+    import random
+    import cv2
+    import numpy as np
+
+    out_w, out_h = output_size
+    
+    # Random rotation
+    angle = random.uniform(0, 360)
+    
+    # Random scale (zoom)
+    scale = random.uniform(0.9, 1.1)
+    
+    # Random non-uniform scale (stretch)
+    scale_x = scale * random.uniform(0.9, 1.1)
+    scale_y = scale * random.uniform(0.9, 1.1)
+    
+    # Random shear
+    shear_x = random.uniform(-0.1, 0.1)
+    shear_y = random.uniform(-0.1, 0.1)
+    
+    # --- Build the matrix ---
+    # 1. Start with translation to origin
+    T1 = np.float32([[1, 0, -center[0]], [0, 1, -center[1]]])
+    
+    # 2. Add Shear
+    S = np.float32([[1, shear_x, 0], [shear_y, 1, 0]])
+    
+    # 3. Add Rotation and Scale
+    R_mat = cv2.getRotationMatrix2D((0,0), angle, 1.0)
+    R = np.vstack([R_mat, [0, 0, 1]]) # to 3x3 for matrix multiplication
+    Sc = np.float32([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]])
+    
+    # Combine Scale, Shear, Rotation
+    M = (S @ R @ Sc)[:2, :]
+    
+    # 4. Translate to center of output image
+    T2 = np.float32([[1, 0, out_w / 2], [0, 1, out_h / 2]])
+    
+    # 5. Combine all transformations
+    # The transformation for warpAffine is T2 * M * T1
+    # cv2.transform needs a 3x3, so we build it up then slice
+    T1_3x3 = np.vstack([T1, [0,0,1]])
+    T2_3x3 = np.vstack([T2, [0,0,1]])
+    M_3x3 = np.vstack([M, [0,0,1]])
+    
+    final_M = (T2_3x3 @ M_3x3 @ T1_3x3)
+    
+    return final_M[:2, :]
+
+
 def draw_crosshair(image, x, y):
     """Draws a crosshair on the image for visualization."""
     if x is not None and y is not None:
@@ -745,6 +835,59 @@ def draw_crosshair(image, x, y):
         cv2.line(image, (px - 8, py), (px + 8, py), (0, 255, 0), 1)
         cv2.line(image, (px, py - 8), (px, py + 8), (0, 255, 0), 1)
     return image
+
+
+def generate_positive_samples_batch(sample_sources, frame_cache, count):
+    """Generate a batch of positive samples. Must be top-level for pickling."""
+    import random
+    import cv2
+    import numpy as np
+    
+    samples = []
+    for source in sample_sources:
+        video_path = source["video_path"]
+        frame_idx = source["frame_idx"]
+        frame = frame_cache.get((video_path, frame_idx))
+        if frame is None:
+            frame = cv2.imread(f"{video_path}/{frame_idx:06d}.jpg") # Assuming frame_idx is 0-indexed
+            if frame is None:
+                print(f"[Warning] Could not load frame {frame_idx} from {video_path}")
+                continue
+            frame_cache[(video_path, frame_idx)] = frame
+
+        x, y, w, h = source["rect"]
+        if region_frame.shape[0] < 1 or region_frame.shape[1] < 1: continue
+            
+        crop_size = 128
+        if region_frame.shape[0] < crop_size or region_frame.shape[1] < crop_size: continue
+
+        cross = random.choice(source["crosses"])
+        cross_x, cross_y = cross["x"] * w, cross["y"] * h
+            
+        # Add random offset so the cross is not always dead-center
+        offset_x = random.uniform(-20, 20)
+        offset_y = random.uniform(-20, 20)
+        center_x, center_y = cross_x + offset_x, cross_y + offset_y
+
+        # Get the random affine transformation
+        transform_matrix = get_random_affine_transform((center_x, center_y), (crop_size, crop_size))
+            
+        # Warp the image to get the augmented crop
+        crop = cv2.warpAffine(region_frame, transform_matrix, (crop_size, crop_size), borderMode=cv2.BORDER_REFLECT_101)
+            
+        # Transform the original cross coordinate to find its new position
+        original_cross_point = np.array([[[cross_x, cross_y]]])
+        transformed_cross = cv2.transform(original_cross_point, transform_matrix)
+        aug_x, aug_y = transformed_cross[0,0]
+
+        # Apply color/noise augmentations
+        augmented_crop, aug_x, aug_y = augment_image(crop, aug_x, aug_y)
+            
+        if aug_x is not None:
+            samples.append({
+                "image": augmented_crop, "has_cross": 1, "x": aug_x, "y": aug_y, "frame_key": f"{video_path}_{frame_idx}"
+            })
+    return samples
 
 
 def parse_args():
