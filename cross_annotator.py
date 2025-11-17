@@ -63,9 +63,28 @@ class CrossAnnotator:
             if video_data:
                 for frame_info in video_data.get("frames", []):
                     frame_idx = frame_info["frame_idx"]
-                    regions = frame_info.get("regions", [])
-                    if regions:
-                        self.annotations[frame_idx] = {"regions": regions}
+                    loaded_regions = frame_info.get("regions", [])
+                    
+                    processed_regions = []
+                    for region_data in loaded_regions:
+                        rect = region_data.get("rect")
+                        if not rect: continue
+                        
+                        _, _, w, h = rect
+                        
+                        denormalized_crosses = []
+                        for cross in region_data.get("crosses", []):
+                            px = cross["x"] * w
+                            py = cross["y"] * h
+                            denormalized_crosses.append([px, py])
+
+                        processed_regions.append({
+                            "rect": rect,
+                            "crosses": denormalized_crosses
+                        })
+
+                    if processed_regions:
+                        self.annotations[frame_idx] = {"regions": processed_regions}
             
             print(f"[Info] Loaded annotations for {len(self.annotations)} frames.")
 
@@ -113,6 +132,9 @@ class CrossAnnotator:
         
         self.undo_button = ttk.Button(actions_frame, text="Undo (Ctrl+Z)", command=self.undo_last_cross)
         self.undo_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+        self.export_button = ttk.Button(actions_frame, text="Export Annotations", command=self.export_annotations)
+        self.export_button.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
 
         self.root.bind("<Configure>", self.on_resize)
         self.root.bind("<Control-z>", lambda e: self.undo_last_cross())
@@ -204,7 +226,8 @@ class CrossAnnotator:
         if self.current_frame_idx in self.annotations and self.current_region_idx != -1:
             try:
                 region = self.annotations[self.current_frame_idx]["regions"][self.current_region_idx]
-                for cross in region.get("crosses", []):
+                crosses = region.get("crosses", [])
+                for cross in crosses:
                     self.draw_cross(cross, "red")
             except IndexError:
                 pass
