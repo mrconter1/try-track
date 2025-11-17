@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class TrainingDataBrowser:
@@ -137,6 +138,10 @@ class TrainingDataBrowser:
             command=self.train_model
         )
         self.train_button.pack(side=tk.LEFT, padx=10)
+        
+        # --- Progress Bar ---
+        self.progress_bar = ttk.Progressbar(container, mode='indeterminate')
+        self.progress_bar.grid(row=4, column=0, sticky="ew", pady=(10, 0))
     
     def generate_positive_batch(self):
         """Generate and display 10 positive training samples."""
@@ -537,6 +542,25 @@ class TrainingDataBrowser:
         self.progress_bar.stop()
         messagebox.showinfo("Success", "Model training finished. Best model saved to cross_detector_best.pth")
     
+    def _preload_frames(self):
+        """Load all unique frames needed for generation into memory."""
+        frame_cache = {}
+        unique_frames = set()
+        
+        for source in self.sample_sources:
+            unique_frames.add((source["video_path"], source["frame_idx"]))
+        
+        print(f"[Train] Preloading {len(unique_frames)} unique frames into memory...")
+        
+        for video_path, frame_idx in unique_frames:
+            try:
+                frame = self._load_frame(video_path, frame_idx)
+                frame_cache[(video_path, frame_idx)] = frame
+            except Exception as e:
+                print(f"[Warning] Failed to load frame {frame_idx} from {video_path}: {e}")
+        
+        return frame_cache
+
     def _split_by_frame(self, samples, test_ratio=0.2):
         """
         Split samples into train/test sets, ensuring all crops from a
@@ -691,49 +715,51 @@ def generate_negative_samples_batch(sample_sources, frame_cache, count):
     import numpy as np
     
     samples = []
-    for source in sample_sources:
-        video_path = source["video_path"]
-        frame_idx = source["frame_idx"]
-        frame = frame_cache.get((video_path, frame_idx))
-        if frame is None:
-            frame = cv2.imread(f"{video_path}/{frame_idx:06d}.jpg") # Assuming frame_idx is 0-indexed
-            if frame is None:
-                print(f"[Warning] Could not load frame {frame_idx} from {video_path}")
-                continue
-            frame_cache[(video_path, frame_idx)] = frame
+    if not sample_sources: return samples
 
-        x, y, w, h = source["rect"]
-        if region_frame.shape[0] < 1 or region_frame.shape[1] < 1: continue
-            
-        crop_size = 128
-        if region_frame.shape[0] < crop_size or region_frame.shape[1] < crop_size: continue
+    for _ in range(count):
+        try:
+            source = random.choice(sample_sources)
+            video_path = source["video_path"]
+            frame_idx = source["frame_idx"]
+            frame = frame_cache.get((video_path, frame_idx))
+            if frame is None: continue
 
-        crosses = [[c["x"] * w, c["y"] * h] for c in source["crosses"]]
-        
-        w_region, h_region = region_frame.shape[:2]
-        
-        is_valid = False
-        for _ in range(20):
-            # Pick a random center for the crop
-            center_x = random.uniform(0, w_region)
-            center_y = random.uniform(0, h_region)
+            x, y, w, h = source["rect"]
+            region_frame = frame[y:y+h, x:x+w]
+            if region_frame.shape[0] < 1 or region_frame.shape[1] < 1: continue
             
-            # Get a random transform centered on this point
-            transform_matrix = get_random_affine_transform((center_x, center_y), (crop_size, crop_size))
+            crop_size = 128
+            if region_frame.shape[0] < crop_size or region_frame.shape[1] < crop_size: continue
 
-            # Check if any cross would land inside the crop
-            transformed_crosses = cv2.transform(np.array([[c] for c in crosses]), transform_matrix)
+            crosses = [[c["x"] * w, c["y"] * h] for c in source["crosses"]]
             
-            if not any(0 <= tc[0][0] < crop_size and 0 <= tc[0][1] < crop_size for tc in transformed_crosses):
-                is_valid = True
-                break
-        
-        if is_valid:
-            crop = cv2.warpAffine(region_frame, transform_matrix, (crop_size, crop_size), borderMode=cv2.BORDER_REFLECT_101)
-            augmented_crop, _, _ = augment_image(crop, None, None)
-            samples.append({
-                "image": augmented_crop, "has_cross": 0, "x": 0.0, "y": 0.0, "frame_key": "negative"
-            })
+            w_region, h_region = region_frame.shape[:2]
+            
+            is_valid = False
+            for _ in range(20):
+                # Pick a random center for the crop
+                center_x = random.uniform(0, w_region)
+                center_y = random.uniform(0, h_region)
+                
+                # Get a random transform centered on this point
+                transform_matrix = get_random_affine_transform((center_x, center_y), (crop_size, crop_size))
+
+                # Check if any cross would land inside the crop
+                transformed_crosses = cv2.transform(np.array([[c] for c in crosses]), transform_matrix)
+                
+                if not any(0 <= tc[0][0] < crop_size and 0 <= tc[0][1] < crop_size for tc in transformed_crosses):
+                    is_valid = True
+                    break
+            
+            if is_valid:
+                crop = cv2.warpAffine(region_frame, transform_matrix, (crop_size, crop_size), borderMode=cv2.BORDER_REFLECT_101)
+                augmented_crop, _, _ = augment_image(crop, None, None)
+                samples.append({
+                    "image": augmented_crop, "has_cross": 0, "x": 0.0, "y": 0.0, "frame_key": "negative"
+                })
+        except Exception:
+            pass
     return samples
 
 
@@ -844,49 +870,55 @@ def generate_positive_samples_batch(sample_sources, frame_cache, count):
     import numpy as np
     
     samples = []
-    for source in sample_sources:
-        video_path = source["video_path"]
-        frame_idx = source["frame_idx"]
-        frame = frame_cache.get((video_path, frame_idx))
-        if frame is None:
-            frame = cv2.imread(f"{video_path}/{frame_idx:06d}.jpg") # Assuming frame_idx is 0-indexed
-            if frame is None:
-                print(f"[Warning] Could not load frame {frame_idx} from {video_path}")
-                continue
-            frame_cache[(video_path, frame_idx)] = frame
+    if not sample_sources: return samples
 
-        x, y, w, h = source["rect"]
-        if region_frame.shape[0] < 1 or region_frame.shape[1] < 1: continue
-            
-        crop_size = 128
-        if region_frame.shape[0] < crop_size or region_frame.shape[1] < crop_size: continue
+    for _ in range(count):
+        try:
+            source = random.choice(sample_sources)
+            video_path = source["video_path"]
+            frame_idx = source["frame_idx"]
+            frame = frame_cache.get((video_path, frame_idx))
+            if frame is None: continue
 
-        cross = random.choice(source["crosses"])
-        cross_x, cross_y = cross["x"] * w, cross["y"] * h
+            x, y, w, h = source["rect"]
+            region_frame = frame[y:y+h, x:x+w]
+            if region_frame.shape[0] < 1 or region_frame.shape[1] < 1: continue
             
-        # Add random offset so the cross is not always dead-center
-        offset_x = random.uniform(-20, 20)
-        offset_y = random.uniform(-20, 20)
-        center_x, center_y = cross_x + offset_x, cross_y + offset_y
+            crop_size = 128
+            if region_frame.shape[0] < crop_size or region_frame.shape[1] < crop_size: continue
 
-        # Get the random affine transformation
-        transform_matrix = get_random_affine_transform((center_x, center_y), (crop_size, crop_size))
+            cross = random.choice(source["crosses"])
+            cross_x, cross_y = cross["x"] * w, cross["y"] * h
             
-        # Warp the image to get the augmented crop
-        crop = cv2.warpAffine(region_frame, transform_matrix, (crop_size, crop_size), borderMode=cv2.BORDER_REFLECT_101)
-            
-        # Transform the original cross coordinate to find its new position
-        original_cross_point = np.array([[[cross_x, cross_y]]])
-        transformed_cross = cv2.transform(original_cross_point, transform_matrix)
-        aug_x, aug_y = transformed_cross[0,0]
+            # Add random offset so the cross is not always dead-center
+            offset_x = random.uniform(-20, 20)
+            offset_y = random.uniform(-20, 20)
+            center_x, center_y = cross_x + offset_x, cross_y + offset_y
 
-        # Apply color/noise augmentations
-        augmented_crop, aug_x, aug_y = augment_image(crop, aug_x, aug_y)
+            # Get the random affine transformation
+            transform_matrix = get_random_affine_transform((center_x, center_y), (crop_size, crop_size))
             
-        if aug_x is not None:
-            samples.append({
-                "image": augmented_crop, "has_cross": 1, "x": aug_x, "y": aug_y, "frame_key": f"{video_path}_{frame_idx}"
-            })
+            # Warp the image to get the augmented crop
+            crop = cv2.warpAffine(region_frame, transform_matrix, (crop_size, crop_size), borderMode=cv2.BORDER_REFLECT_101)
+            
+            # Transform the original cross coordinate to find its new position
+            original_cross_point = np.array([[[cross_x, cross_y]]])
+            transformed_cross = cv2.transform(original_cross_point, transform_matrix)
+            aug_x, aug_y = transformed_cross[0,0]
+
+            # Apply color/noise augmentations
+            augmented_crop, aug_x, aug_y = augment_image(crop, aug_x, aug_y)
+            
+            if aug_x is not None:
+                samples.append({
+                    "image": augmented_crop,
+                    "has_cross": 1,
+                    "x": aug_x / crop_size,
+                    "y": aug_y / crop_size,
+                    "frame_key": f"{os.path.basename(source['video_path'])}_{source['frame_idx']}"
+                })
+        except Exception:
+            pass
     return samples
 
 
