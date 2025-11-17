@@ -176,17 +176,64 @@ class LineAnnotator:
         self.update_info_labels()
 
     def draw_annotations(self):
+        # First, draw the originally placed line segments faintly
         if self.current_frame_idx in self.annotations:
             lines = self.annotations[self.current_frame_idx].get("lines", [])
             for line in lines:
                 p1, p2 = line
-                
-                # Convert from original frame coords to canvas coords
                 canvas_p1 = self.frame_to_canvas(p1)
                 canvas_p2 = self.frame_to_canvas(p2)
+                self.canvas.create_line(canvas_p1, canvas_p2, fill="#444444", width=1, dash=(2,4))
+
+        if self.current_frame_idx in self.annotations:
+            lines = self.annotations[self.current_frame_idx].get("lines", [])
+            if not lines:
+                return
+            
+            h, w = self.current_frame.shape[:2]
+
+            # 1. Draw clipped, extended lines
+            for line in lines:
+                p1, p2 = np.array(line[0]), np.array(line[1])
                 
-                self.canvas.create_line(canvas_p1, canvas_p2, fill="cyan", width=2)
-    
+                # Create a very long line segment along the same trajectory
+                direction = p2 - p1
+                if np.linalg.norm(direction) < 1e-6: continue
+                
+                p_start = p1 - 10000 * direction
+                p_end = p1 + 10000 * direction
+
+                clipped_points = self.clip_line_to_frame(p_start, p_end, (0, 0, w, h))
+                if clipped_points:
+                    start_point, end_point = clipped_points
+                    canvas_p1 = self.frame_to_canvas(start_point)
+                    canvas_p2 = self.frame_to_canvas(end_point)
+                    self.canvas.create_line(canvas_p1, canvas_p2, fill="cyan", width=2)
+            
+            # 2. Calculate and draw intersections
+            intersections = []
+            for i in range(len(lines)):
+                for j in range(i + 1, len(lines)):
+                    p1, p2 = lines[i]
+                    p3, p4 = lines[j]
+                    x1, y1 = p1; x2, y2 = p2
+                    x3, y3 = p3; x4, y4 = p4
+
+                    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+                    if abs(den) < 1e-6: continue
+
+                    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+                    ix = x1 + t * (x2 - x1)
+                    iy = y1 + t * (y2 - y1)
+                    
+                    if 0 <= ix <= w and 0 <= iy <= h:
+                        intersections.append([ix, iy])
+
+            for point in intersections:
+                canvas_p = self.frame_to_canvas(point)
+                x, y = canvas_p
+                self.canvas.create_oval(x-4, y-4, x+4, y+4, fill="red", outline="red")
+
     def on_press(self, event):
         frame_coords = self.canvas_to_frame((event.x, event.y))
         if frame_coords is None: return
@@ -375,6 +422,55 @@ class LineAnnotator:
     def on_resize(self, event):
         self._hide_magnifier()
         self.display_frame()
+
+    def clip_line_to_frame(self, p1, p2, frame_rect):
+        """Clips a line segment to a rectangular area."""
+        x1, y1 = p1
+        x2, y2 = p2
+        xmin, ymin, xmax, ymax = frame_rect
+
+        # Using Cohen-Sutherland outcodes
+        INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
+
+        def compute_outcode(x, y):
+            code = INSIDE
+            if x < xmin: code |= LEFT
+            elif x > xmax: code |= RIGHT
+            if y < ymin: code |= BOTTOM
+            elif y > ymax: code |= TOP
+            return code
+
+        outcode1 = compute_outcode(x1, y1)
+        outcode2 = compute_outcode(x2, y2)
+        
+        while True:
+            if not (outcode1 | outcode2): # Both points inside
+                return [(x1, y1), (x2, y2)]
+            elif outcode1 & outcode2: # Both points outside on the same side
+                return None
+            else:
+                x, y = 0, 0
+                outcode_out = outcode1 if outcode1 else outcode2
+
+                if outcode_out & TOP:
+                    x = x1 + (x2 - x1) * (ymax - y1) / (y2 - y1)
+                    y = ymax
+                elif outcode_out & BOTTOM:
+                    x = x1 + (x2 - x1) * (ymin - y1) / (y2 - y1)
+                    y = ymin
+                elif outcode_out & RIGHT:
+                    y = y1 + (y2 - y1) * (xmax - x1) / (x2 - x1)
+                    x = xmax
+                elif outcode_out & LEFT:
+                    y = y1 + (y2 - y1) * (xmin - x1) / (x2 - x1)
+                    x = xmin
+
+                if outcode_out == outcode1:
+                    x1, y1 = x, y
+                    outcode1 = compute_outcode(x1, y1)
+                else:
+                    x2, y2 = x, y
+                    outcode2 = compute_outcode(x2, y2)
 
     def frame_to_canvas(self, point):
         x, y = point
