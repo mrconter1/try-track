@@ -237,8 +237,8 @@ class CrossAnnotator:
         if canvas_p:
             x, y = canvas_p
             size = 8
-            self.canvas.create_line(x - size, y, x + size, y, fill=color, width=2)
-            self.canvas.create_line(x, y - size, x, y + size, fill=color, width=2)
+            self.canvas.create_line(x - size, y, x + size, y, fill=color, width=1)
+            self.canvas.create_line(x, y - size, x, y + size, fill=color, width=1)
 
     def on_press(self, event):
         frame_coords = self.canvas_to_frame((event.x, event.y))
@@ -253,8 +253,8 @@ class CrossAnnotator:
         canvas_coords = (event.x, event.y)
         x, y = canvas_coords
         size = 8
-        self.canvas.create_line(x - size, y, x + size, y, fill="yellow", width=2, tags="drag_marker")
-        self.canvas.create_line(x, y - size, x, y + size, fill="yellow", width=2, tags="drag_marker")
+        self.canvas.create_line(x - size, y, x + size, y, fill="yellow", width=1, tags="drag_marker")
+        self.canvas.create_line(x, y - size, x, y + size, fill="yellow", width=1, tags="drag_marker")
 
     def on_drag(self, event):
         if not self.is_dragging: return
@@ -269,8 +269,8 @@ class CrossAnnotator:
         canvas_coords = (event.x, event.y)
         x, y = canvas_coords
         size = 8
-        self.canvas.create_line(x - size, y, x + size, y, fill="yellow", width=2, tags="drag_marker")
-        self.canvas.create_line(x, y - size, x, y + size, fill="yellow", width=2, tags="drag_marker")
+        self.canvas.create_line(x - size, y, x + size, y, fill="yellow", width=1, tags="drag_marker")
+        self.canvas.create_line(x, y - size, x, y + size, fill="yellow", width=1, tags="drag_marker")
 
     def on_release(self, event):
         if not self.is_dragging: return
