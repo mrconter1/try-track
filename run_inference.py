@@ -277,20 +277,34 @@ class InferenceViewer:
 
         output_image = frame.copy()
         
-        # Generate all pairs of dots
+        # For each detection, find the 4 closest neighbors and draw lines to them.
         if len(final_detections) > 1:
             detections_array = np.array(final_detections)
-            all_lines = []
-            
-            for i in range(len(final_detections)):
-                for j in range(i + 1, len(final_detections)):
-                    all_lines.append((i, j))
-            
-            # Draw all lines between dots
-            for i, j in all_lines:
-                x1, y1 = final_detections[i]
-                x2, y2 = final_detections[j]
-                cv2.line(output_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
+
+            for i, p1 in enumerate(detections_array):
+                # Calculate distances to all other points
+                distances = []
+                for j, p2 in enumerate(detections_array):
+                    if i == j:
+                        continue
+                    dist = np.linalg.norm(p1 - p2)
+                    distances.append((dist, j))
+                
+                # Sort by distance and take the closest ones
+                distances.sort(key=lambda x: x[0])
+                
+                # Determine how many neighbors to connect to (up to 4)
+                num_neighbors_to_connect = min(4, len(distances))
+                
+                # Draw lines to the closest neighbors
+                for k in range(num_neighbors_to_connect):
+                    neighbor_idx = distances[k][1]
+                    p_neighbor = detections_array[neighbor_idx]
+                    
+                    x1, y1 = int(p1[0]), int(p1[1])
+                    x2, y2 = int(p_neighbor[0]), int(p_neighbor[1])
+                    
+                    cv2.line(output_image, (x1, y1), (x2, y2), (0, 255, 255), 2)
         
         # Draw crosses at detection points
         for x, y in final_detections:
