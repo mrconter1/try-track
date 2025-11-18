@@ -80,9 +80,14 @@ class InferenceViewer:
             self.cumulative_frames.append(current_total)
         self.total_combined_frames = current_total
 
+        # Track current sample
+        self.current_global_frame_idx = None
+
         self.root.title("Inference Viewer")
+        self.root.state('zoomed')
         self._build_ui()
         self._load_model()
+        self.root.after(100, self.run_new_inference)
 
     def _build_ui(self):
         main_frame = ttk.Frame(self.root)
@@ -103,6 +108,8 @@ class InferenceViewer:
         self.info_label.pack(side=tk.LEFT, padx=10, pady=5)
         
         self.root.bind("<Configure>", self._on_resize)
+        self.root.bind("<a>", lambda e: self.previous_sample())
+        self.root.bind("<d>", lambda e: self.next_sample())
         self.photo_image = None
         self.current_frame_with_detections = None
 
@@ -124,6 +131,14 @@ class InferenceViewer:
 
         # 1. Pick a random frame proportionally
         global_frame_idx = random.randint(0, self.total_combined_frames - 1)
+        self.current_global_frame_idx = global_frame_idx
+        self._load_and_display_frame(global_frame_idx)
+
+    def _load_and_display_frame(self, global_frame_idx):
+        if global_frame_idx < 0 or global_frame_idx >= self.total_combined_frames:
+            messagebox.showerror("Error", "Frame index out of range.")
+            return
+
         video_idx = bisect.bisect_left(self.cumulative_frames, global_frame_idx)
         video_path = self.video_paths[video_idx]
         previous_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
@@ -145,6 +160,22 @@ class InferenceViewer:
         # 4. Display results
         self._display_frame()
         self.info_label.config(text=f"Video: {os.path.basename(video_path)}\nFrame: {frame_idx}\nDetections: {num_detections}")
+
+    def next_sample(self):
+        if self.current_global_frame_idx is None:
+            return
+        next_idx = self.current_global_frame_idx + 1
+        if next_idx < self.total_combined_frames:
+            self.current_global_frame_idx = next_idx
+            self._load_and_display_frame(next_idx)
+
+    def previous_sample(self):
+        if self.current_global_frame_idx is None:
+            return
+        prev_idx = self.current_global_frame_idx - 1
+        if prev_idx >= 0:
+            self.current_global_frame_idx = prev_idx
+            self._load_and_display_frame(prev_idx)
 
     def _run_inference_on_frame(self, frame):
         img_h, img_w = frame.shape[:2]
