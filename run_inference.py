@@ -218,6 +218,7 @@ class InferenceViewer:
         # Draw lines to three closest neighbors for each point
         if len(final_detections) > 1:
             detections_array = np.array(final_detections)
+            drawn_connections = set()
             for i, (x, y) in enumerate(final_detections):
                 # Calculate distances to all other points
                 distances = np.sqrt(np.sum((detections_array - np.array([x, y]))**2, axis=1))
@@ -225,10 +226,14 @@ class InferenceViewer:
                 closest_indices = np.argsort(distances)[1:4]  # Skip self (index 0), take next 3
                 for j in closest_indices:
                     if j < len(final_detections):
-                        neighbor_x, neighbor_y = final_detections[j]
-                        px1, py1 = int(x), int(y)
-                        px2, py2 = int(neighbor_x), int(neighbor_y)
-                        cv2.line(output_image, (px1, py1), (px2, py2), (255, 0, 0), 2)
+                        # Create a canonical connection key (sorted tuple to avoid duplicates)
+                        connection_key = tuple(sorted([i, j]))
+                        if connection_key not in drawn_connections:
+                            drawn_connections.add(connection_key)
+                            neighbor_x, neighbor_y = final_detections[j]
+                            px1, py1 = int(x), int(y)
+                            px2, py2 = int(neighbor_x), int(neighbor_y)
+                            cv2.line(output_image, (px1, py1), (px2, py2), (255, 0, 0), 2)
         
         # Draw crosses at detection points
         for x, y in final_detections:
