@@ -110,6 +110,7 @@ class InferenceViewer:
         self.root.bind("<Configure>", self._on_resize)
         self.root.bind("<a>", lambda e: self.previous_sample())
         self.root.bind("<d>", lambda e: self.next_sample())
+        self.root.bind("<r>", lambda e: self.run_new_inference())
         self.photo_image = None
         self.current_frame_with_detections = None
 
