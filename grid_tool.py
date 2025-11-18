@@ -65,6 +65,13 @@ class GridTool:
         self.canvas_scale = 1.0
         self.photo_image = None
         self.current_frame = None
+
+        # Magnifier state
+        self.magnifier_widget = None
+        self.magnifier_size = 150  # Diameter in pixels
+        self.magnifier_zoom = 4
+        self.drag_start_pos = None
+        self.drag_start_point_pos = None
     
     def _load_frame(self, frame_idx):
         if frame_idx < 0 or frame_idx >= self.total_frames:
@@ -112,35 +119,101 @@ class GridTool:
         img_x = (event.x - self.canvas_offset_x) / self.canvas_scale
         img_y = (event.y - self.canvas_offset_y) / self.canvas_scale
         
-        # Check if clicking near an existing point to drag it
+        # Check if clicking near an existing point to start dragging with magnifier
         for i, point in enumerate(self.grid_points):
             if point is not None:
                 dist = np.sqrt((img_x - point[0])**2 + (img_y - point[1])**2)
-                if dist < 20:
+                if dist < 20 / self.canvas_scale: # Use scaled tolerance
                     self.dragging_point = i
+                    self.drag_start_pos = (event.x, event.y)
+                    self.drag_start_point_pos = point
+                    self._create_magnifier(event)
                     return
-        
-        # Find first empty slot and place point
-        for i in range(4):
-            if self.grid_points[i] is None:
-                self.grid_points[i] = (img_x, img_y)
-                self.dragging_point = i
-                self._display_frame()
-                return
     
     def _canvas_drag(self, event):
         if self.dragging_point is None or self.current_frame is None:
             return
         
-        img_x = (event.x - self.canvas_offset_x) / self.canvas_scale
-        img_y = (event.y - self.canvas_offset_y) / self.canvas_scale
+        # Calculate mouse movement delta
+        dx = event.x - self.drag_start_pos[0]
+        dy = event.y - self.drag_start_pos[1]
         
-        self.grid_points[self.dragging_point] = (img_x, img_y)
+        # Apply fine-grained movement (0.1 steps in image space)
+        # We divide by canvas_scale to convert screen pixel delta to image pixel delta
+        fine_dx = (dx / self.canvas_scale) * 0.1
+        fine_dy = (dy / self.canvas_scale) * 0.1
+        
+        new_x = self.drag_start_point_pos[0] + fine_dx
+        new_y = self.drag_start_point_pos[1] + fine_dy
+        
+        self.grid_points[self.dragging_point] = (new_x, new_y)
+        
+        self._update_magnifier(event)
         self._display_frame()
     
     def _canvas_release(self, event):
+        if self.dragging_point is not None:
+            self._destroy_magnifier()
         self.dragging_point = None
+        self.drag_start_pos = None
+        self.drag_start_point_pos = None
     
+    def _create_magnifier(self, event):
+        """Create and place the magnifier widget on the canvas."""
+        if self.magnifier_widget:
+            self._destroy_magnifier()
+        
+        self.magnifier_widget = tk.Canvas(self.canvas, width=self.magnifier_size, height=self.magnifier_size,
+                                          highlightthickness=2, highlightbackground="yellow")
+        self.magnifier_widget.place(x=event.x, y=event.y, anchor='center')
+        self._update_magnifier(event)
+
+    def _update_magnifier(self, event):
+        """Update the content and position of the magnifier."""
+        if not self.magnifier_widget or self.current_frame is None:
+            return
+
+        # Move the magnifier widget
+        self.magnifier_widget.place(x=event.x, y=event.y, anchor='center')
+        
+        # Calculate the region to capture from the original frame
+        img_x, img_y = self.grid_points[self.dragging_point]
+        
+        patch_size_img_coords = self.magnifier_size / (self.magnifier_zoom * self.canvas_scale)
+        
+        x1 = int(img_x - patch_size_img_coords / 2)
+        y1 = int(img_y - patch_size_img_coords / 2)
+        x2 = int(img_x + patch_size_img_coords / 2)
+        y2 = int(img_y + patch_size_img_coords / 2)
+
+        # Ensure coordinates are within frame bounds
+        h, w = self.current_frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        
+        if x1 >= x2 or y1 >= y2: return # Avoid invalid crop size
+        
+        patch = self.current_frame[y1:y2, x1:x2]
+        
+        # Resize patch to magnifier size for zoom effect
+        zoomed_patch = cv2.resize(patch, (self.magnifier_size, self.magnifier_size), interpolation=cv2.INTER_NEAREST)
+        zoomed_patch_rgb = cv2.cvtColor(zoomed_patch, cv2.COLOR_BGR2RGB)
+        
+        # Create PhotoImage and display it
+        self.magnifier_photo = ImageTk.PhotoImage(Image.fromarray(zoomed_patch_rgb))
+        self.magnifier_widget.create_image(0, 0, anchor='nw', image=self.magnifier_photo)
+        
+        # Draw the crosshair
+        center = self.magnifier_size / 2
+        self.magnifier_widget.create_line(center, 0, center, self.magnifier_size, fill='red', width=1)
+        self.magnifier_widget.create_line(0, center, self.magnifier_size, center, fill='red', width=1)
+        
+    def _destroy_magnifier(self):
+        """Destroy the magnifier widget."""
+        if self.magnifier_widget:
+            self.magnifier_widget.destroy()
+            self.magnifier_widget = None
+
     def _display_frame(self):
         if self.current_frame is None:
             return
