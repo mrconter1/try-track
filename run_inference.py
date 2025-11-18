@@ -219,6 +219,36 @@ class InferenceViewer:
         if len(final_detections) > 1:
             detections_array = np.array(final_detections)
             drawn_connections = set()
+            edges_from_point = {i: [] for i in range(len(final_detections))}
+            
+            def is_angle_valid(point_idx, other_idx):
+                """Check if adding edge to other_idx maintains minimum 60 degree angles."""
+                if len(edges_from_point[point_idx]) == 0:
+                    return True
+                
+                point = detections_array[point_idx]
+                other = detections_array[other_idx]
+                new_vec = other - point
+                
+                for existing_idx in edges_from_point[point_idx]:
+                    existing = detections_array[existing_idx]
+                    existing_vec = existing - point
+                    
+                    # Calculate angle between vectors
+                    dot_product = np.dot(new_vec, existing_vec)
+                    mag_new = np.linalg.norm(new_vec)
+                    mag_existing = np.linalg.norm(existing_vec)
+                    
+                    if mag_new > 0 and mag_existing > 0:
+                        cos_angle = dot_product / (mag_new * mag_existing)
+                        cos_angle = np.clip(cos_angle, -1, 1)
+                        angle_rad = np.arccos(cos_angle)
+                        angle_deg = np.degrees(angle_rad)
+                        
+                        if angle_deg < 60:
+                            return False
+                return True
+            
             for i, (x, y) in enumerate(final_detections):
                 # Calculate distances to all other points
                 distances = np.sqrt(np.sum((detections_array - np.array([x, y]))**2, axis=1))
@@ -229,11 +259,15 @@ class InferenceViewer:
                         # Create a canonical connection key (sorted tuple to avoid duplicates)
                         connection_key = tuple(sorted([i, j]))
                         if connection_key not in drawn_connections:
-                            drawn_connections.add(connection_key)
-                            neighbor_x, neighbor_y = final_detections[j]
-                            px1, py1 = int(x), int(y)
-                            px2, py2 = int(neighbor_x), int(neighbor_y)
-                            cv2.line(output_image, (px1, py1), (px2, py2), (255, 0, 0), 2)
+                            # Check angle constraints for both points
+                            if is_angle_valid(i, j) and is_angle_valid(j, i):
+                                drawn_connections.add(connection_key)
+                                edges_from_point[i].append(j)
+                                edges_from_point[j].append(i)
+                                neighbor_x, neighbor_y = final_detections[j]
+                                px1, py1 = int(x), int(y)
+                                px2, py2 = int(neighbor_x), int(neighbor_y)
+                                cv2.line(output_image, (px1, py1), (px2, py2), (255, 0, 0), 2)
         
         # Draw crosses at detection points
         for x, y in final_detections:
