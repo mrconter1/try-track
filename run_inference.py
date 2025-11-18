@@ -155,7 +155,9 @@ class InferenceViewer:
             return
 
         # 3. Run inference logic
-        frame_with_detections, num_detections = self._run_inference_on_frame(frame)
+        # Pass grayscale frame for grid fitting intensity check
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frame_with_detections, num_detections = self._run_inference_on_frame(frame, frame_gray)
         self.current_frame_with_detections = frame_with_detections
         
         # 4. Display results
@@ -201,10 +203,11 @@ class InferenceViewer:
         
         return np.sqrt((x - closest_x)**2 + (y - closest_y)**2)
 
-    def _find_grid_tiles(self, detections):
+    def _find_grid_tiles(self, detections, frame_gray=None):
         """
         Global Grid Fitting using Homography RANSAC.
         Finds a homography H that maps detections to integer grid coordinates.
+        Uses pixel intensity along grid lines to prefer dark grout lines over bright diagonals.
         """
         if len(detections) < 4:
             return []
@@ -212,129 +215,206 @@ class InferenceViewer:
         points = np.array(detections)
         n = len(points)
         
+        # Need grayscale frame for line sampling. 
+        # If not passed (in current architecture), we can't do it.
+        # We need to refactor call site to pass frame.
+        # Assuming self.current_frame_gray exists or we can access it?
+        # Actually, looking at call site in _run_inference_on_frame, 
+        # we have 'frame' available but this function signature doesn't take it.
+        # I will assume we update the call site or pass it here.
+        # For now, let's rely on a passed 'frame_gray' or fail gracefully.
+        
         # RANSAC parameters
         best_H = None
         best_inliers = []
-        best_score = -1
+        best_score = -1000 # Use negative starting score as darkness is a penalty/reward
         
-        # RANSAC Loop
-        # We need 4 points to define a homography.
-        # We'll pick 4 points that likely form a rectangle or adjacent rectangles.
-        # But simpler: We want to map 4 points (p1, p2, p3, p4) to (0,0), (1,0), (1,1), (0,1)
-        # or similar unit configurations.
-        
-        # Optimization: Instead of pure random 4 points (which rarely form a valid base basis),
-        # we iterate through triplets of points (origin, x-axis, y-axis)
-        # Pick point A as (0,0)
-        # Pick point B as (1,0)
-        # Pick point C as (0,1)
-        # That defines an affine transform (approximation of homography for small tiles).
-        # Then we refine.
-        
-        # Let's try 2000 iterations
         iterations = 2000
-        threshold = 20 # Pixel error tolerance
+        
+        # Pre-calculate intensity lookups if possible, but random access is fast enough.
         
         for _ in range(iterations):
-            # 1. Pick 3 random points to form a basis
             indices = np.random.choice(n, 3, replace=False)
             p0, p1, p2 = points[indices]
             
-            # Check if they are collinear -> degenerate
             if np.abs(np.cross(p1-p0, p2-p0)) < 1e-3: continue
             
-            # Check if they are reasonably close (to form a local grid basis)
-            # If p1 is top-left and p2 is bottom-right, we can't assume they are (1,0) and (0,1)
-            # So we force p1 and p2 to be the "closest" neighbors of p0 in the set
-            # Actually, let's just map:
-            # p0 -> (0, 0)
-            # p1 -> (1, 0)
-            # p2 -> (0, 1)
-            # And assume p1 and p2 are the grid basis vectors.
-            # Calculate the "implied" 4th point (1,1) for affine
             p3_est = p1 + p2 - p0 
             
-            # Construct source and destination points for Homography
             src_pts = np.array([p0, p1, p2, p3_est], dtype=np.float32)
             dst_pts = np.array([[0,0], [1,0], [0,1], [1,1]], dtype=np.float32)
             
-            # Compute Homography
             try:
                 H, _ = cv2.findHomography(src_pts, dst_pts)
             except:
                 continue
-                
             if H is None: continue
             
-            # 2. Transform all points to "Grid Space"
-            # pts_grid = H * pts
+            # --- Validate Geometry ---
+            H_inv = np.linalg.inv(H)
+            unit_pts = np.array([[0,0], [1,0], [0,1]], dtype=np.float32).reshape(-1, 1, 2)
+            back_pts = cv2.perspectiveTransform(unit_pts, H_inv)
             
-            # Homogeneous coordinates
+            v1 = back_pts[1][0] - back_pts[0][0] # Vector for x-axis
+            v2 = back_pts[2][0] - back_pts[0][0] # Vector for y-axis
+            
+            d_x = np.linalg.norm(v1)
+            d_y = np.linalg.norm(v2)
+            
+            if d_x < 40 or d_x > 800 or d_y < 40 or d_y > 800: continue
+            
+            # Check aspect ratio (tiles should be roughly square-ish, not 1:10)
+            ratio = d_x / d_y if d_y > 0 else 999
+            if ratio < 0.5 or ratio > 2.0: continue
+            
+            # --- Check Angle between Axes ---
+            # v1 is vector (1,0) in image space
+            # v2 is vector (0,1) in image space
+            # Calculate angle between them
+            def vec_angle(a, b):
+                norm_a = np.linalg.norm(a)
+                norm_b = np.linalg.norm(b)
+                if norm_a == 0 or norm_b == 0: return 0
+                cos_theta = np.dot(a, b) / (norm_a * norm_b)
+                return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+            
+            angle_deg = vec_angle(v1, v2)
+            
+            # In a diagonal fit (rhombus), the axes are diagonals of the square,
+            # so they are perpendicular in 3D space too?
+            # Wait. If we fit the diagonals as the axes (0,1) and (1,0),
+            # then the "tiles" become the 45-degree rotated squares.
+            # In that case, the angle is ALSO 90 degrees in 3D!
+            
+            # BUT: If we fit the diagonals, the "scale" is different.
+            # However, the visual difference is that the diagonal grid
+            # often results in oddly shaped tiles in perspective if the homography is forced.
+            
+            # Actually, looking at your image, the cyan lines form a grid of DIAMONDS/RHOMBUSES.
+            # The angle at the vertex of those cyan polygons is clearly acute (like 60 deg).
+            # The REAL grid has angles closer to 90.
+            
+            # So we enforce that the angle between the basis vectors in image space
+            # must be 'reasonable' (e.g. > 60 degrees).
+            # 45-degree diagonals will often result in ~45 degree angles in image space.
+            
+            if angle_deg < 65 or angle_deg > 115:
+                 continue
+
+            # --- Calculate Geometric Inliers ---
             ones = np.ones((n, 1))
             pts_homo = np.hstack([points, ones])
-            
-            # Project
             projected = (H @ pts_homo.T).T
-            # Normalize
             with np.errstate(divide='ignore', invalid='ignore'):
                 projected /= projected[:, 2:3]
             
             grid_coords = projected[:, :2]
-            
-            # 3. Check how many points are close to Integers
-            # Distance to nearest integer
             nearest_int = np.round(grid_coords)
             dist = np.linalg.norm(grid_coords - nearest_int, axis=1)
             
-            # We need to transform the error BACK to image space to compare with threshold?
-            # Or just check if "grid consistency" is high.
-            # Actually, simple grid consistency in grid space is often enough if H is not degenerate.
-            # BUT, degenerate H (squashing everything to 0) gives perfect score.
-            # So we must check if the scale is reasonable.
-            
-            # Check scale: distance between (0,0) and (1,0) in image space
-            H_inv = np.linalg.inv(H)
-            
-            # Map (0,0) and (1,0) back
-            unit_pts = np.array([[0,0], [1,0], [0,1]], dtype=np.float32).reshape(-1, 1, 2)
-            back_pts = cv2.perspectiveTransform(unit_pts, H_inv)
-            d_x = np.linalg.norm(back_pts[1] - back_pts[0])
-            d_y = np.linalg.norm(back_pts[2] - back_pts[0])
-            
-            # Reasonable grid size constraint (e.g. tile > 50px, < 1000px)
-            if d_x < 50 or d_x > 800 or d_y < 50 or d_y > 800:
-                continue
-                
-            # Count inliers (points that map close to integers)
-            # Use loose tolerance in grid space (e.g. 0.15 unit)
             current_inliers = []
-            score = 0
-            
+            geo_score = 0
             for i in range(n):
                 if dist[i] < 0.15:
                     current_inliers.append(i)
-                    score += 1
+                    geo_score += 1
             
-            if score > best_score:
-                best_score = score
+            if geo_score < 4: continue
+            
+            # --- Calculate Photometric Score (Grout Darkness) ---
+            photo_score = 0
+            if frame_gray is not None:
+                # Calculate global median brightness once
+                # (Actually, compute it only once outside the loop if possible, but safe here)
+                global_median = np.median(frame_gray)
+
+                # We want to check if the lines defined by this grid align with dark streaks (grout)
+                # vs passing through bright areas (diagonal crossing tiles).
+                
+                H_inv_curr = np.linalg.inv(H)
+                inlier_grid_coords = np.round(grid_coords[current_inliers]).astype(int)
+                
+                # Find connected pairs in this hypothesis
+                connected_pairs = []
+                inlier_indices_local = current_inliers
+                num_inliers = len(inlier_indices_local)
+                if num_inliers > 1:
+                    coords = inlier_grid_coords
+                    # fast pairwise check
+                    for i in range(num_inliers):
+                        for j in range(i+1, num_inliers):
+                            du = coords[i][0] - coords[j][0]
+                            dv = coords[i][1] - coords[j][1]
+                            if du*du + dv*dv == 1:
+                                connected_pairs.append((inlier_indices_local[i], inlier_indices_local[j]))
+                
+                segments_to_check = []
+                if connected_pairs:
+                    import random
+                    if len(connected_pairs) > 5:
+                        indices_to_check = random.sample(range(len(connected_pairs)), 5)
+                        for idx in indices_to_check:
+                            pA = points[connected_pairs[idx][0]]
+                            pB = points[connected_pairs[idx][1]]
+                            segments_to_check.append((pA, pB))
+                    else:
+                        for pA_idx, pB_idx in connected_pairs:
+                            segments_to_check.append((points[pA_idx], points[pB_idx]))
+                else:
+                    pts_basis = cv2.perspectiveTransform(np.array([[[0,0],[1,0],[0,1]]], dtype=np.float32), H_inv_curr)[0]
+                    segments_to_check.append((pts_basis[0], pts_basis[1]))
+                    segments_to_check.append((pts_basis[0], pts_basis[2]))
+                
+                dark_votes = 0
+                
+                for pStart, pEnd in segments_to_check:
+                    num_s = 20
+                    xs = np.linspace(pStart[0], pEnd[0], num_s)
+                    ys = np.linspace(pStart[1], pEnd[1], num_s)
+                    
+                    valid_s = 0
+                    dark_s = 0
+                    h_img, w_img = frame_gray.shape
+                    
+                    for k in range(num_s):
+                        x, y = int(xs[k]), int(ys[k])
+                        if 0 <= x < w_img and 0 <= y < h_img:
+                            val = frame_gray[y, x]
+                            valid_s += 1
+                            # Use stricter threshold: grout is usually significantly darker
+                            if val < global_median * 0.9: 
+                                dark_s += 1
+                    
+                    if valid_s > 5:
+                        ratio = dark_s / valid_s
+                        # A grout line should be mostly dark.
+                        if ratio > 0.3: 
+                            dark_votes += 3
+                        else:
+                            dark_votes -= 2 # Strong penalty for bright lines (diagonals)
+                            
+                photo_score = dark_votes
+                
+            final_score = geo_score + photo_score
+            
+            if final_score > best_score:
+                best_score = final_score
                 best_H = H
                 best_inliers = current_inliers
         
         if best_H is None or len(best_inliers) < 4:
             return []
             
-        # --- Re-Fit H with all inliers for better accuracy ---
-        # Map inliers to their nearest integer coordinates
+        # --- Re-Fit H with all inliers ---
         src_refine = []
         dst_refine = []
         
         ones = np.ones((len(best_inliers), 1))
         inlier_pts = points[best_inliers]
         inlier_pts_homo = np.hstack([inlier_pts, ones])
-        
         projected = (best_H @ inlier_pts_homo.T).T
         projected /= projected[:, 2:3]
-        grid_coords = np.round(projected[:, :2]) # Snap to integer
+        grid_coords = np.round(projected[:, :2])
         
         for k, idx in enumerate(best_inliers):
             src_refine.append(points[idx])
@@ -343,42 +423,23 @@ class InferenceViewer:
         src_refine = np.array(src_refine, dtype=np.float32)
         dst_refine = np.array(dst_refine, dtype=np.float32)
         
-        # Compute Final Homography
         H_final, _ = cv2.findHomography(src_refine, dst_refine)
         if H_final is None: return []
         
         # --- Generate Tiles ---
-        # Determine bounds of the grid
         u_min, v_min = np.min(dst_refine, axis=0).astype(int)
         u_max, v_max = np.max(dst_refine, axis=0).astype(int)
-        
         H_inv = np.linalg.inv(H_final)
         tiles = []
-        
-        # Iterate through the bounding box of the grid
-        # Add padding to fill the screen?
         padding = 1
+        
         for u in range(u_min - padding, u_max + padding):
             for v in range(v_min - padding, v_max + padding):
-                # Create tile quad in grid space
-                # (u,v) -> (u+1, v) -> (u+1, v+1) -> (u, v+1)
-                quad_grid = np.array([
-                    [u, v],
-                    [u+1, v],
-                    [u+1, v+1],
-                    [u, v+1]
-                ], dtype=np.float32).reshape(-1, 1, 2)
-                
-                # Warp back to image space
+                quad_grid = np.array([[u,v],[u+1,v],[u+1,v+1],[u,v+1]], dtype=np.float32).reshape(-1, 1, 2)
                 quad_img = cv2.perspectiveTransform(quad_grid, H_inv).reshape(4, 2)
-                
-                # Check if tile is valid (e.g. positive area, not twisted)
-                # and somewhat close to the screen/detection area
                 center = np.mean(quad_img, axis=0)
-                
-                # Simple check: is it within reasonable bounds of detected points?
                 dists = np.linalg.norm(points - center, axis=1)
-                if np.min(dists) < 400: # Only draw tiles near detections
+                if np.min(dists) < 400:
                     tiles.append(quad_img)
                     
         return tiles
@@ -488,7 +549,7 @@ class InferenceViewer:
         min_dist = self._closest_distance_between_segments(p1, p2, p3, p4)
         return min_dist <= threshold
 
-    def _run_inference_on_frame(self, frame):
+    def _run_inference_on_frame(self, frame, frame_gray=None):
         img_h, img_w = frame.shape[:2]
         tile_size = 128
         tiles, tile_coords = [], []
@@ -525,8 +586,8 @@ class InferenceViewer:
 
         output_image = frame.copy()
         
-        # Find and draw grid tiles
-        grid_tiles = self._find_grid_tiles(final_detections)
+        # Find and draw grid tiles (using RANSAC + Intensity)
+        grid_tiles = self._find_grid_tiles(final_detections, frame_gray)
         
         for tile in grid_tiles:
             # Sort points radially to draw the polygon correctly
