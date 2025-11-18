@@ -427,20 +427,55 @@ class InferenceViewer:
         if H_final is None: return []
         
         # --- Generate Tiles ---
-        u_min, v_min = np.min(dst_refine, axis=0).astype(int)
-        u_max, v_max = np.max(dst_refine, axis=0).astype(int)
+        # Calculate grid bounds based on the IMAGE CORNERS
+        # Map image corners (0,0), (w,0), (w,h), (0,h) to grid space
+        img_h, img_w = frame_gray.shape
+        img_corners = np.array([
+            [0, 0],
+            [img_w, 0],
+            [img_w, img_h],
+            [0, img_h]
+        ], dtype=np.float32)
+        
+        img_corners_homo = np.hstack([img_corners, np.ones((4, 1))])
+        grid_corners_proj = (H_final @ img_corners_homo.T).T
+        grid_corners_proj /= grid_corners_proj[:, 2:3]
+        grid_corners = grid_corners_proj[:, :2]
+        
+        u_min_img = int(np.floor(np.min(grid_corners[:, 0])))
+        u_max_img = int(np.ceil(np.max(grid_corners[:, 0])))
+        v_min_img = int(np.floor(np.min(grid_corners[:, 1])))
+        v_max_img = int(np.ceil(np.max(grid_corners[:, 1])))
+        
+        # Sanity check limits to avoid hanging on infinite planes
+        # Limit to a reasonable range around detected points
+        u_mean = np.mean(dst_refine[:, 0])
+        v_mean = np.mean(dst_refine[:, 1])
+        range_limit = 30 # Max 30 tiles away from center
+        
+        u_start = max(u_min_img, int(u_mean - range_limit))
+        u_end = min(u_max_img, int(u_mean + range_limit))
+        v_start = max(v_min_img, int(v_mean - range_limit))
+        v_end = min(v_max_img, int(v_mean + range_limit))
+        
         H_inv = np.linalg.inv(H_final)
         tiles = []
-        padding = 1
         
-        for u in range(u_min - padding, u_max + padding):
-            for v in range(v_min - padding, v_max + padding):
+        for u in range(u_start, u_end + 1):
+            for v in range(v_start, v_end + 1):
                 quad_grid = np.array([[u,v],[u+1,v],[u+1,v+1],[u,v+1]], dtype=np.float32).reshape(-1, 1, 2)
                 quad_img = cv2.perspectiveTransform(quad_grid, H_inv).reshape(4, 2)
-                center = np.mean(quad_img, axis=0)
-                dists = np.linalg.norm(points - center, axis=1)
-                if np.min(dists) < 400:
-                    tiles.append(quad_img)
+                
+                # Check if tile is visible on screen
+                # Simple AABB check
+                q_min_x, q_min_y = np.min(quad_img, axis=0)
+                q_max_x, q_max_y = np.max(quad_img, axis=0)
+                
+                if (q_max_x < 0 or q_min_x > img_w or 
+                    q_max_y < 0 or q_min_y > img_h):
+                    continue
+                
+                tiles.append(quad_img)
                     
         return tiles
 
