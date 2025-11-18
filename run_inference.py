@@ -178,6 +178,68 @@ class InferenceViewer:
             self.current_global_frame_idx = prev_idx
             self._load_and_display_frame(prev_idx)
 
+    def _distance_point_to_segment(self, p, a, b):
+        """Calculate minimum distance from point p to line segment ab."""
+        x, y = p
+        x1, y1 = a
+        x2, y2 = b
+        
+        # Vector from a to b
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        # If segment is a point
+        if dx == 0 and dy == 0:
+            return np.sqrt((x - x1)**2 + (y - y1)**2)
+        
+        # Parameter t for closest point on segment
+        t = max(0, min(1, ((x - x1) * dx + (y - y1) * dy) / (dx**2 + dy**2)))
+        
+        # Closest point on segment
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+        
+        return np.sqrt((x - closest_x)**2 + (y - closest_y)**2)
+    
+    def _closest_distance_between_segments(self, p1, p2, p3, p4):
+        """Calculate the minimum distance between two line segments."""
+        # Distance from p1 to segment p3-p4
+        d1 = self._distance_point_to_segment(p1, p3, p4)
+        # Distance from p2 to segment p3-p4
+        d2 = self._distance_point_to_segment(p2, p3, p4)
+        # Distance from p3 to segment p1-p2
+        d3 = self._distance_point_to_segment(p3, p1, p2)
+        # Distance from p4 to segment p1-p2
+        d4 = self._distance_point_to_segment(p4, p1, p2)
+        
+        return min(d1, d2, d3, d4)
+
+    def _line_intersection(self, p1, p2, p3, p4, threshold=32):
+        """Check if two line segments (p1-p2) and (p3-p4) intersect with tolerance threshold."""
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+        x4, y4 = p4
+        
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(denom) < 1e-10:
+            # Parallel or coincident lines - check if they're close
+            min_dist = self._closest_distance_between_segments(p1, p2, p3, p4)
+            return min_dist <= threshold
+        
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+        
+        # Check if intersection is within both segments (with threshold tolerance)
+        if -threshold/100 < t < 1 + threshold/100 and -threshold/100 < u < 1 + threshold/100:
+            ix = x1 + t * (x2 - x1)
+            iy = y1 + t * (y2 - y1)
+            return True
+        
+        # If not a perfect intersection, check if segments are close enough
+        min_dist = self._closest_distance_between_segments(p1, p2, p3, p4)
+        return min_dist <= threshold
+
     def _run_inference_on_frame(self, frame):
         img_h, img_w = frame.shape[:2]
         tile_size = 128
@@ -215,59 +277,51 @@ class InferenceViewer:
 
         output_image = frame.copy()
         
-        # Draw lines to three closest neighbors for each point
+        # Generate all pairs of dots
         if len(final_detections) > 1:
             detections_array = np.array(final_detections)
-            drawn_connections = set()
-            edges_from_point = {i: [] for i in range(len(final_detections))}
+            all_lines = []
             
-            def is_angle_valid(point_idx, other_idx):
-                """Check if adding edge to other_idx maintains minimum 60 degree angles."""
-                if len(edges_from_point[point_idx]) == 0:
-                    return True
-                
-                point = detections_array[point_idx]
-                other = detections_array[other_idx]
-                new_vec = other - point
-                
-                for existing_idx in edges_from_point[point_idx]:
-                    existing = detections_array[existing_idx]
-                    existing_vec = existing - point
-                    
-                    # Calculate angle between vectors
-                    dot_product = np.dot(new_vec, existing_vec)
-                    mag_new = np.linalg.norm(new_vec)
-                    mag_existing = np.linalg.norm(existing_vec)
-                    
-                    if mag_new > 0 and mag_existing > 0:
-                        cos_angle = dot_product / (mag_new * mag_existing)
-                        cos_angle = np.clip(cos_angle, -1, 1)
-                        angle_rad = np.arccos(cos_angle)
-                        angle_deg = np.degrees(angle_rad)
-                        
-                        if angle_deg < 60:
-                            return False
-                return True
+            for i in range(len(final_detections)):
+                for j in range(i + 1, len(final_detections)):
+                    all_lines.append((i, j))
             
-            for i, (x, y) in enumerate(final_detections):
-                # Calculate distances to all other points
-                distances = np.sqrt(np.sum((detections_array - np.array([x, y]))**2, axis=1))
-                # Get indices of three closest neighbors (excluding self)
-                closest_indices = np.argsort(distances)[1:4]  # Skip self (index 0), take next 3
-                for j in closest_indices:
-                    if j < len(final_detections):
-                        # Create a canonical connection key (sorted tuple to avoid duplicates)
-                        connection_key = tuple(sorted([i, j]))
-                        if connection_key not in drawn_connections:
-                            # Check angle constraints for both points
-                            if is_angle_valid(i, j) and is_angle_valid(j, i):
-                                drawn_connections.add(connection_key)
-                                edges_from_point[i].append(j)
-                                edges_from_point[j].append(i)
-                                neighbor_x, neighbor_y = final_detections[j]
-                                px1, py1 = int(x), int(y)
-                                px2, py2 = int(neighbor_x), int(neighbor_y)
-                                cv2.line(output_image, (px1, py1), (px2, py2), (255, 0, 0), 2)
+            # Calculate perpendicular distance score for each line (sum of distances to other lines within 16px)
+            distance_scores = {}
+            proximity_threshold = 16
+            
+            for idx, (i, j) in enumerate(all_lines):
+                p1 = final_detections[i]
+                p2 = final_detections[j]
+                score = 0.0
+                
+                for other_idx, (k, l) in enumerate(all_lines):
+                    if idx != other_idx:
+                        p3 = final_detections[k]
+                        p4 = final_detections[l]
+                        dist = self._closest_distance_between_segments(p1, p2, p3, p4)
+                        if dist < proximity_threshold:
+                            score += dist
+                
+                distance_scores[idx] = score
+            
+            # Normalize scores to 0-1 range for color mapping
+            if distance_scores:
+                min_score = min(distance_scores.values())
+                max_score = max(distance_scores.values())
+                score_range = max_score - min_score if max_score > min_score else 1
+                
+                normalized_scores = {}
+                for idx in distance_scores:
+                    normalized_scores[idx] = (distance_scores[idx] - min_score) / score_range if score_range > 0 else 0
+                
+                # Highlight the line with highest score in bright red with thicker stroke
+                max_score_idx = max(normalized_scores, key=normalized_scores.get)
+                i, j = all_lines[max_score_idx]
+                x1, y1 = final_detections[i]
+                x2, y2 = final_detections[j]
+                cv2.line(output_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 4)
+                print(f"[Best Line] Line {max_score_idx} (points {i}-{j}) score: {distance_scores[max_score_idx]:.2f}")
         
         # Draw crosses at detection points
         for x, y in final_detections:
