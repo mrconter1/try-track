@@ -200,6 +200,163 @@ class InferenceViewer:
         closest_y = y1 + t * dy
         
         return np.sqrt((x - closest_x)**2 + (y - closest_y)**2)
+
+    def _find_grid_tiles(self, detections):
+        """Find quadrilateral tiles formed by detection points."""
+        if len(detections) < 4:
+            return []
+            
+        points = np.array(detections)
+        n = len(points)
+        
+        # Calculate all pairwise distances
+        dists = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = np.linalg.norm(points[i] - points[j])
+                dists[i, j] = dists[j, i] = d
+        
+        # Determine a local neighborhood radius.
+        nearest_dists = []
+        for i in range(n):
+            dd = sorted(dists[i])[1:]
+            if dd: nearest_dists.append(dd[0])
+            
+        if not nearest_dists: return []
+        median_nn = np.median(nearest_dists)
+        
+        # Strict search radius: barely larger than a grid side.
+        # Grid diagonal is ~1.414 * side. 
+        # If we set radius < 1.41, we theoretically exclude diagonals entirely.
+        # But due to perspective/noise, let's set it just above 1.0 but below 1.4
+        # effectively forcing connections only along the grid axes.
+        search_radius = median_nn * 1.35
+        
+        neighbors = []
+        for i in range(n):
+            # potential neighbors
+            candidates = [j for j in range(n) if i != j and dists[i, j] <= search_radius]
+            
+            valid_neighbors = []
+            for j in candidates:
+                # OCCLUSION CHECK:
+                # Verify no other point k lies "between" i and j.
+                # If k is close to the segment i-j, then i-j is not a direct grid edge
+                is_occluded = False
+                dist_ij = dists[i, j]
+                
+                for k in range(n):
+                    if k == i or k == j: continue
+                    
+                    # Check if k is projected onto the segment i-j
+                    # and is reasonably close to the line
+                    d_k_line = self._distance_point_to_segment(points[k], points[i], points[j])
+                    
+                    # If k is very close to the line...
+                    if d_k_line < median_nn * 0.2:
+                        # ...and k is actually "between" i and j (not behind)
+                        # check distances: i-k + k-j approx equals i-j
+                        if dists[i, k] < dist_ij and dists[j, k] < dist_ij:
+                            is_occluded = True
+                            break
+                
+                if not is_occluded:
+                    valid_neighbors.append(j)
+            
+            # Sort neighbors by distance
+            valid_neighbors.sort(key=lambda idx: dists[i, idx])
+            neighbors.append(valid_neighbors)
+            
+        tiles = set()
+        
+        # Find cycles of length 4: i -> j -> k -> l -> i
+        for i in range(n):
+            for j in neighbors[i]:
+                if j <= i: continue 
+                
+                for k in neighbors[j]:
+                    if k == i or k == j: continue
+                    # Angle check i-j-k must be roughly 90 deg (between 60 and 120)
+                    # Optimization: check partial geometry early
+                    
+                    for l in neighbors[k]:
+                        if l == k or l == j or l == i: continue
+                        
+                        # Check if l closes the loop to i
+                        if i in neighbors[l]:
+                            # Found cycle i-j-k-l
+                            indices = [i, j, k, l]
+                            if self._is_valid_tile(points, indices):
+                                tile_indices = tuple(sorted(indices))
+                                tiles.add(tile_indices)
+
+        return [points[list(t)] for t in tiles]
+
+    def _is_valid_tile(self, all_points, indices):
+        pts = all_points[list(indices)]
+        
+        # Sort points radially to ensure we traverse the perimeter
+        center = np.mean(pts, axis=0)
+        angles_rad = np.arctan2(pts[:,1] - center[1], pts[:,0] - center[0])
+        order = np.argsort(angles_rad)
+        pts = pts[order]
+        
+        # Calculate side vectors
+        v1 = pts[1] - pts[0]
+        v2 = pts[2] - pts[1]
+        v3 = pts[3] - pts[2]
+        v4 = pts[0] - pts[3]
+        
+        # Calculate side lengths
+        d1 = np.linalg.norm(v1)
+        d2 = np.linalg.norm(v2)
+        d3 = np.linalg.norm(v3)
+        d4 = np.linalg.norm(v4)
+        sides = np.array([d1, d2, d3, d4])
+        
+        # Diagonals
+        diag1 = np.linalg.norm(pts[0] - pts[2])
+        diag2 = np.linalg.norm(pts[1] - pts[3])
+        
+        # --- CRITERIA 1: Diagonals must be longer than ALL sides ---
+        # In a rectangle (even rotated), diagonals are the longest segments.
+        # In those 45-degree mistakenly connected shapes, one "side" is usually a diagonal 
+        # of the real grid, and the "diagonal" of the mistake is just a grid edge.
+        if diag1 < np.max(sides) * 1.05 or diag2 < np.max(sides) * 1.05:
+            return False
+
+        # --- CRITERIA 2: Check internal angles ---
+        # A real perspective square shouldn't have super acute/obtuse angles 
+        # unless the camera is grazing the floor.
+        # Cosine rule or dot product to find angles.
+        def get_angle(vA, vB):
+            # Angle between vector vA and vB (outgoing from vertex)
+            # vA and vB should be normalized
+            uA = vA / (np.linalg.norm(vA) + 1e-6)
+            uB = vB / (np.linalg.norm(vB) + 1e-6)
+            return np.arccos(np.clip(np.dot(uA, uB), -1.0, 1.0))
+
+        # Vectors pointing OUT from each vertex
+        angles = []
+        angles.append(get_angle(pts[1]-pts[0], pts[3]-pts[0])) # Angle at 0
+        angles.append(get_angle(pts[0]-pts[1], pts[2]-pts[1])) # Angle at 1
+        angles.append(get_angle(pts[1]-pts[2], pts[3]-pts[2])) # Angle at 2
+        angles.append(get_angle(pts[2]-pts[3], pts[0]-pts[3])) # Angle at 3
+        
+        angles_deg = np.degrees(angles)
+        
+        # Filter out if any angle is too sharp (e.g. < 60 degrees) or too wide (> 120)
+        # 45-degree triangles usually result in 45-45-90 or similar, 
+        # so a 45 deg angle is a dead giveaway of a bad connection.
+        if np.any(angles_deg < 60) or np.any(angles_deg > 120):
+            return False
+
+        # --- CRITERIA 3: Convexity/Side Consistency ---
+        mean_side = np.mean(sides)
+        if np.std(sides) > 0.3 * mean_side:
+             return False
+
+        return True
     
     def _closest_distance_between_segments(self, p1, p2, p3, p4):
         """Calculate the minimum distance between two line segments."""
@@ -277,34 +434,23 @@ class InferenceViewer:
 
         output_image = frame.copy()
         
-        # For each detection, find the 4 closest neighbors and draw lines to them.
-        if len(final_detections) > 1:
-            detections_array = np.array(final_detections)
-
-            for i, p1 in enumerate(detections_array):
-                # Calculate distances to all other points
-                distances = []
-                for j, p2 in enumerate(detections_array):
-                    if i == j:
-                        continue
-                    dist = np.linalg.norm(p1 - p2)
-                    distances.append((dist, j))
-                
-                # Sort by distance and take the closest ones
-                distances.sort(key=lambda x: x[0])
-                
-                # Determine how many neighbors to connect to (up to 4)
-                num_neighbors_to_connect = min(4, len(distances))
-                
-                # Draw lines to the closest neighbors
-                for k in range(num_neighbors_to_connect):
-                    neighbor_idx = distances[k][1]
-                    p_neighbor = detections_array[neighbor_idx]
-                    
-                    x1, y1 = int(p1[0]), int(p1[1])
-                    x2, y2 = int(p_neighbor[0]), int(p_neighbor[1])
-                    
-                    cv2.line(output_image, (x1, y1), (x2, y2), (0, 255, 255), 2)
+        # Find and draw grid tiles
+        grid_tiles = self._find_grid_tiles(final_detections)
+        
+        for tile in grid_tiles:
+            # Sort points radially to draw the polygon correctly
+            center = np.mean(tile, axis=0)
+            angles = np.arctan2(tile[:,1] - center[1], tile[:,0] - center[0])
+            order = np.argsort(angles)
+            tile_ordered = tile[order].astype(np.int32)
+            
+            # Draw filled polygon with low opacity or just thick lines
+            # Let's draw thick Cyan lines
+            cv2.polylines(output_image, [tile_ordered], isClosed=True, color=(255, 255, 0), thickness=2)
+            
+            # Optional: Draw diagonals faintly
+            cv2.line(output_image, tuple(tile_ordered[0]), tuple(tile_ordered[2]), (0, 128, 128), 1)
+            cv2.line(output_image, tuple(tile_ordered[1]), tuple(tile_ordered[3]), (0, 128, 128), 1)
         
         # Draw crosses at detection points
         for x, y in final_detections:
