@@ -202,95 +202,186 @@ class InferenceViewer:
         return np.sqrt((x - closest_x)**2 + (y - closest_y)**2)
 
     def _find_grid_tiles(self, detections):
-        """Find quadrilateral tiles formed by detection points."""
+        """
+        Global Grid Fitting using Homography RANSAC.
+        Finds a homography H that maps detections to integer grid coordinates.
+        """
         if len(detections) < 4:
             return []
             
         points = np.array(detections)
         n = len(points)
         
-        # Calculate all pairwise distances
-        dists = np.zeros((n, n))
-        for i in range(n):
-            for j in range(i + 1, n):
-                d = np.linalg.norm(points[i] - points[j])
-                dists[i, j] = dists[j, i] = d
+        # RANSAC parameters
+        best_H = None
+        best_inliers = []
+        best_score = -1
         
-        # Determine a local neighborhood radius.
-        nearest_dists = []
-        for i in range(n):
-            dd = sorted(dists[i])[1:]
-            if dd: nearest_dists.append(dd[0])
+        # RANSAC Loop
+        # We need 4 points to define a homography.
+        # We'll pick 4 points that likely form a rectangle or adjacent rectangles.
+        # But simpler: We want to map 4 points (p1, p2, p3, p4) to (0,0), (1,0), (1,1), (0,1)
+        # or similar unit configurations.
+        
+        # Optimization: Instead of pure random 4 points (which rarely form a valid base basis),
+        # we iterate through triplets of points (origin, x-axis, y-axis)
+        # Pick point A as (0,0)
+        # Pick point B as (1,0)
+        # Pick point C as (0,1)
+        # That defines an affine transform (approximation of homography for small tiles).
+        # Then we refine.
+        
+        # Let's try 2000 iterations
+        iterations = 2000
+        threshold = 20 # Pixel error tolerance
+        
+        for _ in range(iterations):
+            # 1. Pick 3 random points to form a basis
+            indices = np.random.choice(n, 3, replace=False)
+            p0, p1, p2 = points[indices]
             
-        if not nearest_dists: return []
-        median_nn = np.median(nearest_dists)
-        
-        # Strict search radius: barely larger than a grid side.
-        # Grid diagonal is ~1.414 * side. 
-        # If we set radius < 1.41, we theoretically exclude diagonals entirely.
-        # But due to perspective/noise, let's set it just above 1.0 but below 1.4
-        # effectively forcing connections only along the grid axes.
-        search_radius = median_nn * 1.35
-        
-        neighbors = []
-        for i in range(n):
-            # potential neighbors
-            candidates = [j for j in range(n) if i != j and dists[i, j] <= search_radius]
+            # Check if they are collinear -> degenerate
+            if np.abs(np.cross(p1-p0, p2-p0)) < 1e-3: continue
             
-            valid_neighbors = []
-            for j in candidates:
-                # OCCLUSION CHECK:
-                # Verify no other point k lies "between" i and j.
-                # If k is close to the segment i-j, then i-j is not a direct grid edge
-                is_occluded = False
-                dist_ij = dists[i, j]
+            # Check if they are reasonably close (to form a local grid basis)
+            # If p1 is top-left and p2 is bottom-right, we can't assume they are (1,0) and (0,1)
+            # So we force p1 and p2 to be the "closest" neighbors of p0 in the set
+            # Actually, let's just map:
+            # p0 -> (0, 0)
+            # p1 -> (1, 0)
+            # p2 -> (0, 1)
+            # And assume p1 and p2 are the grid basis vectors.
+            # Calculate the "implied" 4th point (1,1) for affine
+            p3_est = p1 + p2 - p0 
+            
+            # Construct source and destination points for Homography
+            src_pts = np.array([p0, p1, p2, p3_est], dtype=np.float32)
+            dst_pts = np.array([[0,0], [1,0], [0,1], [1,1]], dtype=np.float32)
+            
+            # Compute Homography
+            try:
+                H, _ = cv2.findHomography(src_pts, dst_pts)
+            except:
+                continue
                 
-                for k in range(n):
-                    if k == i or k == j: continue
-                    
-                    # Check if k is projected onto the segment i-j
-                    # and is reasonably close to the line
-                    d_k_line = self._distance_point_to_segment(points[k], points[i], points[j])
-                    
-                    # If k is very close to the line...
-                    if d_k_line < median_nn * 0.2:
-                        # ...and k is actually "between" i and j (not behind)
-                        # check distances: i-k + k-j approx equals i-j
-                        if dists[i, k] < dist_ij and dists[j, k] < dist_ij:
-                            is_occluded = True
-                            break
+            if H is None: continue
+            
+            # 2. Transform all points to "Grid Space"
+            # pts_grid = H * pts
+            
+            # Homogeneous coordinates
+            ones = np.ones((n, 1))
+            pts_homo = np.hstack([points, ones])
+            
+            # Project
+            projected = (H @ pts_homo.T).T
+            # Normalize
+            with np.errstate(divide='ignore', invalid='ignore'):
+                projected /= projected[:, 2:3]
+            
+            grid_coords = projected[:, :2]
+            
+            # 3. Check how many points are close to Integers
+            # Distance to nearest integer
+            nearest_int = np.round(grid_coords)
+            dist = np.linalg.norm(grid_coords - nearest_int, axis=1)
+            
+            # We need to transform the error BACK to image space to compare with threshold?
+            # Or just check if "grid consistency" is high.
+            # Actually, simple grid consistency in grid space is often enough if H is not degenerate.
+            # BUT, degenerate H (squashing everything to 0) gives perfect score.
+            # So we must check if the scale is reasonable.
+            
+            # Check scale: distance between (0,0) and (1,0) in image space
+            H_inv = np.linalg.inv(H)
+            
+            # Map (0,0) and (1,0) back
+            unit_pts = np.array([[0,0], [1,0], [0,1]], dtype=np.float32).reshape(-1, 1, 2)
+            back_pts = cv2.perspectiveTransform(unit_pts, H_inv)
+            d_x = np.linalg.norm(back_pts[1] - back_pts[0])
+            d_y = np.linalg.norm(back_pts[2] - back_pts[0])
+            
+            # Reasonable grid size constraint (e.g. tile > 50px, < 1000px)
+            if d_x < 50 or d_x > 800 or d_y < 50 or d_y > 800:
+                continue
                 
-                if not is_occluded:
-                    valid_neighbors.append(j)
+            # Count inliers (points that map close to integers)
+            # Use loose tolerance in grid space (e.g. 0.15 unit)
+            current_inliers = []
+            score = 0
             
-            # Sort neighbors by distance
-            valid_neighbors.sort(key=lambda idx: dists[i, idx])
-            neighbors.append(valid_neighbors)
+            for i in range(n):
+                if dist[i] < 0.15:
+                    current_inliers.append(i)
+                    score += 1
             
-        tiles = set()
+            if score > best_score:
+                best_score = score
+                best_H = H
+                best_inliers = current_inliers
         
-        # Find cycles of length 4: i -> j -> k -> l -> i
-        for i in range(n):
-            for j in neighbors[i]:
-                if j <= i: continue 
+        if best_H is None or len(best_inliers) < 4:
+            return []
+            
+        # --- Re-Fit H with all inliers for better accuracy ---
+        # Map inliers to their nearest integer coordinates
+        src_refine = []
+        dst_refine = []
+        
+        ones = np.ones((len(best_inliers), 1))
+        inlier_pts = points[best_inliers]
+        inlier_pts_homo = np.hstack([inlier_pts, ones])
+        
+        projected = (best_H @ inlier_pts_homo.T).T
+        projected /= projected[:, 2:3]
+        grid_coords = np.round(projected[:, :2]) # Snap to integer
+        
+        for k, idx in enumerate(best_inliers):
+            src_refine.append(points[idx])
+            dst_refine.append(grid_coords[k])
+            
+        src_refine = np.array(src_refine, dtype=np.float32)
+        dst_refine = np.array(dst_refine, dtype=np.float32)
+        
+        # Compute Final Homography
+        H_final, _ = cv2.findHomography(src_refine, dst_refine)
+        if H_final is None: return []
+        
+        # --- Generate Tiles ---
+        # Determine bounds of the grid
+        u_min, v_min = np.min(dst_refine, axis=0).astype(int)
+        u_max, v_max = np.max(dst_refine, axis=0).astype(int)
+        
+        H_inv = np.linalg.inv(H_final)
+        tiles = []
+        
+        # Iterate through the bounding box of the grid
+        # Add padding to fill the screen?
+        padding = 1
+        for u in range(u_min - padding, u_max + padding):
+            for v in range(v_min - padding, v_max + padding):
+                # Create tile quad in grid space
+                # (u,v) -> (u+1, v) -> (u+1, v+1) -> (u, v+1)
+                quad_grid = np.array([
+                    [u, v],
+                    [u+1, v],
+                    [u+1, v+1],
+                    [u, v+1]
+                ], dtype=np.float32).reshape(-1, 1, 2)
                 
-                for k in neighbors[j]:
-                    if k == i or k == j: continue
-                    # Angle check i-j-k must be roughly 90 deg (between 60 and 120)
-                    # Optimization: check partial geometry early
+                # Warp back to image space
+                quad_img = cv2.perspectiveTransform(quad_grid, H_inv).reshape(4, 2)
+                
+                # Check if tile is valid (e.g. positive area, not twisted)
+                # and somewhat close to the screen/detection area
+                center = np.mean(quad_img, axis=0)
+                
+                # Simple check: is it within reasonable bounds of detected points?
+                dists = np.linalg.norm(points - center, axis=1)
+                if np.min(dists) < 400: # Only draw tiles near detections
+                    tiles.append(quad_img)
                     
-                    for l in neighbors[k]:
-                        if l == k or l == j or l == i: continue
-                        
-                        # Check if l closes the loop to i
-                        if i in neighbors[l]:
-                            # Found cycle i-j-k-l
-                            indices = [i, j, k, l]
-                            if self._is_valid_tile(points, indices):
-                                tile_indices = tuple(sorted(indices))
-                                tiles.add(tile_indices)
-
-        return [points[list(t)] for t in tiles]
+        return tiles
 
     def _is_valid_tile(self, all_points, indices):
         pts = all_points[list(indices)]
