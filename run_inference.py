@@ -286,42 +286,11 @@ class InferenceViewer:
                 for j in range(i + 1, len(final_detections)):
                     all_lines.append((i, j))
             
-            # Calculate perpendicular distance score for each line (sum of distances to other lines within 16px)
-            distance_scores = {}
-            proximity_threshold = 16
-            
-            for idx, (i, j) in enumerate(all_lines):
-                p1 = final_detections[i]
-                p2 = final_detections[j]
-                score = 0.0
-                
-                for other_idx, (k, l) in enumerate(all_lines):
-                    if idx != other_idx:
-                        p3 = final_detections[k]
-                        p4 = final_detections[l]
-                        dist = self._closest_distance_between_segments(p1, p2, p3, p4)
-                        if dist < proximity_threshold:
-                            score += dist
-                
-                distance_scores[idx] = score
-            
-            # Normalize scores to 0-1 range for color mapping
-            if distance_scores:
-                min_score = min(distance_scores.values())
-                max_score = max(distance_scores.values())
-                score_range = max_score - min_score if max_score > min_score else 1
-                
-                normalized_scores = {}
-                for idx in distance_scores:
-                    normalized_scores[idx] = (distance_scores[idx] - min_score) / score_range if score_range > 0 else 0
-                
-                # Highlight the line with highest score in bright red with thicker stroke
-                max_score_idx = max(normalized_scores, key=normalized_scores.get)
-                i, j = all_lines[max_score_idx]
+            # Draw all lines between dots
+            for i, j in all_lines:
                 x1, y1 = final_detections[i]
                 x2, y2 = final_detections[j]
-                cv2.line(output_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 4)
-                print(f"[Best Line] Line {max_score_idx} (points {i}-{j}) score: {distance_scores[max_score_idx]:.2f}")
+                cv2.line(output_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
         
         # Draw crosses at detection points
         for x, y in final_detections:
