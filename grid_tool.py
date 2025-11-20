@@ -21,6 +21,8 @@ class GridTool:
         
         self.grid_subdiv_x = tk.IntVar(value=1)
         self.grid_subdiv_y = tk.IntVar(value=1)
+        self.show_grid_var = tk.BooleanVar(value=True)
+        self.low_res_preview_var = tk.BooleanVar(value=False)
 
         self.root.title("Grid Tool - Click to place 4 corner points")
         self.root.state('zoomed')
@@ -41,6 +43,9 @@ class GridTool:
         side_panel.grid(row=0, column=1, sticky="ns", padx=5)
         
         ttk.Label(side_panel, text="Grid Settings", font=("Arial", 12, "bold")).pack(pady=10)
+        
+        ttk.Checkbutton(side_panel, text="Show Grid", variable=self.show_grid_var, command=self._display_frame).pack(anchor=tk.W, pady=5)
+        ttk.Checkbutton(side_panel, text="256x256 Preview", variable=self.low_res_preview_var, command=self._display_frame).pack(anchor=tk.W, pady=5)
         
         ttk.Label(side_panel, text="Horizontal Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
         ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_x, command=self._display_frame).pack(fill=tk.X, pady=5)
@@ -276,6 +281,14 @@ class GridTool:
         
         frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
         
+        # Handle low-res preview
+        if self.low_res_preview_var.get():
+             h, w = frame_rgb.shape[:2]
+             # Downscale to 256x256 using linear interpolation (mimic network input)
+             small = cv2.resize(frame_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
+             # Upscale back to original size using nearest neighbor to show pixels clearly
+             frame_rgb = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
         if canvas_w < 2 or canvas_h < 2:
@@ -295,8 +308,8 @@ class GridTool:
         self.canvas.delete("all")
         self.canvas.create_image(offset_x, offset_y, anchor="nw", image=self.photo_image)
         
-        # Draw grid if all 4 points are placed
-        if all(p is not None for p in self.grid_points):
+        # Draw grid if all 4 points are placed and grid is enabled
+        if self.show_grid_var.get() and all(p is not None for p in self.grid_points):
             self._draw_grid_overlay()
     
     def _draw_grid_overlay(self):
