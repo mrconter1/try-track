@@ -18,6 +18,9 @@ class GridTool:
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame_idx = 0
         
+        self.grid_subdiv_x = tk.IntVar(value=1)
+        self.grid_subdiv_y = tk.IntVar(value=1)
+
         self.root.title("Grid Tool - Click to place 4 corner points")
         self.root.state('zoomed')
         self._build_ui()
@@ -32,6 +35,18 @@ class GridTool:
         self.canvas = tk.Canvas(main_frame, bg="black", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         
+        # Side panel for grid settings
+        side_panel = ttk.Frame(main_frame, width=200, padding="5")
+        side_panel.grid(row=0, column=1, sticky="ns", padx=5)
+        
+        ttk.Label(side_panel, text="Grid Settings", font=("Arial", 12, "bold")).pack(pady=10)
+        
+        ttk.Label(side_panel, text="Horizontal Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
+        ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_x, command=self._display_frame).pack(fill=tk.X, pady=5)
+        
+        ttk.Label(side_panel, text="Vertical Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
+        ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_y, command=self._display_frame).pack(fill=tk.X, pady=5)
+
         controls_frame = ttk.Frame(main_frame)
         controls_frame.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
         
@@ -261,25 +276,58 @@ class GridTool:
             H = cv2.getPerspectiveTransform(src_pts, dst_pts)
             grid_range = 5
             
-            # Draw vertical grid lines
-            for i in range(-grid_range, grid_range + 2):
+            # Draw subdivisions
+            sub_x = self.grid_subdiv_x.get()
+            sub_y = self.grid_subdiv_y.get()
+            
+            # Draw grid lines with subdivisions
+            # Vertical lines
+            for i in range(-grid_range, grid_range + 1):
+                # Main grid lines
                 line_src = np.float32([[[i, -grid_range]], [[i, grid_range + 1]]])
                 line_dst = cv2.perspectiveTransform(line_src, H)
                 pt1, pt2 = line_dst[0][0], line_dst[1][0]
                 self.canvas.create_line(
                     self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
                     self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
-                    fill="cyan", width=1)
+                    fill="cyan", width=2)
+                
+                # Subdivisions
+                if i < grid_range:
+                    for j in range(1, sub_x):
+                        frac = j / sub_x
+                        val = i + frac
+                        line_src = np.float32([[[val, -grid_range]], [[val, grid_range + 1]]])
+                        line_dst = cv2.perspectiveTransform(line_src, H)
+                        pt1, pt2 = line_dst[0][0], line_dst[1][0]
+                        self.canvas.create_line(
+                            self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
+                            self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
+                            fill="cyan", width=1, dash=(2, 2))
 
-            # Draw horizontal grid lines
-            for i in range(-grid_range, grid_range + 2):
+            # Horizontal lines
+            for i in range(-grid_range, grid_range + 1):
+                # Main grid lines
                 line_src = np.float32([[[-grid_range, i]], [[grid_range + 1, i]]])
                 line_dst = cv2.perspectiveTransform(line_src, H)
                 pt1, pt2 = line_dst[0][0], line_dst[1][0]
                 self.canvas.create_line(
                     self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
                     self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
-                    fill="cyan", width=1)
+                    fill="cyan", width=2)
+
+                # Subdivisions
+                if i < grid_range:
+                    for j in range(1, sub_y):
+                        frac = j / sub_y
+                        val = i + frac
+                        line_src = np.float32([[[-grid_range, val]], [[grid_range + 1, val]]])
+                        line_dst = cv2.perspectiveTransform(line_src, H)
+                        pt1, pt2 = line_dst[0][0], line_dst[1][0]
+                        self.canvas.create_line(
+                            self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
+                            self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
+                            fill="cyan", width=1, dash=(2, 2))
         except cv2.error:
             # If transform fails (e.g., collinear points), just draw the quad
             pass
