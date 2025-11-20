@@ -119,7 +119,7 @@ class GridTool:
         img_x = (event.x - self.canvas_offset_x) / self.canvas_scale
         img_y = (event.y - self.canvas_offset_y) / self.canvas_scale
         
-        # Check if clicking near an existing point to start dragging with magnifier
+        # Check if clicking near an existing point to start dragging
         for i, point in enumerate(self.grid_points):
             if point is not None:
                 dist = np.sqrt((img_x - point[0])**2 + (img_y - point[1])**2)
@@ -127,7 +127,6 @@ class GridTool:
                     self.dragging_point = i
                     self.drag_start_pos = (event.x, event.y)
                     self.drag_start_point_pos = point
-                    self._create_magnifier(event)
                     return
     
     def _canvas_drag(self, event):
@@ -138,22 +137,19 @@ class GridTool:
         dx = event.x - self.drag_start_pos[0]
         dy = event.y - self.drag_start_pos[1]
         
-        # Apply fine-grained movement (0.1 steps in image space)
+        # Apply movement (1:1 with mouse)
         # We divide by canvas_scale to convert screen pixel delta to image pixel delta
-        fine_dx = (dx / self.canvas_scale) * 0.1
-        fine_dy = (dy / self.canvas_scale) * 0.1
+        move_dx = (dx / self.canvas_scale)
+        move_dy = (dy / self.canvas_scale)
         
-        new_x = self.drag_start_point_pos[0] + fine_dx
-        new_y = self.drag_start_point_pos[1] + fine_dy
+        new_x = self.drag_start_point_pos[0] + move_dx
+        new_y = self.drag_start_point_pos[1] + move_dy
         
         self.grid_points[self.dragging_point] = (new_x, new_y)
         
-        self._update_magnifier(event)
         self._display_frame()
     
     def _canvas_release(self, event):
-        if self.dragging_point is not None:
-            self._destroy_magnifier()
         self.dragging_point = None
         self.drag_start_pos = None
         self.drag_start_point_pos = None
