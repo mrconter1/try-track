@@ -53,6 +53,13 @@ class GridTool:
         ttk.Label(side_panel, text="Vertical Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
         ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_y, command=self._display_frame).pack(fill=tk.X, pady=5)
 
+        # Normalized Coordinates Display
+        ttk.Label(side_panel, text="Normalized Coordinates:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(15, 5))
+        self.coord_text = tk.Text(side_panel, height=8, width=25, font=("Consolas", 9))
+        self.coord_text.pack(fill=tk.X, pady=5)
+        self.coord_text.insert("1.0", "Move points to see\ncoordinates...")
+        self.coord_text.configure(state="disabled")
+
         controls_frame = ttk.Frame(main_frame)
         controls_frame.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
         
@@ -308,6 +315,79 @@ class GridTool:
         self.canvas.delete("all")
         self.canvas.create_image(offset_x, offset_y, anchor="nw", image=self.photo_image)
         
+        # Update coordinate text display with Unit Cell info
+        if all(p is not None for p in self.grid_points):
+            try:
+                # Get subdivisions
+                try:
+                    sub_x = float(self.grid_subdiv_x.get())
+                except tk.TclError:
+                    sub_x = 1.0
+                try:
+                    sub_y = float(self.grid_subdiv_y.get())
+                except tk.TclError:
+                    sub_y = 1.0
+
+                # Calculate Homography for the user-defined macro cell
+                # User points: P1(TL), P2(TR), P3(BL), P4(BR)
+                p1, p2, p3, p4 = self.grid_points
+                
+                # Source: Unit square (0,0) to (1,1)
+                # Destination: User points
+                # Mapping: (0,0)->p1, (1,0)->p2, (0,1)->p3, (1,1)->p4
+                src_pts = np.float32([[0, 0], [1, 0], [0, 1], [1, 1]])
+                dst_pts = np.float32([p1, p2, p3, p4])
+                
+                H = cv2.getPerspectiveTransform(src_pts, dst_pts)
+                
+                # Define the logical coordinates of the single top-left Unit Cell
+                # It spans from (0,0) to (1/Sx, 1/Sy) in the macro space
+                unit_w = 1.0 / max(1, sub_x)
+                unit_h = 1.0 / max(1, sub_y)
+                
+                # Standard Polygon Order: TL, TR, BR, BL
+                unit_logical = np.float32([
+                    [0, 0],            # TL
+                    [unit_w, 0],       # TR
+                    [unit_w, unit_h],  # BR
+                    [0, unit_h]        # BL
+                ]).reshape(-1, 1, 2)
+                
+                # Transform logical unit points to pixel coordinates
+                unit_pixels = cv2.perspectiveTransform(unit_logical, H)
+                unit_pixels = unit_pixels.reshape(-1, 2)
+                
+                norm_text = "NN Unit Cell (Normalized):\n"
+                display_labels = ["TL", "TR", "BR", "BL"]
+                
+                for idx, label in enumerate(display_labels):
+                    px, py = unit_pixels[idx]
+                    nx = px / img_w
+                    ny = py / img_h
+                    norm_text += f"{label}: {nx:.4f}, {ny:.4f}\n"
+                
+                self.coord_text.configure(state="normal")
+                self.coord_text.delete("1.0", tk.END)
+                self.coord_text.insert("1.0", norm_text)
+                self.coord_text.configure(state="disabled")
+                
+                # Optionally visualize this unit cell in a different color (e.g. Green)
+                # Convert to canvas coords
+                uc_canvas = []
+                for px, py in unit_pixels:
+                    cx = self.canvas_offset_x + px * self.canvas_scale
+                    cy = self.canvas_offset_y + py * self.canvas_scale
+                    uc_canvas.append((cx, cy))
+                
+                if self.show_grid_var.get():
+                    self.canvas.create_line(uc_canvas[0][0], uc_canvas[0][1], uc_canvas[1][0], uc_canvas[1][1], fill='lime', width=3)
+                    self.canvas.create_line(uc_canvas[1][0], uc_canvas[1][1], uc_canvas[2][0], uc_canvas[2][1], fill='lime', width=3)
+                    self.canvas.create_line(uc_canvas[2][0], uc_canvas[2][1], uc_canvas[3][0], uc_canvas[3][1], fill='lime', width=3)
+                    self.canvas.create_line(uc_canvas[3][0], uc_canvas[3][1], uc_canvas[0][0], uc_canvas[0][1], fill='lime', width=3)
+
+            except Exception:
+                pass
+
         # Draw grid if all 4 points are placed and grid is enabled
         if self.show_grid_var.get() and all(p is not None for p in self.grid_points):
             self._draw_grid_overlay()
