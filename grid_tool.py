@@ -5,6 +5,7 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import argparse
 import os
+import random
 
 class GridTool:
     def __init__(self, root, video_path):
@@ -71,6 +72,8 @@ class GridTool:
         self.canvas.bind("<Button-1>", self._canvas_click)
         self.canvas.bind("<B1-Motion>", self._canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
+        self.root.bind("r", self._random_frame)
+        self.root.bind("R", self._random_frame)
         
         # Grid state
         self.grid_points = [None, None, None, None]
@@ -126,6 +129,15 @@ class GridTool:
         self.dragging_point = None
         self._display_frame()
     
+    def _random_frame(self, event=None):
+        """Jump to a random frame in the video."""
+        # If the user is typing in a widget, ignore the hotkey
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+
+        random_idx = random.randint(0, self.total_frames - 1)
+        self._load_frame(random_idx)
+
     def _canvas_click(self, event):
         if self.current_frame is None:
             return
@@ -281,8 +293,15 @@ class GridTool:
             grid_range = 5
             
             # Draw subdivisions
-            sub_x = self.grid_subdiv_x.get()
-            sub_y = self.grid_subdiv_y.get()
+            try:
+                sub_x = self.grid_subdiv_x.get()
+            except tk.TclError:
+                sub_x = 1
+                
+            try:
+                sub_y = self.grid_subdiv_y.get()
+            except tk.TclError:
+                sub_y = 1
             
             # Draw grid lines with subdivisions
             # Vertical lines
