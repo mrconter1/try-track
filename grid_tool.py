@@ -173,11 +173,40 @@ class GridTool:
         new_x = self.drag_start_point_pos[0] + move_dx
         new_y = self.drag_start_point_pos[1] + move_dy
         
-        self.grid_points[self.dragging_point] = (new_x, new_y)
+        # Validate new configuration
+        new_points = list(self.grid_points)
+        new_points[self.dragging_point] = (new_x, new_y)
         
-        self._update_magnifier(event)
-        self._display_frame()
+        if self._is_convex(new_points):
+            self.grid_points[self.dragging_point] = (new_x, new_y)
+            self._update_magnifier(event)
+            self._display_frame()
     
+    def _is_convex(self, points):
+        """
+        Check if the quadrilateral formed by P1(TL), P2(TR), P3(BL), P4(BR) is convex.
+        Polygon order: P1 -> P2 -> P4 -> P3
+        """
+        if any(p is None for p in points):
+            return False
+
+        p1, p2, p3, p4 = points
+        # Polygon vertices in order
+        poly = [p1, p2, p4, p3]
+        
+        def cross_product(a, b, c):
+            return (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            
+        cp1 = cross_product(poly[0], poly[1], poly[2])
+        cp2 = cross_product(poly[1], poly[2], poly[3])
+        cp3 = cross_product(poly[2], poly[3], poly[0])
+        cp4 = cross_product(poly[3], poly[0], poly[1])
+        
+        # Check if all have the same sign (and are non-zero)
+        # Allow small epsilon for collinearity if needed, but strictly > 0 prevents collapse
+        return (cp1 > 0 and cp2 > 0 and cp3 > 0 and cp4 > 0) or \
+               (cp1 < 0 and cp2 < 0 and cp3 < 0 and cp4 < 0)
+
     def _canvas_release(self, event):
         if self.dragging_point is not None:
             self._destroy_magnifier()
@@ -292,7 +321,6 @@ class GridTool:
             H = cv2.getPerspectiveTransform(src_pts, dst_pts)
             grid_range = 5
             
-            # Draw subdivisions
             try:
                 sub_x = self.grid_subdiv_x.get()
             except tk.TclError:
@@ -302,55 +330,68 @@ class GridTool:
                 sub_y = self.grid_subdiv_y.get()
             except tk.TclError:
                 sub_y = 1
-            
-            # Draw grid lines with subdivisions
-            # Vertical lines
-            for i in range(-grid_range, grid_range + 1):
-                # Main grid lines
-                line_src = np.float32([[[i, -grid_range]], [[i, grid_range + 1]]])
-                line_dst = cv2.perspectiveTransform(line_src, H)
-                pt1, pt2 = line_dst[0][0], line_dst[1][0]
-                self.canvas.create_line(
-                    self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
-                    self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
-                    fill="cyan", width=2)
+
+            def transform_point(px, py):
+                """Apply H to (px, py) and return screen (cx, cy) if w > 0."""
+                # Homogeneous multiply: H * [px, py, 1]
+                # We do it manually to check 'w'
+                x = H[0,0]*px + H[0,1]*py + H[0,2]
+                y = H[1,0]*px + H[1,1]*py + H[1,2]
+                w = H[2,0]*px + H[2,1]*py + H[2,2]
                 
-                # Subdivisions
-                if i < grid_range:
-                    for j in range(1, sub_x):
-                        frac = j / sub_x
-                        val = i + frac
-                        line_src = np.float32([[[val, -grid_range]], [[val, grid_range + 1]]])
-                        line_dst = cv2.perspectiveTransform(line_src, H)
-                        pt1, pt2 = line_dst[0][0], line_dst[1][0]
-                        self.canvas.create_line(
-                            self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
-                            self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
-                            fill="cyan", width=1, dash=(2, 2))
+                if w <= 1e-5:
+                    return None
+                
+                img_x = x / w
+                img_y = y / w
+                
+                cx = self.canvas_offset_x + img_x * self.canvas_scale
+                cy = self.canvas_offset_y + img_y * self.canvas_scale
+                return cx, cy
 
-            # Horizontal lines
+            def draw_segment(x1, y1, x2, y2, **kwargs):
+                pt1 = transform_point(x1, y1)
+                pt2 = transform_point(x2, y2)
+                if pt1 and pt2:
+                    self.canvas.create_line(pt1[0], pt1[1], pt2[0], pt2[1], **kwargs)
+
+            # Draw Vertical lines
+            # Iterate x from -grid_range to grid_range + 1
+            # But we also need subdivisions between i and i+1
+            
+            # Total vertical lines to consider:
+            #Integers from -grid_range to grid_range + 1
+            
             for i in range(-grid_range, grid_range + 1):
-                # Main grid lines
-                line_src = np.float32([[[-grid_range, i]], [[grid_range + 1, i]]])
-                line_dst = cv2.perspectiveTransform(line_src, H)
-                pt1, pt2 = line_dst[0][0], line_dst[1][0]
-                self.canvas.create_line(
-                    self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
-                    self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
-                    fill="cyan", width=2)
+                # For this integer X, draw the line from Y=-grid_range to Y=grid_range+1
+                # We segment it by integer Y steps to handle horizon clipping
+                
+                # Main line at X=i
+                for j in range(-grid_range, grid_range + 1):
+                    draw_segment(i, j, i, j + 1, fill="cyan", width=2)
+
+                # Subdivisions between i and i+1 (if not the last column)
+                if i < grid_range:
+                    for k in range(1, sub_x):
+                        frac = k / sub_x
+                        val = i + frac
+                        for j in range(-grid_range, grid_range + 1):
+                            draw_segment(val, j, val, j + 1, fill="cyan", width=1, dash=(2, 2))
+
+            # Draw Horizontal lines
+            for i in range(-grid_range, grid_range + 1):
+                # Main line at Y=i
+                for j in range(-grid_range, grid_range + 1):
+                    draw_segment(j, i, j + 1, i, fill="cyan", width=2)
 
                 # Subdivisions
                 if i < grid_range:
-                    for j in range(1, sub_y):
-                        frac = j / sub_y
+                    for k in range(1, sub_y):
+                        frac = k / sub_y
                         val = i + frac
-                        line_src = np.float32([[[-grid_range, val]], [[grid_range + 1, val]]])
-                        line_dst = cv2.perspectiveTransform(line_src, H)
-                        pt1, pt2 = line_dst[0][0], line_dst[1][0]
-                        self.canvas.create_line(
-                            self.canvas_offset_x + pt1[0] * self.canvas_scale, self.canvas_offset_y + pt1[1] * self.canvas_scale,
-                            self.canvas_offset_x + pt2[0] * self.canvas_scale, self.canvas_offset_y + pt2[1] * self.canvas_scale,
-                            fill="cyan", width=1, dash=(2, 2))
+                        for j in range(-grid_range, grid_range + 1):
+                            draw_segment(j, val, j + 1, val, fill="cyan", width=1, dash=(2, 2))
+
         except cv2.error:
             # If transform fails (e.g., collinear points), just draw the quad
             pass
