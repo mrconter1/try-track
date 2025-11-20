@@ -142,6 +142,7 @@ class GridTool:
                     self.dragging_point = i
                     self.drag_start_pos = (event.x, event.y)
                     self.drag_start_point_pos = point
+                    self._create_magnifier(event)
                     return
     
     def _canvas_drag(self, event):
@@ -162,9 +163,12 @@ class GridTool:
         
         self.grid_points[self.dragging_point] = (new_x, new_y)
         
+        self._update_magnifier(event)
         self._display_frame()
     
     def _canvas_release(self, event):
+        if self.dragging_point is not None:
+            self._destroy_magnifier()
         self.dragging_point = None
         self.drag_start_pos = None
         self.drag_start_point_pos = None
