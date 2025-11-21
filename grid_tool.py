@@ -9,6 +9,9 @@ import random
 import json
 import threading
 import subprocess
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
 
 class GridTool:
     def __init__(self, root, video_path):
@@ -126,6 +129,9 @@ class GridTool:
         self.train_button = ttk.Button(controls_frame, text="Train Model", command=self.start_training)
         self.train_button.pack(side=tk.LEFT, padx=10, pady=5)
         
+        self.auto_label_button = ttk.Button(controls_frame, text="Auto Label (p)", command=self._predict_grid)
+        self.auto_label_button.pack(side=tk.LEFT, padx=10, pady=5)
+        
         # Frame navigation
         nav_frame = ttk.Frame(controls_frame)
         nav_frame.pack(side=tk.LEFT, padx=20)
@@ -151,6 +157,8 @@ class GridTool:
         self.root.bind("4", self._increase_subdiv_y)
         self.root.bind("g", self._toggle_has_grid)
         self.root.bind("G", self._toggle_has_grid)
+        self.root.bind("p", self._predict_grid)
+        self.root.bind("P", self._predict_grid)
         
         # Grid state
         self.grid_points = [None, None, None, None]
@@ -178,6 +186,10 @@ class GridTool:
         
         # Store grid config per frame: {(video_path, frame_idx): (points, subdiv_x, subdiv_y)}
         self.frame_grid_config = {}
+        
+        # Inference model
+        self.model = None
+        self.device = torch.device("cpu") # Keep inference on CPU for simplicity/interactivity
         
         # Load persistent state
         self._load_persistent_state()
@@ -967,6 +979,116 @@ class GridTool:
             except Exception as e:
                 print(f"[Grid Tool] Warning: Could not load persistent state: {e}")
     
+    def _predict_grid(self, event=None):
+        """Predict grid using trained model."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+            
+        if self.current_frame is None:
+            return
+
+        model_path = "grid_model.pth"
+        if not os.path.exists(model_path):
+            print("[Grid Tool] No model found. Train one first!")
+            return
+
+        # Reload model if file changed (simple check could be added, but for now just lazy load once or force reload if trained)
+        # Actually, if we just trained, we want to reload. 
+        # Simplest: Always reload if we triggered training, but here let's just load if None.
+        # TODO: Add flag to force reload after training finishes.
+        
+        if self.model is None:
+            try:
+                print("[Grid Tool] Loading model...")
+                self.model = models.mobilenet_v3_small(weights=None)
+                in_features = self.model.classifier[3].in_features
+                self.model.classifier[3] = nn.Linear(in_features, 7)
+                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                self.model.to(self.device)
+                self.model.eval()
+            except Exception as e:
+                print(f"[Grid Tool] Error loading model: {e}")
+                self.model = None
+                return
+
+        # Preprocess frame
+        h_orig, w_orig = self.current_frame.shape[:2]
+        img = cv2.resize(self.current_frame, (256, 256))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float32) / 255.0
+        img_tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(self.device)
+        
+        # Inference
+        try:
+            with torch.no_grad():
+                outputs = self.model(img_tensor)
+                # Output is logits. 
+                # Conf is index 0
+                conf_logit = outputs[0, 0]
+                conf = torch.sigmoid(conf_logit).item()
+                coords = outputs[0, 1:].cpu().numpy()
+        except Exception as e:
+             print(f"[Grid Tool] Inference error: {e}")
+             return
+            
+        print(f"[Grid Tool] Prediction Confidence: {conf:.4f}")
+        
+        if conf < 0.5:
+            print("[Grid Tool] Low confidence. Assuming No Grid.")
+            self.has_grid_var.set(False)
+            self._save_frame_config()
+            self._display_frame()
+            return
+            
+        # High confidence - reconstruction
+        self.has_grid_var.set(True)
+        
+        # coords: [Ox, Oy, Ux, Uy, Vx, Vy] (Normalized)
+        ox, oy = coords[0] * w_orig, coords[1] * h_orig
+        ux, uy = coords[2] * w_orig, coords[3] * h_orig
+        vx, vy = coords[4] * w_orig, coords[5] * h_orig
+        
+        # Origin Point
+        origin = np.array([ox, oy])
+        vec_u = np.array([ux, uy])
+        vec_v = np.array([vx, vy])
+        
+        # Current subdivisions
+        try:
+            sub_x = self.grid_subdiv_x.get()
+            sub_y = self.grid_subdiv_y.get()
+        except:
+            sub_x = 1
+            sub_y = 1
+            
+        # Construct 4 corners centered on Origin
+        # Center offset in grid units
+        off_x = sub_x / 2.0
+        off_y = sub_y / 2.0
+        
+        # P1 (Top-Left) = Origin - off_x * U - off_y * V
+        p1 = origin - off_x * vec_u - off_y * vec_v
+        
+        # P2 (Top-Right) = Origin + off_x * U - off_y * V
+        p2 = origin + off_x * vec_u - off_y * vec_v
+        
+        # P3 (Bottom-Left) = Origin - off_x * U + off_y * V
+        p3 = origin - off_x * vec_u + off_y * vec_v
+        
+        # P4 (Bottom-Right) = Origin + off_x * U + off_y * V
+        p4 = origin + off_x * vec_u + off_y * vec_v
+        
+        # Update points
+        self.grid_points = [
+            (p1[0], p1[1]),
+            (p2[0], p2[1]),
+            (p3[0], p3[1]),
+            (p4[0], p4[1])
+        ]
+        
+        self._save_frame_config()
+        self._display_frame()
+
     def _save_persistent_state(self):
         """Save frame history and grid configs to disk."""
         state_file = self._get_state_file()
@@ -1018,6 +1140,9 @@ class GridTool:
                 
                 process.wait()
                 print("[Grid Tool] Training finished.")
+                
+                # Force reload of model
+                self.model = None
                 
             except Exception as e:
                 print(f"[Grid Tool] Error starting training: {e}")
