@@ -46,7 +46,6 @@ class GridTool:
         self.root.title("Grid Tool - Click to place 4 corner points")
         self.root.state('zoomed')
         self._build_ui()
-        self._load_frame(0)
     
     def _build_video_list(self, directory):
         """Build list of (video_path, frame_count) tuples from directory."""
@@ -113,6 +112,21 @@ class GridTool:
         self.coord_text.pack(fill=tk.X, pady=5)
         self.coord_text.insert("1.0", "Move points to see\ncoordinates...")
         self.coord_text.configure(state="disabled")
+
+        # History List
+        ttk.Label(side_panel, text="History:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(15, 5))
+        
+        list_frame = ttk.Frame(side_panel)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.history_listbox = tk.Listbox(list_frame, font=("Consolas", 8), height=10, yscrollcommand=scrollbar.set)
+        self.history_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.history_listbox.yview)
+        
+        self.history_listbox.bind('<<ListboxSelect>>', self._on_history_select)
 
         controls_frame = ttk.Frame(main_frame)
         controls_frame.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
@@ -193,6 +207,17 @@ class GridTool:
         
         # Load persistent state
         self._load_persistent_state()
+        
+        # Load the initial frame (last from history if available, else 0)
+        if self.frame_history:
+            # Ensure we start at the end of the list as requested
+            self.history_index = len(self.frame_history) - 1
+            video_path, frame_idx = self.frame_history[self.history_index]
+            self._switch_to_video_and_frame(video_path, frame_idx)
+        else:
+            self._load_frame(0)
+            
+        self._update_history_list()
     
     def _load_frame(self, frame_idx, auto_save_new=False):
         if frame_idx < 0 or frame_idx >= self.total_frames:
@@ -1089,8 +1114,45 @@ class GridTool:
         self._save_frame_config()
         self._display_frame()
 
+    def _update_history_list(self):
+        """Update the history listbox content."""
+        self.history_listbox.delete(0, tk.END)
+        
+        for i, (video_path, frame_idx) in enumerate(self.frame_history):
+            filename = os.path.basename(video_path)
+            
+            # Check if labeled
+            frame_key = (video_path, frame_idx)
+            status = "[?]"
+            if frame_key in self.frame_grid_config:
+                config = self.frame_grid_config[frame_key]
+                has_grid = config[3] if len(config) > 3 else False
+                status = "[G]" if has_grid else "[N]"
+            
+            item_text = f"{i+1}. {status} {filename} #{frame_idx}"
+            self.history_listbox.insert(tk.END, item_text)
+            
+        # Select current
+        if 0 <= self.history_index < self.history_listbox.size():
+            self.history_listbox.selection_clear(0, tk.END)
+            self.history_listbox.selection_set(self.history_index)
+            self.history_listbox.see(self.history_index)
+
+    def _on_history_select(self, event):
+        """Handle click on history list item."""
+        selection = self.history_listbox.curselection()
+        if not selection:
+            return
+            
+        index = selection[0]
+        if index != self.history_index:
+            self.history_index = index
+            video_path, frame_idx = self.frame_history[self.history_index]
+            self._switch_to_video_and_frame(video_path, frame_idx)
+
     def _save_persistent_state(self):
         """Save frame history and grid configs to disk."""
+        self._update_history_list()
         state_file = self._get_state_file()
         try:
             # Convert frame_grid_config keys to strings for JSON serialization
