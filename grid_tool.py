@@ -35,8 +35,8 @@ class GridTool:
         
         self.grid_subdiv_x = tk.IntVar(value=1)
         self.grid_subdiv_y = tk.IntVar(value=1)
-        self.show_grid_var = tk.BooleanVar(value=True)
         self.low_res_preview_var = tk.BooleanVar(value=False)
+        self.has_grid_var = tk.BooleanVar(value=False)  # Default: No Grid
 
         self.root.title("Grid Tool - Click to place 4 corner points")
         self.root.state('zoomed')
@@ -84,7 +84,7 @@ class GridTool:
         
         ttk.Label(side_panel, text="Grid Settings", font=("Arial", 12, "bold")).pack(pady=10)
         
-        ttk.Checkbutton(side_panel, text="Show Grid", variable=self.show_grid_var, command=self._display_frame).pack(anchor=tk.W, pady=5)
+        ttk.Checkbutton(side_panel, text="Has Grid", variable=self.has_grid_var, command=self._on_has_grid_toggle).pack(anchor=tk.W, pady=5)
         ttk.Checkbutton(side_panel, text="256x256 Preview", variable=self.low_res_preview_var, command=self._display_frame).pack(anchor=tk.W, pady=5)
         
         ttk.Label(side_panel, text="Horizontal Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
@@ -113,6 +113,9 @@ class GridTool:
         self.reset_button = ttk.Button(controls_frame, text="Reset Points", command=self.reset_points)
         self.reset_button.pack(side=tk.LEFT, padx=10, pady=5)
         
+        self.clear_data_button = ttk.Button(controls_frame, text="Clear All Data", command=self.clear_all_data)
+        self.clear_data_button.pack(side=tk.LEFT, padx=10, pady=5)
+        
         # Frame navigation
         nav_frame = ttk.Frame(controls_frame)
         nav_frame.pack(side=tk.LEFT, padx=20)
@@ -136,6 +139,8 @@ class GridTool:
         self.root.bind("2", self._increase_subdiv_x)
         self.root.bind("3", self._decrease_subdiv_y)
         self.root.bind("4", self._increase_subdiv_y)
+        self.root.bind("g", self._toggle_has_grid)
+        self.root.bind("G", self._toggle_has_grid)
         
         # Grid state
         self.grid_points = [None, None, None, None]
@@ -193,6 +198,7 @@ class GridTool:
                 ]
                 self.grid_subdiv_x.set(1)
                 self.grid_subdiv_y.set(1)
+                self.has_grid_var.set(False)  # Default: No Grid
             self._display_frame()
             self.frame_label.config(text=f"Frame: {frame_idx}/{self.total_frames-1}")
     
@@ -206,6 +212,50 @@ class GridTool:
         self.grid_points = [None, None, None, None]
         self.dragging_point = None
         self._display_frame()
+    
+    def clear_all_data(self):
+        """Clear all saved frame configurations and history."""
+        # Ask for confirmation
+        import tkinter.messagebox as messagebox
+        result = messagebox.askyesno(
+            "Clear All Data",
+            "This will clear all saved grid configurations and frame history.\n\nAre you sure you want to continue?",
+            icon='warning'
+        )
+        
+        if result:
+            # Clear in-memory data
+            self.frame_grid_config.clear()
+            if self.video_list:
+                initial_video = self.video_list[0][0]
+            else:
+                initial_video = self.video_path
+            self.frame_history = [(initial_video, 0)]
+            self.history_index = 0
+            
+            # Clear persistent state file
+            state_file = self._get_state_file()
+            if os.path.exists(state_file):
+                os.remove(state_file)
+            
+            # Reset current frame to defaults
+            h, w = self.current_frame.shape[:2]
+            cell_w = w // 4
+            cell_h = h // 4
+            center_x = w // 2
+            center_y = h // 2
+            self.grid_points = [
+                (center_x - cell_w // 2, center_y - cell_h // 2),
+                (center_x + cell_w // 2, center_y - cell_h // 2),
+                (center_x - cell_w // 2, center_y + cell_h // 2),
+                (center_x + cell_w // 2, center_y + cell_h // 2),
+            ]
+            self.grid_subdiv_x.set(1)
+            self.grid_subdiv_y.set(1)
+            self.has_grid_var.set(False)
+            
+            self._display_frame()
+            print("[Grid Tool] All data cleared.")
     
     def _random_frame(self, event=None):
         """Jump to a random frame in the video."""
@@ -461,8 +511,14 @@ class GridTool:
         self.canvas.delete("all")
         self.canvas.create_image(offset_x, offset_y, anchor="nw", image=self.photo_image)
         
-        # Update coordinate text display with Unit Cell info
-        if all(p is not None for p in self.grid_points):
+        # Update coordinate text display
+        if not self.has_grid_var.get():
+            # No grid - show message
+            self.coord_text.configure(state="normal")
+            self.coord_text.delete("1.0", tk.END)
+            self.coord_text.insert("1.0", "NO GRID\n\nThis frame does not contain\na visible grid.")
+            self.coord_text.configure(state="disabled")
+        elif all(p is not None for p in self.grid_points):
             try:
                 # Get subdivisions
                 try:
@@ -517,15 +573,14 @@ class GridTool:
                 self.coord_text.insert("1.0", norm_text)
                 self.coord_text.configure(state="disabled")
                 
-                # Optionally visualize this unit cell in a different color (e.g. Green)
-                # Convert to canvas coords
+                # Visualize this unit cell in lime green
                 uc_canvas = []
                 for px, py in unit_pixels:
                     cx = self.canvas_offset_x + px * self.canvas_scale
                     cy = self.canvas_offset_y + py * self.canvas_scale
                     uc_canvas.append((cx, cy))
                 
-                if self.show_grid_var.get():
+                if self.has_grid_var.get():
                     self.canvas.create_line(uc_canvas[0][0], uc_canvas[0][1], uc_canvas[1][0], uc_canvas[1][1], fill='lime', width=3)
                     self.canvas.create_line(uc_canvas[1][0], uc_canvas[1][1], uc_canvas[2][0], uc_canvas[2][1], fill='lime', width=3)
                     self.canvas.create_line(uc_canvas[2][0], uc_canvas[2][1], uc_canvas[3][0], uc_canvas[3][1], fill='lime', width=3)
@@ -534,8 +589,8 @@ class GridTool:
             except Exception:
                 pass
 
-        # Draw grid if all 4 points are placed and grid is enabled
-        if self.show_grid_var.get() and all(p is not None for p in self.grid_points):
+        # Draw grid if all 4 points are placed AND has_grid is checked
+        if self.has_grid_var.get() and all(p is not None for p in self.grid_points):
             self._draw_grid_overlay()
     
     def _draw_grid_overlay(self):
@@ -691,6 +746,19 @@ class GridTool:
             self._save_frame_config()
             self._display_frame()
     
+    def _on_has_grid_toggle(self):
+        """Handle toggling of Has Grid checkbox."""
+        self._save_frame_config()
+        self._display_frame()
+    
+    def _toggle_has_grid(self, event=None):
+        """Toggle Has Grid with 'g' key."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        self.has_grid_var.set(not self.has_grid_var.get())
+        self._save_frame_config()
+        self._display_frame()
+    
     def _save_frame_config(self):
         """Save the current frame's grid configuration."""
         if self.video_list:
@@ -702,7 +770,8 @@ class GridTool:
         self.frame_grid_config[frame_key] = (
             list(self.grid_points),
             self.grid_subdiv_x.get(),
-            self.grid_subdiv_y.get()
+            self.grid_subdiv_y.get(),
+            self.has_grid_var.get()
         )
         self._save_persistent_state()
     
@@ -715,10 +784,16 @@ class GridTool:
         
         frame_key = (video_path, self.current_frame_idx)
         if frame_key in self.frame_grid_config:
-            points, subdiv_x, subdiv_y = self.frame_grid_config[frame_key]
+            config = self.frame_grid_config[frame_key]
+            points = config[0]
+            subdiv_x = config[1]
+            subdiv_y = config[2]
+            has_grid = config[3] if len(config) > 3 else False  # Backward compatibility
+            
             self.grid_points = list(points)
             self.grid_subdiv_x.set(subdiv_x)
             self.grid_subdiv_y.set(subdiv_y)
+            self.has_grid_var.set(has_grid)
             return True
         return False
     
@@ -753,7 +828,8 @@ class GridTool:
                                 video_path, frame_idx_str = parts
                                 frame_idx = int(frame_idx_str)
                                 points = [tuple(p) if p else None for p in value[0]]
-                                self.frame_grid_config[(video_path, frame_idx)] = (points, value[1], value[2])
+                                has_grid = value[3] if len(value) > 3 else False
+                                self.frame_grid_config[(video_path, frame_idx)] = (points, value[1], value[2], has_grid)
             except Exception as e:
                 print(f"[Grid Tool] Warning: Could not load persistent state: {e}")
     
@@ -763,9 +839,10 @@ class GridTool:
         try:
             # Convert frame_grid_config keys to strings for JSON serialization
             config_serializable = {}
-            for (video_path, frame_idx), (points, subdiv_x, subdiv_y) in self.frame_grid_config.items():
+            for (video_path, frame_idx), config in self.frame_grid_config.items():
                 key_str = f"{video_path},{frame_idx}"
-                config_serializable[key_str] = (points, subdiv_x, subdiv_y)
+                # config is (points, subdiv_x, subdiv_y, has_grid)
+                config_serializable[key_str] = config
             
             state = {
                 'frame_history': self.frame_history,
