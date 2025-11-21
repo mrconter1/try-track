@@ -328,18 +328,25 @@ class GridTool:
             print("[Grid Tool] All data cleared.")
     
     def _random_frame(self, event=None):
-        """Jump to a random frame in the video."""
+        """Jump to a random frame in ANY video."""
         # If the user is typing in a widget, ignore the hotkey
         if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
             return
 
-        # Reset grid points and subdivisions
-        self.grid_points = [None, None, None, None]
-        self.grid_subdiv_x.set(1)
-        self.grid_subdiv_y.set(1)
-
-        random_idx = random.randint(0, self.total_frames - 1)
-        self._load_frame(random_idx, auto_save_new=True)
+        if self.video_list:
+            # Sample from all videos proportionally
+            video_path, frame_idx = self._sample_random_frame_proportional()
+            # _sample_random_frame_proportional already resets grid points/subdivs locally? 
+            # Actually it modifies self.grid_points.
+            
+            self._switch_to_video_and_frame(video_path, frame_idx, auto_save_new=True)
+        else:
+            # Single video mode
+            self.grid_points = [None, None, None, None]
+            self.grid_subdiv_x.set(1)
+            self.grid_subdiv_y.set(1)
+            random_idx = random.randint(0, self.total_frames - 1)
+            self._load_frame(random_idx, auto_save_new=True)
     
     def _prev_in_history(self, event=None):
         """Go to previous frame in history (a key)."""
