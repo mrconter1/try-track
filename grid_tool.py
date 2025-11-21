@@ -7,6 +7,8 @@ import argparse
 import os
 import random
 import json
+import threading
+import subprocess
 
 class GridTool:
     def __init__(self, root, video_path):
@@ -120,6 +122,9 @@ class GridTool:
         
         self.clear_data_button = ttk.Button(controls_frame, text="Clear All Data", command=self.clear_all_data)
         self.clear_data_button.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        self.train_button = ttk.Button(controls_frame, text="Train Model", command=self.start_training)
+        self.train_button.pack(side=tk.LEFT, padx=10, pady=5)
         
         # Frame navigation
         nav_frame = ttk.Frame(controls_frame)
@@ -982,6 +987,45 @@ class GridTool:
                 json.dump(state, f, indent=2)
         except Exception as e:
             print(f"[Grid Tool] Warning: Could not save persistent state: {e}")
+
+    def start_training(self):
+        """Start the training process in a separate thread."""
+        def run_train():
+            self.train_button.config(state="disabled", text="Training...")
+            try:
+                # Run grid_train.py using the same python interpreter
+                import sys
+                
+                # On Windows, use CREATE_NO_WINDOW to avoid popping up a terminal
+                creation_flags = 0
+                if os.name == 'nt':
+                    creation_flags = 0x08000000  # CREATE_NO_WINDOW
+                
+                process = subprocess.Popen(
+                    [sys.executable, "grid_train.py"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    creationflags=creation_flags
+                )
+                
+                print("\n[Grid Tool] Training started...")
+                
+                # Read output line by line and print to console
+                for line in process.stdout:
+                    print(f"[Train] {line.strip()}")
+                
+                process.wait()
+                print("[Grid Tool] Training finished.")
+                
+            except Exception as e:
+                print(f"[Grid Tool] Error starting training: {e}")
+            finally:
+                # Schedule UI update on main thread
+                self.root.after(0, lambda: self.train_button.config(state="normal", text="Train Model"))
+        
+        threading.Thread(target=run_train, daemon=True).start()
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive grid tool for video frames")
