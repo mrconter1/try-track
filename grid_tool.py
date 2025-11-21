@@ -131,6 +131,10 @@ class GridTool:
         self.root.bind("R", self._random_frame)
         self.root.bind("a", self._prev_in_history)
         self.root.bind("d", self._next_or_random_frame)
+        self.root.bind("1", self._decrease_subdiv_x)
+        self.root.bind("2", self._increase_subdiv_x)
+        self.root.bind("3", self._decrease_subdiv_y)
+        self.root.bind("4", self._increase_subdiv_y)
         
         # Grid state
         self.grid_points = [None, None, None, None]
@@ -622,6 +626,42 @@ class GridTool:
     
     def _on_resize(self, event):
         self._display_frame()
+    
+    def _decrease_subdiv_x(self, event=None):
+        """Decrease horizontal subdivisions (1 key)."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        current = self.grid_subdiv_x.get()
+        if current > 1:
+            self.grid_subdiv_x.set(current - 1)
+            self._display_frame()
+    
+    def _increase_subdiv_x(self, event=None):
+        """Increase horizontal subdivisions (2 key)."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        current = self.grid_subdiv_x.get()
+        if current < 20:
+            self.grid_subdiv_x.set(current + 1)
+            self._display_frame()
+    
+    def _decrease_subdiv_y(self, event=None):
+        """Decrease vertical subdivisions (3 key)."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        current = self.grid_subdiv_y.get()
+        if current > 1:
+            self.grid_subdiv_y.set(current - 1)
+            self._display_frame()
+    
+    def _increase_subdiv_y(self, event=None):
+        """Increase vertical subdivisions (4 key)."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        current = self.grid_subdiv_y.get()
+        if current < 20:
+            self.grid_subdiv_y.set(current + 1)
+            self._display_frame()
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive grid tool for video frames")
