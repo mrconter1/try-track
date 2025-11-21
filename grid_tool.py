@@ -90,6 +90,8 @@ class GridTool:
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
         self.root.bind("r", self._random_frame)
         self.root.bind("R", self._random_frame)
+        self.root.bind("a", self._prev_in_history)
+        self.root.bind("d", self._next_or_random_frame)
         
         # Grid state
         self.grid_points = [None, None, None, None]
@@ -106,6 +108,10 @@ class GridTool:
         self.magnifier_zoom = 4
         self.drag_start_pos = None
         self.drag_start_point_pos = None
+        
+        # Frame history for a/d navigation
+        self.frame_history = [0]  # Start with frame 0
+        self.history_index = 0
     
     def _load_frame(self, frame_idx):
         if frame_idx < 0 or frame_idx >= self.total_frames:
@@ -153,6 +159,33 @@ class GridTool:
 
         random_idx = random.randint(0, self.total_frames - 1)
         self._load_frame(random_idx)
+    
+    def _prev_in_history(self, event=None):
+        """Go to previous frame in history (a key)."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        
+        if self.history_index > 0:
+            self.history_index -= 1
+            frame_idx = self.frame_history[self.history_index]
+            self._load_frame(frame_idx)
+    
+    def _next_or_random_frame(self, event=None):
+        """Go to next frame in history, or pick a new random one if at end (d key)."""
+        if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        
+        if self.history_index < len(self.frame_history) - 1:
+            # Navigate forward in existing history
+            self.history_index += 1
+            frame_idx = self.frame_history[self.history_index]
+            self._load_frame(frame_idx)
+        else:
+            # At the end, pick a new random frame
+            random_idx = random.randint(0, self.total_frames - 1)
+            self.frame_history.append(random_idx)
+            self.history_index += 1
+            self._load_frame(random_idx)
 
     def _canvas_click(self, event):
         if self.current_frame is None:
