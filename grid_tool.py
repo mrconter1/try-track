@@ -48,10 +48,14 @@ class GridTool:
         ttk.Checkbutton(side_panel, text="256x256 Preview", variable=self.low_res_preview_var, command=self._display_frame).pack(anchor=tk.W, pady=5)
         
         ttk.Label(side_panel, text="Horizontal Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
-        ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_x, command=self._display_frame).pack(fill=tk.X, pady=5)
+        subdiv_x_spinbox = ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_x, command=self._display_frame)
+        subdiv_x_spinbox.pack(fill=tk.X, pady=5)
+        subdiv_x_spinbox.bind("<FocusIn>", lambda e: side_panel.focus_set())
         
         ttk.Label(side_panel, text="Vertical Subdivisions:").pack(anchor=tk.W, pady=(10, 0))
-        ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_y, command=self._display_frame).pack(fill=tk.X, pady=5)
+        subdiv_y_spinbox = ttk.Spinbox(side_panel, from_=1, to=20, textvariable=self.grid_subdiv_y, command=self._display_frame)
+        subdiv_y_spinbox.pack(fill=tk.X, pady=5)
+        subdiv_y_spinbox.bind("<FocusIn>", lambda e: side_panel.focus_set())
 
         # Normalized Coordinates Display
         ttk.Label(side_panel, text="Normalized Coordinates:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(15, 5))
