@@ -572,14 +572,54 @@ class GridTool:
                 unit_pixels = cv2.perspectiveTransform(unit_logical, H)
                 unit_pixels = unit_pixels.reshape(-1, 2)
                 
-                norm_text = "NN Unit Cell (Normalized):\n"
-                display_labels = ["TL", "TR", "BR", "BL"]
+                # --- NEW: Calculate Origin & Basis Vectors (Anchor) ---
                 
-                for idx, label in enumerate(display_labels):
-                    px, py = unit_pixels[idx]
-                    nx = px / img_w
-                    ny = py / img_h
-                    norm_text += f"{label}: {nx:.4f}, {ny:.4f}\n"
+                # 1. Find logical coordinate closest to image center
+                # Center of image in pixel coords
+                center_img = np.array([[[img_w / 2.0, img_h / 2.0]]], dtype=np.float32)
+                
+                # Transform image center to logical grid coords (inverse homography)
+                H_inv = np.linalg.inv(H)
+                center_logical = cv2.perspectiveTransform(center_img, H_inv)[0][0]
+                
+                # The logical grid is scaled by sub_x, sub_y in the definition above?
+                # Actually H maps Unit Square (0,0)-(1,1) to the USER's QUAD.
+                # User quad has dimensions sub_x, sub_y.
+                # So true grid integer coordinates are: logical_coord * (sub_x, sub_y)
+                
+                grid_gx = center_logical[0] * sub_x
+                grid_gy = center_logical[1] * sub_y
+                
+                # Find nearest integer intersection
+                nearest_gx = round(grid_gx)
+                nearest_gy = round(grid_gy)
+                
+                # 2. Define Origin and Basis points in Logical Space (0-1 normalized to User Quad)
+                # We need to convert back from integer grid coords to H-space coords
+                # H-space x = grid_x / sub_x
+                
+                origin_logical = np.array([[[nearest_gx / sub_x, nearest_gy / sub_y]]], dtype=np.float32)
+                basis_u_logical = np.array([[[ (nearest_gx + 1) / sub_x, nearest_gy / sub_y ]]], dtype=np.float32)
+                basis_v_logical = np.array([[[ nearest_gx / sub_x, (nearest_gy + 1) / sub_y ]]], dtype=np.float32)
+                
+                # 3. Project back to Pixel Space
+                origin_px = cv2.perspectiveTransform(origin_logical, H)[0][0]
+                basis_u_px = cv2.perspectiveTransform(basis_u_logical, H)[0][0]
+                basis_v_px = cv2.perspectiveTransform(basis_v_logical, H)[0][0]
+                
+                # 4. Calculate Vectors
+                vec_u = basis_u_px - origin_px
+                vec_v = basis_v_px - origin_px
+                
+                # Normalize for display
+                norm_origin = origin_px / [img_w, img_h]
+                norm_vec_u = vec_u / [img_w, img_h]
+                norm_vec_v = vec_v / [img_w, img_h]
+                
+                norm_text = "Grid Anchor (Normalized):\n"
+                norm_text += f"Origin: {norm_origin[0]:.4f}, {norm_origin[1]:.4f}\n"
+                norm_text += f"Vec U : {norm_vec_u[0]:.4f}, {norm_vec_u[1]:.4f}\n"
+                norm_text += f"Vec V : {norm_vec_v[0]:.4f}, {norm_vec_v[1]:.4f}\n"
                 
                 self.coord_text.configure(state="normal")
                 self.coord_text.delete("1.0", tk.END)
@@ -594,13 +634,42 @@ class GridTool:
                     uc_canvas.append((cx, cy))
                 
                 if self.has_grid_var.get():
-                    self.canvas.create_line(uc_canvas[0][0], uc_canvas[0][1], uc_canvas[1][0], uc_canvas[1][1], fill='lime', width=3)
-                    self.canvas.create_line(uc_canvas[1][0], uc_canvas[1][1], uc_canvas[2][0], uc_canvas[2][1], fill='lime', width=3)
-                    self.canvas.create_line(uc_canvas[2][0], uc_canvas[2][1], uc_canvas[3][0], uc_canvas[3][1], fill='lime', width=3)
-                    self.canvas.create_line(uc_canvas[3][0], uc_canvas[3][1], uc_canvas[0][0], uc_canvas[0][1], fill='lime', width=3)
+                    # Draw User Unit Cell (Lime) - kept for reference
+                    # self.canvas.create_line(uc_canvas[0][0], uc_canvas[0][1], uc_canvas[1][0], uc_canvas[1][1], fill='lime', width=3)
+                    # self.canvas.create_line(uc_canvas[1][0], uc_canvas[1][1], uc_canvas[2][0], uc_canvas[2][1], fill='lime', width=3)
+                    # self.canvas.create_line(uc_canvas[2][0], uc_canvas[2][1], uc_canvas[3][0], uc_canvas[3][1], fill='lime', width=3)
+                    # self.canvas.create_line(uc_canvas[3][0], uc_canvas[3][1], uc_canvas[0][0], uc_canvas[0][1], fill='lime', width=3)
+                    
+                    # Draw Anchor Basis
+                    # Origin
+                    ox = self.canvas_offset_x + origin_px[0] * self.canvas_scale
+                    oy = self.canvas_offset_y + origin_px[1] * self.canvas_scale
+                    
+                    # U Vector tip
+                    ux = self.canvas_offset_x + basis_u_px[0] * self.canvas_scale
+                    uy = self.canvas_offset_y + basis_u_px[1] * self.canvas_scale
+                    
+                    # V Vector tip
+                    vx = self.canvas_offset_x + basis_v_px[0] * self.canvas_scale
+                    vy = self.canvas_offset_y + basis_v_px[1] * self.canvas_scale
+                    
+                    # Draw Origin Dot
+                    r = 6
+                    self.canvas.create_oval(ox-r, oy-r, ox+r, oy+r, fill='magenta', outline='white', width=2)
+                    
+                    # Draw Vectors (Arrows)
+                    self.canvas.create_line(ox, oy, ux, uy, fill='red', width=3, arrow=tk.LAST)
+                    self.canvas.create_line(ox, oy, vx, vy, fill='lime', width=3, arrow=tk.LAST)
+                    
+                    # Label
+                    self.canvas.create_text(ox, oy-15, text="Anchor", fill="magenta", font=("Arial", 10, "bold"))
 
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Grid Tool] Error calculating grid anchor: {e}")
+                self.coord_text.configure(state="normal")
+                self.coord_text.delete("1.0", tk.END)
+                self.coord_text.insert("1.0", f"CALC ERROR\n{e}")
+                self.coord_text.configure(state="disabled")
 
         # Draw grid if all 4 points are placed AND has_grid is checked
         if self.has_grid_var.get() and all(p is not None for p in self.grid_points):
