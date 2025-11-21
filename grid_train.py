@@ -88,8 +88,19 @@ class GridDataset(Dataset):
         # Resize image
         img = cv2.resize(frame, (self.img_size, self.img_size))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = torch.from_numpy(img).permute(2, 0, 1) # C, H, W
+        
+        # Convert to PIL and Apply Augmentation
+        from PIL import Image
+        img_pil = Image.fromarray(img)
+        
+        # Augmentation: Random brightness, contrast, saturation
+        transform = transforms.Compose([
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            transforms.ToTensor(), # divides by 255
+            # transforms.Normalize(...) # skipped to keep compatible with simple inference in tool
+        ])
+        
+        img = transform(img_pil)
         
         # Prepare target: [Confidence, OriginX, OriginY, VecUX, VecUY, VecVX, VecVY]
         target = np.zeros(7, dtype=np.float32)
@@ -181,7 +192,7 @@ def train():
     bce_loss = nn.BCEWithLogitsLoss()
     mse_loss = nn.MSELoss(reduction='none')
     
-    num_epochs = 20
+    num_epochs = 50
     print("Starting training...")
     
     for epoch in range(num_epochs):
