@@ -12,9 +12,22 @@ class GridTool:
         self.root = root
         self.video_path = video_path
         
-        self.cap = cv2.VideoCapture(video_path)
-        if not self.cap.isOpened():
-            raise IOError(f"Cannot open video file: {video_path}")
+        # Check if video_path is a directory
+        if os.path.isdir(video_path):
+            self.video_list = self._build_video_list(video_path)
+            if not self.video_list:
+                raise IOError(f"No video files found in directory: {video_path}")
+            self.current_video_idx = 0
+            self.cap = cv2.VideoCapture(self.video_list[0][0])
+            if not self.cap.isOpened():
+                raise IOError(f"Cannot open first video from directory: {video_path}")
+        else:
+            if not os.path.isfile(video_path):
+                raise IOError(f"Video file not found: {video_path}")
+            self.cap = cv2.VideoCapture(video_path)
+            self.video_list = None
+            if not self.cap.isOpened():
+                raise IOError(f"Cannot open video file: {video_path}")
         
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.current_frame_idx = 0
@@ -28,6 +41,32 @@ class GridTool:
         self.root.state('zoomed')
         self._build_ui()
         self._load_frame(0)
+    
+    def _build_video_list(self, directory):
+        """Build list of (video_path, frame_count) tuples from directory."""
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm'}
+        video_list = []
+        
+        print(f"\n[Grid Tool] Scanning directory: {directory}")
+        
+        for filename in os.listdir(directory):
+            file_path = os.path.join(directory, filename)
+            if os.path.isfile(file_path):
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in video_extensions:
+                    cap = cv2.VideoCapture(file_path)
+                    if cap.isOpened():
+                        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        if frame_count > 0:
+                            video_list.append((file_path, frame_count))
+                            print(f"  [+] {filename}: {frame_count} frames")
+                        cap.release()
+        
+        video_list = sorted(video_list)
+        total_frames = sum(fc for _, fc in video_list)
+        print(f"[Grid Tool] Found {len(video_list)} video(s), {total_frames} total frames\n")
+        
+        return video_list
     
     def _build_ui(self):
         main_frame = ttk.Frame(self.root)
@@ -182,10 +221,42 @@ class GridTool:
             self._load_frame(frame_idx)
         else:
             # At the end, pick a new random frame
-            random_idx = random.randint(0, self.total_frames - 1)
+            if self.video_list:
+                # Sample from all videos proportionally to frame count
+                random_idx = self._sample_random_frame_proportional()
+            else:
+                random_idx = random.randint(0, self.total_frames - 1)
             self.frame_history.append(random_idx)
             self.history_index += 1
             self._load_frame(random_idx)
+    
+    def _sample_random_frame_proportional(self):
+        """Sample a random frame from all videos, proportional to frame counts."""
+        # Use weighted sampling based on frame counts
+        video_paths = [vp for vp, _ in self.video_list]
+        frame_counts = [fc for _, fc in self.video_list]
+        
+        # Pick a random video weighted by frame count
+        video_path = random.choices(video_paths, weights=frame_counts, k=1)[0]
+        
+        # Get frame count for selected video
+        frame_count = next(fc for vp, fc in self.video_list if vp == video_path)
+        
+        # Pick random frame in that video
+        frame_idx = random.randint(0, frame_count - 1)
+        
+        # Switch to that video if needed
+        current_video_path = self.video_list[self.current_video_idx][0]
+        if video_path != current_video_path:
+            print(f"[Grid Tool] Switching to: {os.path.basename(video_path)} (frame {frame_idx}/{frame_count})")
+            self.cap.release()
+            self.cap = cv2.VideoCapture(video_path)
+            self.current_video_idx = next(i for i, (vp, _) in enumerate(self.video_list) if vp == video_path)
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        else:
+            print(f"[Grid Tool] Frame {frame_idx}/{frame_count}")
+        
+        return frame_idx
 
     def _canvas_click(self, event):
         if self.current_frame is None:
@@ -544,11 +615,11 @@ class GridTool:
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive grid tool for video frames")
-    parser.add_argument("--input", type=str, required=True, help="Path to video file")
+    parser.add_argument("--input", type=str, required=True, help="Path to video file or directory of videos")
     args = parser.parse_args()
     
-    if not os.path.isfile(args.input):
-        print(f"Error: Video file not found: {args.input}")
+    if not os.path.isfile(args.input) and not os.path.isdir(args.input):
+        print(f"Error: Video file or directory not found: {args.input}")
         return
     
     root = tk.Tk()
