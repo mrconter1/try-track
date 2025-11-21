@@ -6,6 +6,7 @@ from PIL import Image, ImageTk
 import argparse
 import os
 import random
+import json
 
 class GridTool:
     def __init__(self, root, video_path):
@@ -152,9 +153,19 @@ class GridTool:
         self.drag_start_pos = None
         self.drag_start_point_pos = None
         
-        # Frame history for a/d navigation
-        self.frame_history = [0]  # Start with frame 0
+        # Frame history for a/d navigation: [(video_path, frame_idx), ...]
+        if self.video_list:
+            initial_video = self.video_list[0][0]
+        else:
+            initial_video = self.video_path
+        self.frame_history = [(initial_video, 0)]  # Start with frame 0
         self.history_index = 0
+        
+        # Store grid config per frame: {(video_path, frame_idx): (points, subdiv_x, subdiv_y)}
+        self.frame_grid_config = {}
+        
+        # Load persistent state
+        self._load_persistent_state()
     
     def _load_frame(self, frame_idx):
         if frame_idx < 0 or frame_idx >= self.total_frames:
@@ -166,8 +177,8 @@ class GridTool:
         
         if ret:
             self.current_frame = frame
-            # Initialize grid points with default positions if not already set
-            if self.grid_points[0] is None:
+            # Try to load saved config; if not found, use default
+            if not self._load_frame_config():
                 h, w = frame.shape[:2]
                 # Default cell in center of frame
                 cell_w = w // 4
@@ -180,6 +191,8 @@ class GridTool:
                     (center_x - cell_w // 2, center_y + cell_h // 2),  # P3 (bottom-left)
                     (center_x + cell_w // 2, center_y + cell_h // 2),  # P4 (bottom-right)
                 ]
+                self.grid_subdiv_x.set(1)
+                self.grid_subdiv_y.set(1)
             self._display_frame()
             self.frame_label.config(text=f"Frame: {frame_idx}/{self.total_frames-1}")
     
@@ -215,8 +228,9 @@ class GridTool:
         
         if self.history_index > 0:
             self.history_index -= 1
-            frame_idx = self.frame_history[self.history_index]
-            self._load_frame(frame_idx)
+            video_path, frame_idx = self.frame_history[self.history_index]
+            self._switch_to_video_and_frame(video_path, frame_idx)
+            self._save_persistent_state()
     
     def _next_or_random_frame(self, event=None):
         """Go to next frame in history, or pick a new random one if at end (d key)."""
@@ -226,21 +240,24 @@ class GridTool:
         if self.history_index < len(self.frame_history) - 1:
             # Navigate forward in existing history
             self.history_index += 1
-            frame_idx = self.frame_history[self.history_index]
-            self._load_frame(frame_idx)
+            video_path, frame_idx = self.frame_history[self.history_index]
+            self._switch_to_video_and_frame(video_path, frame_idx)
         else:
             # At the end, pick a new random frame
             if self.video_list:
                 # Sample from all videos proportionally to frame count
-                random_idx = self._sample_random_frame_proportional()
+                video_path, frame_idx = self._sample_random_frame_proportional()
             else:
-                random_idx = random.randint(0, self.total_frames - 1)
-            self.frame_history.append(random_idx)
+                video_path = self.video_path
+                frame_idx = random.randint(0, self.total_frames - 1)
+            self.frame_history.append((video_path, frame_idx))
             self.history_index += 1
-            self._load_frame(random_idx)
+            self._switch_to_video_and_frame(video_path, frame_idx)
+        
+        self._save_persistent_state()
     
     def _sample_random_frame_proportional(self):
-        """Sample a random frame from all videos, proportional to frame counts."""
+        """Sample a random frame from all videos, proportional to frame counts. Returns (video_path, frame_idx)."""
         # Use weighted sampling based on frame counts
         video_paths = [vp for vp, _ in self.video_list]
         frame_counts = [fc for _, fc in self.video_list]
@@ -259,18 +276,24 @@ class GridTool:
         self.grid_subdiv_x.set(1)
         self.grid_subdiv_y.set(1)
         
-        # Switch to that video if needed
-        current_video_path = self.video_list[self.current_video_idx][0]
-        if video_path != current_video_path:
-            print(f"[Grid Tool] Switching to: {os.path.basename(video_path)} (frame {frame_idx}/{frame_count})")
-            self.cap.release()
-            self.cap = cv2.VideoCapture(video_path)
-            self.current_video_idx = next(i for i, (vp, _) in enumerate(self.video_list) if vp == video_path)
-            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        else:
-            print(f"[Grid Tool] Frame {frame_idx}/{frame_count}")
+        print(f"[Grid Tool] Sampled: {os.path.basename(video_path)} (frame {frame_idx}/{frame_count})")
         
-        return frame_idx
+        return (video_path, frame_idx)
+    
+    def _switch_to_video_and_frame(self, video_path, frame_idx):
+        """Switch to a specific video and frame."""
+        # Switch video if needed
+        if self.video_list:
+            current_video_path = self.video_list[self.current_video_idx][0]
+            if video_path != current_video_path:
+                print(f"[Grid Tool] Switching to: {os.path.basename(video_path)} (frame {frame_idx})")
+                self.cap.release()
+                self.cap = cv2.VideoCapture(video_path)
+                self.current_video_idx = next(i for i, (vp, _) in enumerate(self.video_list) if vp == video_path)
+                self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Load the frame
+        self._load_frame(frame_idx)
 
     def _canvas_click(self, event):
         if self.current_frame is None:
@@ -313,6 +336,7 @@ class GridTool:
         
         if self._is_convex(new_points):
             self.grid_points[self.dragging_point] = (new_x, new_y)
+            self._save_frame_config()
             self._update_magnifier(event)
             self._display_frame()
     
@@ -634,6 +658,7 @@ class GridTool:
         current = self.grid_subdiv_x.get()
         if current > 1:
             self.grid_subdiv_x.set(current - 1)
+            self._save_frame_config()
             self._display_frame()
     
     def _increase_subdiv_x(self, event=None):
@@ -643,6 +668,7 @@ class GridTool:
         current = self.grid_subdiv_x.get()
         if current < 20:
             self.grid_subdiv_x.set(current + 1)
+            self._save_frame_config()
             self._display_frame()
     
     def _decrease_subdiv_y(self, event=None):
@@ -652,6 +678,7 @@ class GridTool:
         current = self.grid_subdiv_y.get()
         if current > 1:
             self.grid_subdiv_y.set(current - 1)
+            self._save_frame_config()
             self._display_frame()
     
     def _increase_subdiv_y(self, event=None):
@@ -661,7 +688,94 @@ class GridTool:
         current = self.grid_subdiv_y.get()
         if current < 20:
             self.grid_subdiv_y.set(current + 1)
+            self._save_frame_config()
             self._display_frame()
+    
+    def _save_frame_config(self):
+        """Save the current frame's grid configuration."""
+        if self.video_list:
+            video_path = self.video_list[self.current_video_idx][0]
+        else:
+            video_path = self.video_path
+        
+        frame_key = (video_path, self.current_frame_idx)
+        self.frame_grid_config[frame_key] = (
+            list(self.grid_points),
+            self.grid_subdiv_x.get(),
+            self.grid_subdiv_y.get()
+        )
+        self._save_persistent_state()
+    
+    def _load_frame_config(self):
+        """Load the saved grid configuration for the current frame if it exists."""
+        if self.video_list:
+            video_path = self.video_list[self.current_video_idx][0]
+        else:
+            video_path = self.video_path
+        
+        frame_key = (video_path, self.current_frame_idx)
+        if frame_key in self.frame_grid_config:
+            points, subdiv_x, subdiv_y = self.frame_grid_config[frame_key]
+            self.grid_points = list(points)
+            self.grid_subdiv_x.set(subdiv_x)
+            self.grid_subdiv_y.set(subdiv_y)
+            return True
+        return False
+    
+    def _get_state_file(self):
+        """Get the path to the persistent state file."""
+        return os.path.join(os.path.expanduser("~"), ".grid_tool_state.json")
+    
+    def _load_persistent_state(self):
+        """Load frame history and grid configs from disk."""
+        state_file = self._get_state_file()
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                    # Load frame history - convert from list to list of tuples
+                    if 'frame_history' in state:
+                        self.frame_history = [tuple(item) if isinstance(item, list) else item for item in state['frame_history']]
+                        # Ensure old format compatibility (if history was just frame indices)
+                        if self.frame_history and not isinstance(self.frame_history[0], tuple):
+                            if self.video_list:
+                                video_path = self.video_list[0][0]
+                            else:
+                                video_path = self.video_path
+                            self.frame_history = [(video_path, idx) for idx in self.frame_history]
+                        self.history_index = min(state.get('history_index', 0), len(self.frame_history) - 1)
+                    # Load grid configs - convert string keys back to tuples
+                    if 'frame_grid_config' in state:
+                        for key_str, value in state['frame_grid_config'].items():
+                            # key_str is like "path/to/video.mp4,123"
+                            parts = key_str.rsplit(',', 1)
+                            if len(parts) == 2:
+                                video_path, frame_idx_str = parts
+                                frame_idx = int(frame_idx_str)
+                                points = [tuple(p) if p else None for p in value[0]]
+                                self.frame_grid_config[(video_path, frame_idx)] = (points, value[1], value[2])
+            except Exception as e:
+                print(f"[Grid Tool] Warning: Could not load persistent state: {e}")
+    
+    def _save_persistent_state(self):
+        """Save frame history and grid configs to disk."""
+        state_file = self._get_state_file()
+        try:
+            # Convert frame_grid_config keys to strings for JSON serialization
+            config_serializable = {}
+            for (video_path, frame_idx), (points, subdiv_x, subdiv_y) in self.frame_grid_config.items():
+                key_str = f"{video_path},{frame_idx}"
+                config_serializable[key_str] = (points, subdiv_x, subdiv_y)
+            
+            state = {
+                'frame_history': self.frame_history,
+                'history_index': self.history_index,
+                'frame_grid_config': config_serializable
+            }
+            with open(state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            print(f"[Grid Tool] Warning: Could not save persistent state: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="Interactive grid tool for video frames")
