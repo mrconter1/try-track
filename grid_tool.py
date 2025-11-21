@@ -261,8 +261,26 @@ class GridTool:
         self._load_frame(self.current_frame_idx + 1)
     
     def reset_points(self):
-        self.grid_points = [None, None, None, None]
+        """Reset points to default centered position for the current frame."""
+        if self.current_frame is None:
+            return
+            
+        h, w = self.current_frame.shape[:2]
+        cell_w = w // 4
+        cell_h = h // 4
+        center_x = w // 2
+        center_y = h // 2
+        
+        self.grid_points = [
+            (center_x - cell_w // 2, center_y - cell_h // 2),  # P1 (TL)
+            (center_x + cell_w // 2, center_y - cell_h // 2),  # P2 (TR)
+            (center_x - cell_w // 2, center_y + cell_h // 2),  # P3 (BL)
+            (center_x + cell_w // 2, center_y + cell_h // 2),  # P4 (BR)
+        ]
         self.dragging_point = None
+        self.has_grid_var.set(True) # Assume user wants to see the grid
+        
+        self._save_frame_config()
         self._display_frame()
     
     def clear_all_data(self):
