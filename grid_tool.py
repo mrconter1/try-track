@@ -97,6 +97,11 @@ class GridTool:
         subdiv_y_spinbox.pack(fill=tk.X, pady=5)
         subdiv_y_spinbox.bind("<FocusIn>", lambda e: side_panel.focus_set())
 
+        # Stats Display
+        ttk.Label(side_panel, text="Statistics:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(15, 5))
+        self.stats_label = ttk.Label(side_panel, text="", font=("Arial", 9), justify=tk.LEFT)
+        self.stats_label.pack(anchor=tk.W, pady=5)
+        
         # Normalized Coordinates Display
         ttk.Label(side_panel, text="Normalized Coordinates:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(15, 5))
         self.coord_text = tk.Text(side_panel, height=8, width=25, font=("Consolas", 9))
@@ -172,7 +177,7 @@ class GridTool:
         # Load persistent state
         self._load_persistent_state()
     
-    def _load_frame(self, frame_idx):
+    def _load_frame(self, frame_idx, auto_save_new=False):
         if frame_idx < 0 or frame_idx >= self.total_frames:
             return
         
@@ -199,6 +204,11 @@ class GridTool:
                 self.grid_subdiv_x.set(1)
                 self.grid_subdiv_y.set(1)
                 self.has_grid_var.set(False)  # Default: No Grid
+                
+                # Auto-save new random frames
+                if auto_save_new:
+                    self._save_frame_config()
+            
             self._display_frame()
             self.frame_label.config(text=f"Frame: {frame_idx}/{self.total_frames-1}")
     
@@ -269,7 +279,7 @@ class GridTool:
         self.grid_subdiv_y.set(1)
         
         random_idx = random.randint(0, self.total_frames - 1)
-        self._load_frame(random_idx)
+        self._load_frame(random_idx, auto_save_new=True)
     
     def _prev_in_history(self, event=None):
         """Go to previous frame in history (a key)."""
@@ -291,7 +301,7 @@ class GridTool:
             # Navigate forward in existing history
             self.history_index += 1
             video_path, frame_idx = self.frame_history[self.history_index]
-            self._switch_to_video_and_frame(video_path, frame_idx)
+            self._switch_to_video_and_frame(video_path, frame_idx, auto_save_new=False)
         else:
             # At the end, pick a new random frame
             if self.video_list:
@@ -302,7 +312,7 @@ class GridTool:
                 frame_idx = random.randint(0, self.total_frames - 1)
             self.frame_history.append((video_path, frame_idx))
             self.history_index += 1
-            self._switch_to_video_and_frame(video_path, frame_idx)
+            self._switch_to_video_and_frame(video_path, frame_idx, auto_save_new=True)
         
         self._save_persistent_state()
     
@@ -330,7 +340,7 @@ class GridTool:
         
         return (video_path, frame_idx)
     
-    def _switch_to_video_and_frame(self, video_path, frame_idx):
+    def _switch_to_video_and_frame(self, video_path, frame_idx, auto_save_new=False):
         """Switch to a specific video and frame."""
         # Switch video if needed
         if self.video_list:
@@ -343,7 +353,7 @@ class GridTool:
                 self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         # Load the frame
-        self._load_frame(frame_idx)
+        self._load_frame(frame_idx, auto_save_new=auto_save_new)
 
     def _canvas_click(self, event):
         if self.current_frame is None:
@@ -481,6 +491,9 @@ class GridTool:
     def _display_frame(self):
         if self.current_frame is None:
             return
+        
+        # Update statistics
+        self._update_stats()
         
         frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
         
@@ -758,6 +771,27 @@ class GridTool:
         self.has_grid_var.set(not self.has_grid_var.get())
         self._save_frame_config()
         self._display_frame()
+    
+    def _update_stats(self):
+        """Update the statistics label with frame counts."""
+        total_labeled = len(self.frame_grid_config)
+        
+        # Count frames with and without grids
+        grid_frames = 0
+        no_grid_frames = 0
+        
+        for config in self.frame_grid_config.values():
+            has_grid = config[3] if len(config) > 3 else False
+            if has_grid:
+                grid_frames += 1
+            else:
+                no_grid_frames += 1
+        
+        stats_text = f"Total Labeled: {total_labeled}\n"
+        stats_text += f"Has Grid: {grid_frames}\n"
+        stats_text += f"No Grid: {no_grid_frames}"
+        
+        self.stats_label.config(text=stats_text)
     
     def _save_frame_config(self):
         """Save the current frame's grid configuration."""
