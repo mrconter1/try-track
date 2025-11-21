@@ -161,6 +161,7 @@ class GridTool:
         self.canvas.bind("<Button-1>", self._canvas_click)
         self.canvas.bind("<B1-Motion>", self._canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
+        # self.canvas.bind("<Motion>", self._update_crosshair) # Removed
         self.root.bind("r", self._random_frame)
         self.root.bind("R", self._random_frame)
         self.root.bind("a", self._prev_in_history)
@@ -183,10 +184,9 @@ class GridTool:
         self.photo_image = None
         self.current_frame = None
 
-        # Magnifier state
-        self.magnifier_widget = None
-        self.magnifier_size = 150  # Diameter in pixels
-        self.magnifier_zoom = 4
+        # Cursor state
+        self.crosshair_lines = []
+        # self.canvas.config(cursor="none") # Hide system cursor - Reverted to normal
         self.drag_start_pos = None
         self.drag_start_point_pos = None
     
@@ -413,7 +413,7 @@ class GridTool:
                     self.dragging_point = i
                     self.drag_start_pos = (event.x, event.y)
                     self.drag_start_point_pos = point
-                    self._create_magnifier(event)
+                    self.canvas.config(cursor="none") # Hide cursor
                     return
     
     def _canvas_drag(self, event):
@@ -439,8 +439,7 @@ class GridTool:
         if self._is_convex(new_points):
             self.grid_points[self.dragging_point] = (new_x, new_y)
             self._save_frame_config()
-        self._update_magnifier(event)
-        self._display_frame()
+            self._display_frame()
     
     def _is_convex(self, points):
         """
@@ -468,94 +467,11 @@ class GridTool:
                (cp1 < 0 and cp2 < 0 and cp3 < 0 and cp4 < 0)
     
     def _canvas_release(self, event):
-        if self.dragging_point is not None:
-            self._destroy_magnifier()
         self.dragging_point = None
         self.drag_start_pos = None
         self.drag_start_point_pos = None
+        self.canvas.config(cursor="") # Restore cursor
     
-    def _create_magnifier(self, event):
-        """Create and place the magnifier widget on the canvas."""
-        if self.magnifier_widget:
-            self._destroy_magnifier()
-        
-        self.magnifier_widget = tk.Canvas(self.canvas, width=self.magnifier_size, height=self.magnifier_size,
-                                          highlightthickness=2, highlightbackground="yellow")
-        self.magnifier_widget.place(x=event.x, y=event.y, anchor='center')
-        self._update_magnifier(event)
-
-    def _update_magnifier(self, event):
-        """Update the content and position of the magnifier."""
-        if not self.magnifier_widget or self.current_frame is None:
-            return
-
-        # Move the magnifier widget
-        self.magnifier_widget.place(x=event.x, y=event.y, anchor='center')
-        
-        # Calculate the region to capture from the original frame
-        img_x, img_y = self.grid_points[self.dragging_point]
-        
-        patch_size_img_coords = self.magnifier_size / (self.magnifier_zoom * self.canvas_scale)
-        patch_radius = patch_size_img_coords / 2
-        
-        # Desired crop coordinates
-        x1 = int(img_x - patch_radius)
-        y1 = int(img_y - patch_radius)
-        x2 = int(img_x + patch_radius)
-        y2 = int(img_y + patch_radius)
-        
-        desired_w = x2 - x1
-        desired_h = y2 - y1
-        
-        if desired_w <= 0 or desired_h <= 0:
-            return
-
-        # Image bounds
-        h, w = self.current_frame.shape[:2]
-        
-        # Intersection with image
-        ix1 = max(0, x1)
-        iy1 = max(0, y1)
-        ix2 = min(w, x2)
-        iy2 = min(h, y2)
-        
-        # Create blank patch (black background)
-        patch = np.zeros((desired_h, desired_w, 3), dtype=np.uint8)
-        
-        # Check if we have any overlap
-        if ix1 < ix2 and iy1 < iy2:
-            # Extract valid region
-            img_patch = self.current_frame[iy1:iy2, ix1:ix2]
-            
-            # Calculate placement in the blank patch
-            px1 = ix1 - x1
-            py1 = iy1 - y1
-            px2 = px1 + (ix2 - ix1)
-            py2 = py1 + (iy2 - iy1)
-            
-            # Place the valid image part into the patch
-            patch[py1:py2, px1:px2] = img_patch
-        
-        # Resize patch to magnifier size for zoom effect
-        zoomed_patch = cv2.resize(patch, (self.magnifier_size, self.magnifier_size), interpolation=cv2.INTER_NEAREST)
-        zoomed_patch_rgb = cv2.cvtColor(zoomed_patch, cv2.COLOR_BGR2RGB)
-        
-        # Create PhotoImage and display it
-        self.magnifier_photo = ImageTk.PhotoImage(Image.fromarray(zoomed_patch_rgb))
-        self.magnifier_widget.create_image(0, 0, anchor='nw', image=self.magnifier_photo)
-        
-        # Draw the crosshair
-        center = self.magnifier_size / 2
-        self.magnifier_widget.delete("crosshair")
-        self.magnifier_widget.create_line(center, 0, center, self.magnifier_size, fill='red', width=1, tags="crosshair")
-        self.magnifier_widget.create_line(0, center, self.magnifier_size, center, fill='red', width=1, tags="crosshair")
-        
-    def _destroy_magnifier(self):
-        """Destroy the magnifier widget."""
-        if self.magnifier_widget:
-            self.magnifier_widget.destroy()
-            self.magnifier_widget = None
-
     def _display_frame(self):
         if self.current_frame is None:
             return
@@ -847,11 +763,17 @@ class GridTool:
         self.canvas.create_line(cp3[0], cp3[1], cp1[0], cp1[1], fill='yellow', width=2)
 
         # Draw the four corner points with labels
-        point_radius = 8
         labels = ["P1 (TL)", "P2 (TR)", "P3 (BL)", "P4 (BR)"]
         for i, (cx, cy) in enumerate(canvas_points):
-            self.canvas.create_oval(cx - point_radius, cy - point_radius, cx + point_radius, cy + point_radius, fill="red", outline="yellow", width=2)
-            self.canvas.create_text(cx, cy - 20, text=labels[i], fill="white", font=("Arial", 10, "bold"))
+            radius = 8
+            if self.dragging_point == i:
+                radius = 3 # Small dot when dragging
+                # Draw small dot (filled red)
+                self.canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius, fill="red", outline="", width=0)
+            else:
+                # Normal large dot
+                self.canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius, fill="red", outline="yellow", width=2)
+                self.canvas.create_text(cx, cy - 20, text=labels[i], fill="white", font=("Arial", 10, "bold"))
     
     def _on_resize(self, event):
         self._display_frame()
