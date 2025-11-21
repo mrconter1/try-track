@@ -162,8 +162,8 @@ class GridTool:
         
         if ret:
             self.current_frame = frame
-            # Initialize grid points with default positions on first load
-            if frame_idx == 0 and self.grid_points[0] is None:
+            # Initialize grid points with default positions if not already set
+            if self.grid_points[0] is None:
                 h, w = frame.shape[:2]
                 # Default cell in center of frame
                 cell_w = w // 4
@@ -196,6 +196,11 @@ class GridTool:
         if event and isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
             return
 
+        # Reset grid points and subdivisions
+        self.grid_points = [None, None, None, None]
+        self.grid_subdiv_x.set(1)
+        self.grid_subdiv_y.set(1)
+        
         random_idx = random.randint(0, self.total_frames - 1)
         self._load_frame(random_idx)
     
@@ -244,6 +249,11 @@ class GridTool:
         
         # Pick random frame in that video
         frame_idx = random.randint(0, frame_count - 1)
+        
+        # Reset grid points and subdivisions
+        self.grid_points = [None, None, None, None]
+        self.grid_subdiv_x.set(1)
+        self.grid_subdiv_y.set(1)
         
         # Switch to that video if needed
         current_video_path = self.video_list[self.current_video_idx][0]
