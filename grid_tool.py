@@ -162,7 +162,7 @@ class GridTool:
         self.magnifier_zoom = 4
         self.drag_start_pos = None
         self.drag_start_point_pos = None
-        
+    
         # Frame history for a/d navigation: [(video_path, frame_idx), ...]
         if self.video_list:
             initial_video = self.video_list[0][0]
@@ -277,7 +277,7 @@ class GridTool:
         self.grid_points = [None, None, None, None]
         self.grid_subdiv_x.set(1)
         self.grid_subdiv_y.set(1)
-        
+
         random_idx = random.randint(0, self.total_frames - 1)
         self._load_frame(random_idx, auto_save_new=True)
     
@@ -397,8 +397,8 @@ class GridTool:
         if self._is_convex(new_points):
             self.grid_points[self.dragging_point] = (new_x, new_y)
             self._save_frame_config()
-            self._update_magnifier(event)
-            self._display_frame()
+        self._update_magnifier(event)
+        self._display_frame()
     
     def _is_convex(self, points):
         """
@@ -424,7 +424,7 @@ class GridTool:
         # Allow small epsilon for collinearity if needed, but strictly > 0 prevents collapse
         return (cp1 > 0 and cp2 > 0 and cp3 > 0 and cp4 > 0) or \
                (cp1 < 0 and cp2 < 0 and cp3 < 0 and cp4 < 0)
-
+    
     def _canvas_release(self, event):
         if self.dragging_point is not None:
             self._destroy_magnifier()
@@ -454,20 +454,45 @@ class GridTool:
         img_x, img_y = self.grid_points[self.dragging_point]
         
         patch_size_img_coords = self.magnifier_size / (self.magnifier_zoom * self.canvas_scale)
+        patch_radius = patch_size_img_coords / 2
         
-        x1 = int(img_x - patch_size_img_coords / 2)
-        y1 = int(img_y - patch_size_img_coords / 2)
-        x2 = int(img_x + patch_size_img_coords / 2)
-        y2 = int(img_y + patch_size_img_coords / 2)
+        # Desired crop coordinates
+        x1 = int(img_x - patch_radius)
+        y1 = int(img_y - patch_radius)
+        x2 = int(img_x + patch_radius)
+        y2 = int(img_y + patch_radius)
+        
+        desired_w = x2 - x1
+        desired_h = y2 - y1
+        
+        if desired_w <= 0 or desired_h <= 0:
+            return
 
-        # Ensure coordinates are within frame bounds
+        # Image bounds
         h, w = self.current_frame.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
         
-        if x1 >= x2 or y1 >= y2: return # Avoid invalid crop size
+        # Intersection with image
+        ix1 = max(0, x1)
+        iy1 = max(0, y1)
+        ix2 = min(w, x2)
+        iy2 = min(h, y2)
         
-        patch = self.current_frame[y1:y2, x1:x2]
+        # Create blank patch (black background)
+        patch = np.zeros((desired_h, desired_w, 3), dtype=np.uint8)
+        
+        # Check if we have any overlap
+        if ix1 < ix2 and iy1 < iy2:
+            # Extract valid region
+            img_patch = self.current_frame[iy1:iy2, ix1:ix2]
+            
+            # Calculate placement in the blank patch
+            px1 = ix1 - x1
+            py1 = iy1 - y1
+            px2 = px1 + (ix2 - ix1)
+            py2 = py1 + (iy2 - iy1)
+            
+            # Place the valid image part into the patch
+            patch[py1:py2, px1:px2] = img_patch
         
         # Resize patch to magnifier size for zoom effect
         zoomed_patch = cv2.resize(patch, (self.magnifier_size, self.magnifier_size), interpolation=cv2.INTER_NEAREST)
@@ -479,8 +504,9 @@ class GridTool:
         
         # Draw the crosshair
         center = self.magnifier_size / 2
-        self.magnifier_widget.create_line(center, 0, center, self.magnifier_size, fill='red', width=1)
-        self.magnifier_widget.create_line(0, center, self.magnifier_size, center, fill='red', width=1)
+        self.magnifier_widget.delete("crosshair")
+        self.magnifier_widget.create_line(center, 0, center, self.magnifier_size, fill='red', width=1, tags="crosshair")
+        self.magnifier_widget.create_line(0, center, self.magnifier_size, center, fill='red', width=1, tags="crosshair")
         
     def _destroy_magnifier(self):
         """Destroy the magnifier widget."""
@@ -504,7 +530,7 @@ class GridTool:
              small = cv2.resize(frame_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
              # Upscale back to original size using nearest neighbor to show pixels clearly
              frame_rgb = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-
+        
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
         if canvas_w < 2 or canvas_h < 2:
@@ -706,7 +732,7 @@ class GridTool:
                 sub_y = self.grid_subdiv_y.get()
             except tk.TclError:
                 sub_y = 1
-
+            
             def transform_point(px, py):
                 """Apply H to (px, py) and return screen (cx, cy) if w > 0."""
                 # Homogeneous multiply: H * [px, py, 1]
