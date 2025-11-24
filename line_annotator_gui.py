@@ -342,12 +342,7 @@ class RandomPatchViewer:
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # Clamp to image bounds
-        img_h, img_w = self.current_patch_info['image'].shape[:2]
-        img_x = max(0, min(img_x, img_w - 1))
-        img_y = max(0, min(img_y, img_h - 1))
-        
-        # Start dragging
+        # Start dragging (no clamping - allow points outside image)
         self.is_dragging = True
         self.current_point = (img_x, img_y)
         self.draw_image()
@@ -359,12 +354,7 @@ class RandomPatchViewer:
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # Clamp to image bounds
-        img_h, img_w = self.current_patch_info['image'].shape[:2]
-        img_x = max(0, min(img_x, img_w - 1))
-        img_y = max(0, min(img_y, img_h - 1))
-        
-        # Update the current point being dragged
+        # Update the current point being dragged (no clamping - allow points outside image)
         self.current_point = (img_x, img_y)
         self.draw_image()
     
@@ -377,11 +367,7 @@ class RandomPatchViewer:
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # Clamp to image bounds
-        img_h, img_w = self.current_patch_info['image'].shape[:2]
-        img_x = max(0, min(img_x, img_w - 1))
-        img_y = max(0, min(img_y, img_h - 1))
-        
+        # No clamping - allow points outside image bounds
         final_point = (img_x, img_y)
         
         if self.first_point is None:
