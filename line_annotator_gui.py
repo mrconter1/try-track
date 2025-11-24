@@ -65,6 +65,7 @@ class RandomPatchViewer:
         self.canvas_offset_y = 0
         self.display_scale = 1.0
         self.show_mask_mode = False  # Toggle between normal and mask view
+        self.show_lines = True  # Toggle line visibility
         
         # State for editing existing points
         self.editing_point = None  # (line_index, point_index) being edited, or None
@@ -80,6 +81,7 @@ class RandomPatchViewer:
         self.root.bind("<Left>", lambda e: self.prev_patch())
         self.root.bind("<Right>", lambda e: self.next_patch())
         self.root.bind("<m>", lambda e: self.toggle_mask())
+        self.root.bind("<l>", lambda e: self.toggle_lines())
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
@@ -315,8 +317,9 @@ class RandomPatchViewer:
         
         # Only draw UI overlays in normal mode
         if not self.show_mask_mode:
-            # Draw existing lines
-            self.draw_lines_on_canvas()
+            # Draw existing lines (if visible)
+            if self.show_lines:
+                self.draw_lines_on_canvas()
             
             # Draw locked first point if it exists
             if self.first_point is not None:
@@ -365,6 +368,11 @@ class RandomPatchViewer:
             self.btn_toggle_mask.config(text="Show Mask (M)")
         
         # Redraw
+        self.draw_image()
+    
+    def toggle_lines(self):
+        """Toggle visibility of lines on the canvas."""
+        self.show_lines = not self.show_lines
         self.draw_image()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
