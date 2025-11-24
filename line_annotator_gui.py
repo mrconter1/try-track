@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+import torchvision.models as models
 import threading
 
 @dataclass
@@ -104,93 +105,98 @@ class AnnotationDatabase:
         
         return db
 
-# Lightweight U-Net Model
-class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+# Mobile-optimized U-Net with MobileNetV2 backbone
+class MobileUNet(nn.Module):
+    def __init__(self, pretrained=True):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
+        
+        # Load pretrained MobileNetV2 as encoder
+        if pretrained:
+            mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
+        else:
+            mobilenet = models.mobilenet_v2(weights=None)
+        self.encoder = mobilenet.features
+        
+        # MobileNetV2 output channels at different stages (after specific layers):
+        # Layer 1: 16 channels (stride 2, 64x64)
+        # Layer 3: 24 channels (stride 4, 32x32)
+        # Layer 6: 32 channels (stride 8, 16x16)
+        # Layer 13: 96 channels (stride 16, 8x8)
+        # Layer 18 (final): 1280 channels (stride 32, 4x4)
+        
+        # Decoder (lightweight upsampling path)
+        self.up1 = nn.ConvTranspose2d(1280, 96, 2, stride=2)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(96 + 96, 96, 3, padding=1),
+            nn.BatchNorm2d(96),
             nn.ReLU(inplace=True)
+        )
+        
+        self.up2 = nn.ConvTranspose2d(96, 32, 2, stride=2)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(32 + 32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up3 = nn.ConvTranspose2d(32, 24, 2, stride=2)
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(24 + 24, 24, 3, padding=1),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up4 = nn.ConvTranspose2d(24, 16, 2, stride=2)
+        self.dec4 = nn.Sequential(
+            nn.Conv2d(16 + 16, 16, 3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final upsampling to original resolution
+        self.final_up = nn.ConvTranspose2d(16, 16, 2, stride=2)
+        self.out = nn.Sequential(
+            nn.Conv2d(16, 1, 1),
+            nn.Sigmoid()
         )
     
     def forward(self, x):
-        return self.conv(x)
-
-class UNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=1):
-        super().__init__()
+        # Encoder with skip connections
+        skip_connections = []
         
-        # Encoder
-        self.enc1 = DoubleConv(in_channels, 32)
-        self.pool1 = nn.MaxPool2d(2)
+        # Extract features at different scales
+        # Correct layer indices for MobileNetV2: [1, 3, 6, 13, -1]
+        skip_indices = [1, 3, 6, 13]
         
-        self.enc2 = DoubleConv(32, 64)
-        self.pool2 = nn.MaxPool2d(2)
+        for idx, layer in enumerate(self.encoder):
+            x = layer(x)
+            if idx in skip_indices:
+                skip_connections.append(x)
         
-        self.enc3 = DoubleConv(64, 128)
-        self.pool3 = nn.MaxPool2d(2)
-        
-        self.enc4 = DoubleConv(128, 256)
-        self.pool4 = nn.MaxPool2d(2)
-        
-        # Bottleneck
-        self.bottleneck = DoubleConv(256, 512)
-        
-        # Decoder
-        self.up4 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.dec4 = DoubleConv(512, 256)
-        
-        self.up3 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.dec3 = DoubleConv(256, 128)
-        
-        self.up2 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.dec2 = DoubleConv(128, 64)
-        
-        self.up1 = nn.ConvTranspose2d(64, 32, 2, stride=2)
-        self.dec1 = DoubleConv(64, 32)
-        
-        # Output
-        self.out = nn.Conv2d(32, out_channels, 1)
-    
-    def forward(self, x):
-        # Encoder
-        e1 = self.enc1(x)
-        p1 = self.pool1(e1)
-        
-        e2 = self.enc2(p1)
-        p2 = self.pool2(e2)
-        
-        e3 = self.enc3(p2)
-        p3 = self.pool3(e3)
-        
-        e4 = self.enc4(p3)
-        p4 = self.pool4(e4)
-        
-        # Bottleneck
-        b = self.bottleneck(p4)
+        # x is now the final output (1280 channels @ 4x4)
+        # skip_connections: [16ch@64x64, 24ch@32x32, 32ch@16x16, 96ch@8x8]
         
         # Decoder with skip connections
-        d4 = self.up4(b)
-        d4 = torch.cat([d4, e4], dim=1)
-        d4 = self.dec4(d4)
+        x = self.up1(x)  # 1280 -> 96, 4x4 -> 8x8
+        x = torch.cat([x, skip_connections[3]], dim=1)  # concat with 96ch@8x8
+        x = self.dec1(x)
         
-        d3 = self.up3(d4)
-        d3 = torch.cat([d3, e3], dim=1)
-        d3 = self.dec3(d3)
+        x = self.up2(x)  # 96 -> 32, 8x8 -> 16x16
+        x = torch.cat([x, skip_connections[2]], dim=1)  # concat with 32ch@16x16
+        x = self.dec2(x)
         
-        d2 = self.up2(d3)
-        d2 = torch.cat([d2, e2], dim=1)
-        d2 = self.dec2(d2)
+        x = self.up3(x)  # 32 -> 24, 16x16 -> 32x32
+        x = torch.cat([x, skip_connections[1]], dim=1)  # concat with 24ch@32x32
+        x = self.dec3(x)
         
-        d1 = self.up1(d2)
-        d1 = torch.cat([d1, e1], dim=1)
-        d1 = self.dec1(d1)
+        x = self.up4(x)  # 24 -> 16, 32x32 -> 64x64
+        x = torch.cat([x, skip_connections[0]], dim=1)  # concat with 16ch@64x64
+        x = self.dec4(x)
         
-        return torch.sigmoid(self.out(d1))
+        x = self.final_up(x)  # 16 -> 16, 64x64 -> 128x128
+        x = self.out(x)
+        
+        return x
 
 # Dataset class
 class LineDataset(Dataset):
@@ -533,9 +539,12 @@ class RandomPatchViewer:
         device_text = f"Device: {self.device}"
         ttk.Label(controls_frame, text=device_text, foreground="blue").grid(row=4, column=0, columnspan=2, sticky="w", pady=5)
         
+        # Model info
+        ttk.Label(controls_frame, text="Backbone: MobileNetV2 (ImageNet)", foreground="green").grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        
         # Train button
         self.btn_train = ttk.Button(controls_frame, text="Start Training", command=self.start_training)
-        self.btn_train.grid(row=5, column=0, columnspan=2, sticky="ew", pady=10)
+        self.btn_train.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
         
         # Progress frame
         progress_frame = ttk.LabelFrame(main_frame, text="Training Progress", padding=10)
@@ -1283,8 +1292,9 @@ class RandomPatchViewer:
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
             
-            # Initialize model
-            self.model = UNet(in_channels=3, out_channels=1).to(self.device)
+            # Initialize model with pretrained MobileNetV2 backbone
+            self.log_training("Loading MobileNetV2 backbone (pretrained on ImageNet)...")
+            self.model = MobileUNet(pretrained=True).to(self.device)
             optimizer = optim.Adam(self.model.parameters(), lr=lr)
             criterion = nn.BCELoss()
             
