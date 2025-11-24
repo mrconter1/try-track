@@ -256,6 +256,19 @@ class RandomPatchViewer:
         self.lbl_coords = ttk.Label(info_frame, text="Crop: -")
         self.lbl_coords.pack(anchor="w", pady=2)
         
+        # Statistics Panel
+        stats_frame = ttk.LabelFrame(sidebar, text="Dataset Statistics", padding=10)
+        stats_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        self.lbl_total_samples = ttk.Label(stats_frame, text="Total samples: 0")
+        self.lbl_total_samples.pack(anchor="w", pady=2)
+        
+        self.lbl_labeled_samples = ttk.Label(stats_frame, text="Labeled samples: 0")
+        self.lbl_labeled_samples.pack(anchor="w", pady=2)
+        
+        self.lbl_total_lines = ttk.Label(stats_frame, text="Total lines: 0")
+        self.lbl_total_lines.pack(anchor="w", pady=2)
+        
         # Lines List Panel
         lines_frame = ttk.LabelFrame(sidebar, text="Lines", padding=10)
         lines_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
@@ -450,6 +463,9 @@ class RandomPatchViewer:
         x, y, w, h = info['crop_rect']
         self.lbl_coords.config(text=f"Crop: x={x}, y={y} ({w}x{h})")
         
+        # Update Statistics
+        self.update_statistics()
+        
         # Update Lines List
         self.update_lines_list()
         
@@ -538,6 +554,16 @@ class RandomPatchViewer:
         if self.current_patch_info:
             self.draw_image()
     
+    def update_statistics(self):
+        """Update the statistics labels."""
+        total_samples = len(self.db.samples)
+        labeled_samples = sum(1 for sample in self.db.samples if len(sample.lines) > 0)
+        total_lines = sum(len(sample.lines) for sample in self.db.samples)
+        
+        self.lbl_total_samples.config(text=f"Total samples: {total_samples}")
+        self.lbl_labeled_samples.config(text=f"Labeled samples: {labeled_samples}")
+        self.lbl_total_lines.config(text=f"Total lines: {total_lines}")
+    
     def update_lines_list(self):
         """Update the lines listbox with current lines."""
         self.lines_listbox.delete(0, tk.END)
@@ -588,6 +614,7 @@ class RandomPatchViewer:
             del self.lines[self.selected_line_idx]
             self.selected_line_idx = None
             self._save_current_lines()  # Save after deletion
+            self.update_statistics()  # Update stats after deletion
             self.update_lines_list()
             self.draw_image()
     
