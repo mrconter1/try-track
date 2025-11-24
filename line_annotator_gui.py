@@ -18,78 +18,55 @@ class Line:
     start: Tuple[float, float]  # (x, y)
     end: Tuple[float, float]    # (x, y)
 
+
 @dataclass
-class Region:
-    """Represents an annotated region within a frame."""
-    crop_rect: Tuple[int, int, int, int]  # (x, y, w, h)
+class Sample:
+    """Represents a single viewed sample in order."""
+    video_path: str
+    frame_idx: int
+    crop_rect: Tuple[int, int, int, int]
     lines: List[Line] = field(default_factory=list)
     
     def add_line(self, start: Tuple[float, float], end: Tuple[float, float]):
         self.lines.append(Line(start, end))
 
 @dataclass
-class Frame:
-    """Represents a frame with potentially multiple annotated regions."""
-    frame_idx: int
-    regions: Dict[Tuple[int, int, int, int], Region] = field(default_factory=dict)
-    
-    def get_or_create_region(self, crop_rect: Tuple[int, int, int, int]) -> Region:
-        if crop_rect not in self.regions:
-            self.regions[crop_rect] = Region(crop_rect)
-        return self.regions[crop_rect]
-
-@dataclass
-class Video:
-    """Represents a video with annotated frames."""
-    path: str
-    frames: Dict[int, Frame] = field(default_factory=dict)
-    
-    def get_or_create_frame(self, frame_idx: int) -> Frame:
-        if frame_idx not in self.frames:
-            self.frames[frame_idx] = Frame(frame_idx)
-        return self.frames[frame_idx]
-
-@dataclass
 class AnnotationDatabase:
-    """Top-level container for all video annotations."""
-    videos: Dict[str, Video] = field(default_factory=dict)
+    """Sequential list of all viewed samples."""
+    samples: List[Sample] = field(default_factory=list)
     
-    def get_or_create_video(self, video_path: str) -> Video:
-        if video_path not in self.videos:
-            self.videos[video_path] = Video(video_path)
-        return self.videos[video_path]
-    
-    def get_region(self, video_path: str, frame_idx: int, 
-                   crop_rect: Tuple[int, int, int, int]) -> Region:
-        """Get or create a region for the given video/frame/crop."""
-        video = self.get_or_create_video(video_path)
-        frame = video.get_or_create_frame(frame_idx)
-        return frame.get_or_create_region(crop_rect)
+    def find_sample(self, video_path: str, frame_idx: int, 
+                    crop_rect: Tuple[int, int, int, int]) -> Sample:
+        """Find existing sample or create new one."""
+        for sample in self.samples:
+            if (sample.video_path == video_path and 
+                sample.frame_idx == frame_idx and 
+                sample.crop_rect == crop_rect):
+                return sample
+        
+        # Create new sample
+        new_sample = Sample(video_path, frame_idx, crop_rect)
+        self.samples.append(new_sample)
+        return new_sample
     
     def to_dict(self):
         """Convert to dictionary for JSON serialization."""
         return {
-            video_path: {
-                "frames": {
-                    frame_idx: {
-                        "regions": [
-                            {
-                                "crop_rect": list(region.crop_rect),
-                                "lines": [
-                                    {
-                                        "start": list(line.start),
-                                        "end": list(line.end)
-                                    }
-                                    for line in region.lines
-                                ]
-                            }
-                            for region in frame.regions.values()
-                        ]
-                    }
-                    for frame_idx, frame in video.frames.items()
+            "samples": [
+                {
+                    "video_path": sample.video_path,
+                    "frame_idx": sample.frame_idx,
+                    "crop_rect": list(sample.crop_rect),
+                    "lines": [
+                        {
+                            "start": list(line.start),
+                            "end": list(line.end)
+                        }
+                        for line in sample.lines
+                    ]
                 }
-            }
-            for video_path, video in self.videos.items()
+                for sample in self.samples
+            ]
         }
     
     def save(self, filepath: str):
@@ -107,19 +84,19 @@ class AnnotationDatabase:
             data = json.load(f)
         
         db = cls()
-        for video_path, video_data in data.items():
-            video = db.get_or_create_video(video_path)
-            for frame_idx_str, frame_data in video_data["frames"].items():
-                frame_idx = int(frame_idx_str)
-                frame = video.get_or_create_frame(frame_idx)
-                for region_data in frame_data["regions"]:
-                    crop_rect = tuple(region_data["crop_rect"])
-                    region = frame.get_or_create_region(crop_rect)
-                    for line_data in region_data["lines"]:
-                        region.add_line(
-                            tuple(line_data["start"]),
-                            tuple(line_data["end"])
-                        )
+        for sample_data in data.get("samples", []):
+            sample = Sample(
+                video_path=sample_data["video_path"],
+                frame_idx=sample_data["frame_idx"],
+                crop_rect=tuple(sample_data["crop_rect"])
+            )
+            for line_data in sample_data.get("lines", []):
+                sample.add_line(
+                    tuple(line_data["start"]),
+                    tuple(line_data["end"])
+                )
+            db.samples.append(sample)
+        
         return db
 
 def get_video_props(video_path):
@@ -166,8 +143,9 @@ class RandomPatchViewer:
         
         # State
         self.current_patch_info = None # {video_path, frame_idx, crop_rect: (x,y,w,h), image}
-        self.history = [] # List of patch_info dicts
+        self.history = [] # List of patch_info dicts (will be populated from db)
         self.history_idx = -1
+        self.history_loaded = False  # Track if we've loaded history from db
         
         self.photo_image = None
         self.scale = 1.0
@@ -206,12 +184,49 @@ class RandomPatchViewer:
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
         
-        # Initial patch
+        # Load history from database
+        self._load_history_from_db()
+        
+        # Initial patch - either last from history or generate new
         if self.total_combined_frames > 0:
-            self.next_patch()
+            if len(self.history) > 0:
+                # Start at the end of loaded history
+                self.history_idx = len(self.history) - 1
+                self.current_patch_info = self.history[self.history_idx]
+                self._load_current_lines()
+                self.display_current_patch()
+            else:
+                # No history, generate first patch
+                self.next_patch()
         else:
             messagebox.showerror("Error", "No valid frames found in the provided videos.")
 
+    def _load_history_from_db(self):
+        """Reconstruct history from saved samples in database."""
+        for sample in self.db.samples:
+            # Need to reload the actual image for each sample
+            cap = cv2.VideoCapture(sample.video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+            
+            if ret and frame is not None:
+                x, y, w, h = sample.crop_rect
+                patch = frame[y:y+h, x:x+w]
+                patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+                
+                patch_info = {
+                    "video_path": sample.video_path,
+                    "frame_idx": sample.frame_idx,
+                    "crop_rect": sample.crop_rect,
+                    "image": patch_rgb
+                }
+                self.history.append(patch_info)
+            else:
+                print(f"Warning: Could not reload sample from {sample.video_path} frame {sample.frame_idx}")
+        
+        print(f"Loaded {len(self.history)} samples from database")
+    
     def _build_ui(self):
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -390,16 +405,16 @@ class RandomPatchViewer:
             return
         
         info = self.current_patch_info
-        region = self.db.get_region(
+        sample = self.db.find_sample(
             info['video_path'],
             info['frame_idx'],
             info['crop_rect']
         )
         
         # Clear existing lines and add current ones
-        region.lines.clear()
+        sample.lines.clear()
         for line in self.lines:
-            region.add_line(line[0], line[1])
+            sample.add_line(line[0], line[1])
     
     def _load_current_lines(self):
         """Load lines from database for current patch."""
@@ -413,14 +428,14 @@ class RandomPatchViewer:
             return
         
         info = self.current_patch_info
-        region = self.db.get_region(
+        sample = self.db.find_sample(
             info['video_path'],
             info['frame_idx'],
             info['crop_rect']
         )
         
         # Convert from Line dataclass to list format
-        for line in region.lines:
+        for line in sample.lines:
             self.lines.append([line.start, line.end])
     
     def display_current_patch(self):
