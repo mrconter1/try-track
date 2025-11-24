@@ -236,24 +236,20 @@ class RandomPatchViewer:
             # Wait for layout
             self.root.after(100, self.draw_image)
             return
-            
-        # Calculate scale to fit canvas (maintain aspect ratio)
-        # We want to make it as big as possible within the canvas
-        scale = min(canvas_w / img_w, canvas_h / img_h)
         
-        # Don't scale up excessively if it makes pixels blurry? 
-        # Actually for pixel art / analysis, sharp pixels are good.
-        # Let's use Nearest Neighbor for upscaling if it's very small, or Linear for general video.
-        # Given it's a "patch viewer", seeing pixels might be desired. Let's use NEAREST for large upscales.
+        # Scale image to ~25% of screen height while maintaining aspect ratio
+        target_height = int(canvas_h * 0.25)
+        scale = target_height / img_h
         
-        interp = cv2.INTER_NEAREST if scale > 2.0 else cv2.INTER_LINEAR
+        # Use Nearest Neighbor for sharp upscaling, Linear for downscaling
+        interp = cv2.INTER_NEAREST if scale > 1.5 else cv2.INTER_LINEAR
         
         new_w, new_h = int(img_w * scale), int(img_h * scale)
         resized = cv2.resize(img_arr, (new_w, new_h), interpolation=interp)
         
         self.photo_image = ImageTk.PhotoImage(Image.fromarray(resized))
         
-        # Center in canvas
+        # Center horizontally and vertically
         x_offset = (canvas_w - new_w) // 2
         y_offset = (canvas_h - new_h) // 2
         
@@ -304,7 +300,7 @@ def main():
     print(f"Found {len(video_paths)} videos.")
     
     root = tk.Tk()
-    root.geometry("1000x800")
+    root.state('zoomed')  # Fullscreen on Windows
     
     app = RandomPatchViewer(root, video_paths)
     
