@@ -1,645 +1,314 @@
-import argparse
-import json
+import tkinter as tk
+from tkinter import ttk, messagebox
+import cv2
+from PIL import Image, ImageTk
 import os
 import random
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import bisect
+import argparse
+import sys
 
-import cv2
-import numpy as np
-from PIL import Image, ImageTk, ImageDraw
+def get_video_props(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return total_frames
 
 class RandomPatchViewer:
-    def __init__(self, root, video_paths, patch_size):
+    def __init__(self, root, video_paths, patch_size=400):
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
-        self.history = []
-        self.history_idx = -1
-        self.current_entry = None
-        self.photo_image = None
-        self.max_display_width = 1100
-        self.max_display_height = 750
-        self.scale_x = 1.0
-        self.scale_y = 1.0
-        self.dragging = False
-        self.preview_point = None
-        self.magnifier_window = None
-        self.magnifier_image = None
-        self.magnifier_size = 160
-        self.magnifier_zoom = 4
-        self.drawing_rect = False
-        self.rect_start = None
-        self.rect_preview = None
+        
+        # Pre-calculate frame counts for proportional sampling
+        self.video_frame_counts = {}
+        print("Scanning videos...")
+        for path in self.video_paths:
+            count = get_video_props(path)
+            if count > 0:
+                self.video_frame_counts[path] = count
+                print(f"  {os.path.basename(path)}: {count} frames")
+        
+        # Setup proportional sampling (Cumulative Distribution)
+        self.cumulative_frames = []
+        self.active_video_paths = [] # Only videos with >0 frames
+        self.total_combined_frames = 0
+        current_total = 0
+        
+        for path in self.video_paths:
+            if path in self.video_frame_counts:
+                count = self.video_frame_counts[path]
+                current_total += count
+                self.cumulative_frames.append(current_total)
+                self.active_video_paths.append(path)
+                
+        self.total_combined_frames = current_total
+        print(f"Total frames across {len(self.active_video_paths)} videos: {self.total_combined_frames}")
 
-        self.root.title("Frame Annotation Viewer")
+        # State
+        self.current_patch_info = None # {video_path, frame_idx, crop_rect: (x,y,w,h), image}
+        self.history = [] # List of patch_info dicts
+        self.history_idx = -1
+        
+        self.photo_image = None
+        self.scale = 1.0
+        
+        # UI Setup
+        self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
         self._build_ui()
-        self._load_existing_annotations()
-        if not self.history:
-            self._append_random_frame()
+        
+        # Bindings
+        self.root.bind("<Configure>", self.on_resize)
+        self.root.bind("<a>", lambda e: self.prev_patch())
+        self.root.bind("<d>", lambda e: self.next_patch())
+        self.root.bind("<Left>", lambda e: self.prev_patch())
+        self.root.bind("<Right>", lambda e: self.next_patch())
+        
+        # Initial patch
+        if self.total_combined_frames > 0:
+            self.next_patch()
+        else:
+            messagebox.showerror("Error", "No valid frames found in the provided videos.")
 
     def _build_ui(self):
-        container = ttk.Frame(self.root, padding=20)
-        container.grid(row=0, column=0, sticky="nsew")
-        container.grid_columnconfigure(0, weight=3)
-        container.grid_columnconfigure(1, weight=1)
-        container.grid_rowconfigure(0, weight=1)
-
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        self.root.minsize(1000, 900)
-        try:
-            self.root.state("zoomed")
-        except tk.TclError:
-            self.root.geometry("1200x900")
-        self.root.bind("<d>", self._on_key_next)
-        self.root.bind("<D>", self._on_key_next)
-        self.root.bind("<a>", self._on_key_previous)
-        self.root.bind("<A>", self._on_key_previous)
-        self.root.bind("<Control-z>", self._on_undo)
-        self.root.bind("<Control-Z>", self._on_undo)
-
-        canvas_frame = ttk.Frame(container)
-        canvas_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        canvas_frame.grid_rowconfigure(0, weight=1)
-        canvas_frame.grid_columnconfigure(0, weight=1)
-        canvas_frame.bind("<Configure>", self._on_canvas_frame_resize)
-
-        self.canvas = tk.Canvas(
-            canvas_frame,
-            highlightthickness=0,
-            borderwidth=0,
-            bg="black",
-        )
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        self.canvas.bind("<ButtonPress-1>", self.on_left_press)
-        self.canvas.bind("<B1-Motion>", self.on_left_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_left_release)
-        self.canvas.bind("<ButtonPress-3>", self.on_right_press)
-        self.canvas.bind("<B3-Motion>", self.on_right_drag)
-        self.canvas.bind("<ButtonRelease-3>", self.on_right_release)
-
-        control_frame = ttk.Frame(container)
-        control_frame.grid(row=0, column=1, sticky="nsew")
-        control_frame.grid_columnconfigure(0, weight=1)
-
-        self.info_label = ttk.Label(
-            control_frame, justify="left", anchor="w", font=("Segoe UI", 11, "bold")
-        )
-        self.info_label.grid(row=0, column=0, sticky="ew")
-
-        sample_label_frame = ttk.Frame(control_frame)
-        sample_label_frame.grid(row=1, column=0, sticky="ew", pady=(10, 10))
-        sample_label_frame.grid_columnconfigure(0, weight=1)
-        self.state_label = ttk.Label(
-            sample_label_frame,
-            justify="left",
-            anchor="w",
-            font=("Segoe UI", 12, "bold"),
-        )
-        self.state_label.grid(row=0, column=0, sticky="ew", pady=(0, 2))
-        self.coords_label = ttk.Label(
-            sample_label_frame,
-            justify="left",
-            anchor="w",
-            font=("Segoe UI", 12, "bold"),
-        )
-        self.coords_label.grid(row=1, column=0, sticky="ew")
-
-        self.stats_label = ttk.Label(
-            control_frame, justify="left", anchor="w", wraplength=260
-        )
-        self.stats_label.grid(row=2, column=0, sticky="ew", pady=(0, 15))
-
-        self.random_button = ttk.Button(
-            control_frame,
-            text="Next random frame",
-            command=self.load_next_frame,
-        )
-        self.random_button.grid(row=3, column=0, sticky="ew")
-
-        self.export_button = ttk.Button(
-            control_frame,
-            text="Export annotations",
-            command=self.export_annotations,
-        )
-        self.export_button.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-
-    def _append_random_frame(self):
-        video_path, frame_idx, frame, total_frames = choose_random_frame_multi(self.video_paths)
-        entry = {
-            "video_path": video_path,
-            "frame_idx": frame_idx,
-            "frame": frame,
-            "total_frames": total_frames,
-            "annotations": [],
-            "negative_rects": []
-        }
-        if self.history_idx < len(self.history) - 1:
-            self.history = self.history[: self.history_idx + 1]
-        self.history.append(entry)
-        self.history_idx = len(self.history) - 1
-        self._set_current_entry(entry)
-
-    def _set_current_entry(self, entry):
-        self.current_entry = entry
-        self.preview_point = None
-        self.rect_start = None
-        self.rect_preview = None
-        self._hide_magnifier()
-        self._update_info_label()
-        self._display_current_frame()
-        self._update_stats_label()
-
-    def _on_key_next(self, event):
-        self.load_next_frame()
-
-    def _on_key_previous(self, event):
-        self.load_previous_frame()
-
-    def _on_undo(self, event):
-        if not self.current_entry:
-            return
-        if self.current_entry["annotations"]:
-            self.current_entry["annotations"].pop()
-            self._update_annotation_label()
-            self._update_stats_label()
-            self._display_current_frame()
-        elif self.current_entry.get("negative_rects"):
-            self.current_entry["negative_rects"].pop()
-            self._update_annotation_label()
-            self._update_stats_label()
-            self._display_current_frame()
-
-    def load_next_frame(self):
-        if self.history_idx < len(self.history) - 1:
-            self.history_idx += 1
-            self._set_current_entry(self.history[self.history_idx])
-        else:
-            self._append_random_frame()
-
-    def load_previous_frame(self):
-        if self.history_idx <= 0:
-            return
-        self.history_idx -= 1
-        self._set_current_entry(self.history[self.history_idx])
-
-    def _update_info_label(self):
-        if not self.current_entry:
-            self.info_label.config(text="–")
-            return
-        entry = self.current_entry
-        video_name = os.path.basename(entry.get("video_path", "unknown"))
-        total_frames = entry.get("total_frames", "?")
-        info_text = (
-            f"Video: {video_name}\n"
-            f"Frame: {entry['frame_idx'] + 1} / {total_frames}\n"
-            f"Annotations on this frame: {len(entry['annotations'])}"
-        )
-        self.info_label.config(text=info_text)
-        self._update_annotation_label()
-
-    def _update_annotation_label(self):
-        if not self.current_entry or not self.current_entry["annotations"]:
-            self.state_label.config(text="Annotations on frame: 0")
-            self.coords_label.config(text="Last point: –")
-            return
-        count = len(self.current_entry["annotations"])
-        last = self.current_entry["annotations"][-1]
-        self.state_label.config(text=f"Annotations on frame: {count}")
-        self.coords_label.config(
-            text=f"Last point: ({last['x']:.1f}, {last['y']:.1f})"
-        )
-
-    def _update_stats_label(self):
-        total_frames = len(self.history)
-        annotated_frames = sum(1 for e in self.history if e["annotations"])
-        total_points = sum(len(e["annotations"]) for e in self.history)
-        self.stats_label.config(
-            text=f"Frames visited: {total_frames} | Frames with crosses: {annotated_frames} | Total crosses: {total_points}"
-        )
-
-    def _display_current_frame(self):
-        if not self.current_entry:
-            return
-        frame = self.current_entry["frame"]
-        h, w = frame.shape[:2]
-        scale = min(
-            self.max_display_width / max(1, w),
-            self.max_display_height / max(1, h),
-        )
-        scale = max(scale, 0.01)
-        disp_w = int(w * scale)
-        disp_h = int(h * scale)
-        self.scale_x = scale
-        self.scale_y = scale
-        resized = cv2.resize(frame, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb)
-        draw = ImageDraw.Draw(image)
-        for rect in self.current_entry.get("negative_rects", []):
-            x0 = rect["x0"] * scale
-            y0 = rect["y0"] * scale
-            x1 = rect["x1"] * scale
-            y1 = rect["y1"] * scale
-            draw.rectangle([x0, y0, x1, y1], outline="blue", width=2)
-            rx = rect["x0"]
-            ry = rect["y0"]
-            rw = rect["x1"] - rect["x0"]
-            rh = rect["y1"] - rect["y0"]
-            label = f"({rx:.0f},{ry:.0f}) {rw:.0f}x{rh:.0f}"
-            draw.text((x0 + 4, y0 + 4), label, fill="blue")
-        if self.rect_preview:
-            x0 = self.rect_preview["x0"] * scale
-            y0 = self.rect_preview["y0"] * scale
-            x1 = self.rect_preview["x1"] * scale
-            y1 = self.rect_preview["y1"] * scale
-            draw.rectangle([x0, y0, x1, y1], outline="cyan", width=2)
-            rx = self.rect_preview["x0"]
-            ry = self.rect_preview["y0"]
-            rw = self.rect_preview["x1"] - self.rect_preview["x0"]
-            rh = self.rect_preview["y1"] - self.rect_preview["y0"]
-            label = f"({rx:.0f},{ry:.0f}) {rw:.0f}x{rh:.0f}"
-            draw.text((x0 + 4, y0 + 4), label, fill="cyan")
-        for ann in self.current_entry["annotations"]:
-            dx = ann["x"] * scale
-            dy = ann["y"] * scale
-            half = 10
-            draw.line((dx - half, dy, dx + half, dy), fill="red", width=2)
-            draw.line((dx, dy - half, dx, dy + half), fill="red", width=2)
-        if self.preview_point:
-            dx = self.preview_point["x"] * scale
-            dy = self.preview_point["y"] * scale
-            half = 12
-            draw.line((dx - half, dy, dx + half, dy), fill="lime", width=2)
-            draw.line((dx, dy - half, dx, dy + half), fill="lime", width=2)
-        self.photo_image = ImageTk.PhotoImage(image)
-        self.canvas.configure(width=disp_w, height=disp_h)
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self.photo_image)
-
-    def _on_canvas_frame_resize(self, event):
-        new_w = max(100, event.width)
-        new_h = max(100, event.height)
-        if (
-            abs(new_w - self.max_display_width) > 2
-            or abs(new_h - self.max_display_height) > 2
-        ):
-            self.max_display_width = new_w
-            self.max_display_height = new_h
-            self._display_current_frame()
-
-    def on_left_press(self, event):
-        self.dragging = True
-        self._update_preview(event)
-
-    def on_left_drag(self, event):
-        if not self.dragging:
-            return
-        self._update_preview(event)
-
-    def on_left_release(self, event):
-        if not self.dragging:
-            return
-        self.dragging = False
-        self._hide_magnifier()
-        if not self.preview_point:
-            return
-        if not self.current_entry:
-            self.preview_point = None
-            return
-        self.current_entry["annotations"].append(
-            {"x": self.preview_point["x"], "y": self.preview_point["y"]}
-        )
-        self.preview_point = None
-        self._update_annotation_label()
-        self._update_stats_label()
-        self._display_current_frame()
-
-    def _update_preview(self, event):
-        if not self.current_entry:
-            return
-        frame_x = event.x / max(1e-6, self.scale_x)
-        frame_y = event.y / max(1e-6, self.scale_y)
-        frame = self.current_entry["frame"]
-        h, w = frame.shape[:2]
-        frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
-        frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
-        self.preview_point = {"x": frame_x, "y": frame_y}
-        self._display_current_frame()
-        self._show_magnifier(frame_x, frame_y, event.x_root, event.y_root)
-
-    def on_right_press(self, event):
-        if not self.current_entry:
-            return
-        self.drawing_rect = True
-        frame_x = event.x / max(1e-6, self.scale_x)
-        frame_y = event.y / max(1e-6, self.scale_y)
-        frame = self.current_entry["frame"]
-        h, w = frame.shape[:2]
-        frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
-        frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
-        self.rect_start = {"x": frame_x, "y": frame_y}
-        self.rect_preview = {"x0": frame_x, "y0": frame_y, "x1": frame_x, "y1": frame_y}
-        self._display_current_frame()
-
-    def on_right_drag(self, event):
-        if not self.drawing_rect or not self.rect_start:
-            return
-        frame_x = event.x / max(1e-6, self.scale_x)
-        frame_y = event.y / max(1e-6, self.scale_y)
-        frame = self.current_entry["frame"]
-        h, w = frame.shape[:2]
-        frame_x = float(np.clip(frame_x, 0.0, w - 1e-6))
-        frame_y = float(np.clip(frame_y, 0.0, h - 1e-6))
-        x0 = min(self.rect_start["x"], frame_x)
-        y0 = min(self.rect_start["y"], frame_y)
-        x1 = max(self.rect_start["x"], frame_x)
-        y1 = max(self.rect_start["y"], frame_y)
-        self.rect_preview = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
-        self._display_current_frame()
-
-    def on_right_release(self, event):
-        if not self.drawing_rect or not self.rect_preview:
-            return
-        self.drawing_rect = False
-        if not self.current_entry:
-            self.rect_start = None
-            self.rect_preview = None
-            return
-        rect = {
-            "x0": self.rect_preview["x0"],
-            "y0": self.rect_preview["y0"],
-            "x1": self.rect_preview["x1"],
-            "y1": self.rect_preview["y1"],
-        }
-        if "negative_rects" not in self.current_entry:
-            self.current_entry["negative_rects"] = []
-        self.current_entry["negative_rects"].append(rect)
-        self.rect_start = None
-        self.rect_preview = None
-        self._update_annotation_label()
-        self._update_stats_label()
-        self._display_current_frame()
-
-    def _show_magnifier(self, frame_x, frame_y, root_x, root_y):
-        if self.magnifier_window is None:
-            self.magnifier_window = tk.Toplevel(self.root)
-            self.magnifier_window.overrideredirect(True)
-            self.magnifier_window.attributes("-topmost", True)
-            self.magnifier_label = ttk.Label(
-                self.magnifier_window, borderwidth=1, relief="solid"
-            )
-            self.magnifier_label.pack()
-        size = max(4, self.magnifier_size // self.magnifier_zoom)
-        patch, _ = self._extract_magnifier_patch(frame_x, frame_y, size)
-        if patch is None:
-            self._hide_magnifier()
-            return
-        enlarged = cv2.resize(
-            patch,
-            (self.magnifier_size, self.magnifier_size),
-            interpolation=cv2.INTER_NEAREST,
-        )
-        rgb = cv2.cvtColor(enlarged, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb)
-        draw = ImageDraw.Draw(image)
-        half = self.magnifier_size // 2
-        draw.line((half - 10, half, half + 10, half), fill="lime", width=2)
-        draw.line((half, half - 10, half, half + 10), fill="lime", width=2)
-        self.magnifier_image = ImageTk.PhotoImage(image)
-        self.magnifier_label.config(image=self.magnifier_image)
-        offset = 20
-        self.magnifier_window.geometry(
-            f"+{root_x + offset}+{root_y + offset}"
-        )
-        self.magnifier_window.deiconify()
-
-    def _hide_magnifier(self):
-        if self.magnifier_window:
-            self.magnifier_window.withdraw()
-
-    def _extract_magnifier_patch(self, frame_x, frame_y, size):
-        if not self.current_entry:
-            return None, None
-        frame = self.current_entry["frame"]
-        h, w = frame.shape[:2]
-        pad = size * 2
-        padded = cv2.copyMakeBorder(
-            frame, pad, pad, pad, pad, borderType=cv2.BORDER_REFLECT_101
-        )
-        cx = frame_x + pad
-        cy = frame_y + pad
-        half = size // 2
-        x0 = int(round(cx - half))
-        y0 = int(round(cy - half))
-        patch = padded[y0 : y0 + size, x0 : x0 + size]
-        return patch, None
-
-    def _load_existing_annotations(self):
-        output_path = "annotations.json"
-        if not os.path.exists(output_path):
-            return
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
         
-        try:
-            with open(output_path, "r") as f:
-                data = json.load(f)
+        # Canvas Area (Left)
+        self.canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Sidebar (Right)
+        sidebar = ttk.Frame(main_frame, width=300, padding=10)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False) # Force width
+        
+        # Title
+        ttk.Label(sidebar, text="Patch Viewer", font=("Arial", 14, "bold")).pack(pady=(0, 20), anchor="w")
+        
+        # Info Panel
+        info_frame = ttk.LabelFrame(sidebar, text="Current Sample", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        self.lbl_video = ttk.Label(info_frame, text="Video: -", wraplength=260)
+        self.lbl_video.pack(anchor="w", pady=2)
+        
+        self.lbl_frame = ttk.Label(info_frame, text="Frame: -")
+        self.lbl_frame.pack(anchor="w", pady=2)
+        
+        self.lbl_coords = ttk.Label(info_frame, text="Crop: -")
+        self.lbl_coords.pack(anchor="w", pady=2)
+        
+        # Navigation Panel
+        nav_frame = ttk.LabelFrame(sidebar, text="Navigation", padding=10)
+        nav_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        btn_prev = ttk.Button(nav_frame, text="<< Previous (A)", command=self.prev_patch)
+        btn_prev.pack(fill=tk.X, pady=5)
+        
+        btn_next = ttk.Button(nav_frame, text="Next Random (D) >>", command=self.next_patch)
+        btn_next.pack(fill=tk.X, pady=5)
+
+        # Instructions
+        ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
+        ttk.Label(sidebar, text="• Press 'D' or Right Arrow for a new random sample\n• Press 'A' or Left Arrow to go back\n• Resizing window scales the patch").pack(anchor="w")
+
+    def get_random_frame_location(self):
+        """Select a video and frame index proportional to frame count."""
+        if self.total_combined_frames == 0:
+            return None, None
             
-            # Load frames from all videos in our video list
-            for video in data.get("videos", []):
-                video_path = video.get("video_path", "")
-                abs_video_path = os.path.abspath(video_path)
-                
-                # Check if this video is in our list
-                if abs_video_path not in self.video_paths:
-                    continue
-                
-                # Get total frames for this video
-                try:
-                    total_frames = get_total_frames(abs_video_path)
-                except:
-                    total_frames = 0
-                
-                for frame_data in video.get("frames", []):
-                    frame_idx = frame_data["frame_idx"]
-                    try:
-                        frame = load_frame(abs_video_path, frame_idx)
-                    except:
+        global_idx = random.randint(0, self.total_combined_frames - 1)
+        video_idx = bisect.bisect_left(self.cumulative_frames, global_idx)
+        
+        # Safety check
+        if video_idx >= len(self.active_video_paths):
+            video_idx = len(self.active_video_paths) - 1
+            
+        video_path = self.active_video_paths[video_idx]
+        
+        prev_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
+        frame_idx = global_idx - prev_cumulative # Local frame index
+        
+        return video_path, frame_idx
+
+    def generate_new_patch(self):
+        if self.total_combined_frames == 0:
+            return None
+
+        # Try up to 10 times to get a valid frame/patch (in case of read errors)
+        for _ in range(10):
+            video_path, frame_idx = self.get_random_frame_location()
+            if not video_path:
                         continue
                     
-                    h, w = frame.shape[:2]
-                    
-                    annotations = []
-                    for cross in frame_data.get("crosses", []):
-                        annotations.append({
-                            "x": float(cross["x"] * w),
-                            "y": float(cross["y"] * h)
-                        })
-                    
-                    negative_rects = []
-                    for rect in frame_data.get("negative_rects", []):
-                        negative_rects.append({
-                            "x0": float(rect["x0"] * w),
-                            "y0": float(rect["y0"] * h),
-                            "x1": float(rect["x1"] * w),
-                            "y1": float(rect["y1"] * h)
-                        })
-                    
-                    entry = {
-                        "video_path": abs_video_path,
-                        "frame_idx": frame_idx,
-                        "frame": frame,
-                        "total_frames": total_frames,
-                        "annotations": annotations,
-                        "negative_rects": negative_rects
-                    }
-                    self.history.append(entry)
+            cap = cv2.VideoCapture(video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            cap.release()
             
-            if self.history:
-                self.history_idx = 0
-                self._set_current_entry(self.history[0])
+            if not ret or frame is None:
+                print(f"Warning: Could not read frame {frame_idx} from {video_path}")
+                continue
                 
-        except Exception as e:
-            print(f"[Warning] Could not load annotations: {e}")
-
-    def export_annotations(self):
-        # Group frames by video
-        video_frames = {}
-        for entry in self.history:
-            video_path = entry["video_path"]
-            if video_path not in video_frames:
-                video_frames[video_path] = []
-            
-            frame = entry["frame"]
             h, w = frame.shape[:2]
             
-            normalized_crosses = []
-            for ann in entry["annotations"]:
-                normalized_crosses.append({
-                    "x": float(ann["x"] / w),
-                    "y": float(ann["y"] / h)
-                })
+            # Ensure frame is large enough
+            if h < self.patch_size or w < self.patch_size:
+                # If frame is too small, just take center crop or resize? 
+                # User asked for 250x250. If smaller, let's skip or take whole.
+                # Let's just pad it if smaller, or skip. Skipping is safer for "random 250x250 area"
+                if h < 10 or w < 10: # Extremely small
+                    continue
+                
+                # If slightly smaller, just use 0,0 and min size
+                x, y = 0, 0
+                cw, ch = min(w, self.patch_size), min(h, self.patch_size)
+            else:
+                x = random.randint(0, w - self.patch_size)
+                y = random.randint(0, h - self.patch_size)
+                cw, ch = self.patch_size, self.patch_size
             
-            normalized_rects = []
-            for rect in entry.get("negative_rects", []):
-                normalized_rects.append({
-                    "x0": float(rect["x0"] / w),
-                    "y0": float(rect["y0"] / h),
-                    "x1": float(rect["x1"] / w),
-                    "y1": float(rect["y1"] / h)
-                })
+            # Extract patch
+            patch = frame[y:y+ch, x:x+cw]
             
-            frame_data = {
-                "frame_idx": entry["frame_idx"],
-                "crosses": normalized_crosses,
-                "negative_rects": normalized_rects
-            }
-            video_frames[video_path].append(frame_data)
-        
-        # Load existing JSON if present
-        output_path = "annotations.json"
-        existing_data = {"videos": []}
-        if os.path.exists(output_path):
-            try:
-                with open(output_path, "r") as f:
-                    existing_data = json.load(f)
-            except:
-                pass
-        
-        # Merge: update existing videos or add new ones
-        existing_videos = {v["video_path"]: v for v in existing_data.get("videos", [])}
-        for video_path, frames in video_frames.items():
-            existing_videos[video_path] = {
+            # Convert BGR to RGB
+            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+            
+            return {
                 "video_path": video_path,
-                "frames": frames
+                "frame_idx": frame_idx,
+                "crop_rect": (x, y, cw, ch),
+                "image": patch_rgb
             }
+            
+        return None
+
+    def next_patch(self):
+        if self.history_idx < len(self.history) - 1:
+            # Move forward in history
+            self.history_idx += 1
+            self.current_patch_info = self.history[self.history_idx]
+        else:
+            # Generate new
+            new_info = self.generate_new_patch()
+            if new_info:
+                self.history.append(new_info)
+                self.history_idx = len(self.history) - 1
+                self.current_patch_info = new_info
         
-        export_data = {
-            "videos": list(existing_videos.values())
-        }
+        self.display_current_patch()
+
+    def prev_patch(self):
+        if self.history_idx > 0:
+            self.history_idx -= 1
+            self.current_patch_info = self.history[self.history_idx]
+            self.display_current_patch()
+
+    def display_current_patch(self):
+        if not self.current_patch_info:
+            return
+            
+        info = self.current_patch_info
         
-        try:
-            with open(output_path, "w") as f:
-                json.dump(export_data, f, indent=2)
-            messagebox.showinfo("Export successful", f"Annotations saved to {output_path}")
-        except Exception as e:
-            messagebox.showerror("Export failed", f"Could not save file: {e}")
+        # Update Info Labels
+        self.lbl_video.config(text=f"Video: {os.path.basename(info['video_path'])}")
+        self.lbl_frame.config(text=f"Frame: {info['frame_idx']}")
+        x, y, w, h = info['crop_rect']
+        self.lbl_coords.config(text=f"Crop: x={x}, y={y} ({w}x{h})")
+        
+        # Display Image on Canvas
+        self.draw_image()
 
+    def draw_image(self):
+        if not self.current_patch_info:
+            return
+            
+        img_arr = self.current_patch_info['image']
+        img_h, img_w = img_arr.shape[:2]
+        
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            # Wait for layout
+            self.root.after(100, self.draw_image)
+            return
+            
+        # Calculate scale to fit canvas (maintain aspect ratio)
+        # We want to make it as big as possible within the canvas
+        scale = min(canvas_w / img_w, canvas_h / img_h)
+        
+        # Don't scale up excessively if it makes pixels blurry? 
+        # Actually for pixel art / analysis, sharp pixels are good.
+        # Let's use Nearest Neighbor for upscaling if it's very small, or Linear for general video.
+        # Given it's a "patch viewer", seeing pixels might be desired. Let's use NEAREST for large upscales.
+        
+        interp = cv2.INTER_NEAREST if scale > 2.0 else cv2.INTER_LINEAR
+        
+        new_w, new_h = int(img_w * scale), int(img_h * scale)
+        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=interp)
+        
+        self.photo_image = ImageTk.PhotoImage(Image.fromarray(resized))
+        
+        # Center in canvas
+        x_offset = (canvas_w - new_w) // 2
+        y_offset = (canvas_h - new_h) // 2
+        
+        self.canvas.delete("all")
+        self.canvas.create_image(x_offset, y_offset, anchor="nw", image=self.photo_image)
 
+    def on_resize(self, event):
+        # Debounce or just redraw
+        if self.current_patch_info:
+            self.draw_image()
 
-def load_frame(video_path, frame_idx):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Could not open video {video_path}")
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-    if not ret:
-        raise ValueError(f"Could not read frame {frame_idx}")
-    return frame
-
-
-def choose_random_frame_multi(video_paths):
-    """Choose a random video and a random frame from it."""
-    if not video_paths:
-        raise ValueError("No video paths provided")
+def find_videos(input_paths):
+    video_files = []
+    supported_extensions = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
     
-    video_path = random.choice(video_paths)
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Could not open video '{video_path}'")
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    if total_frames <= 0:
-        cap.release()
-        raise ValueError(f"Video '{video_path}' does not contain any frames")
-
-    frame_idx = random.randint(0, total_frames - 1)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    success, frame = cap.read()
-    cap.release()
-
-    if not success:
-        raise ValueError(f"Failed to read frame {frame_idx} from '{video_path}'")
-
-    return video_path, frame_idx, frame, total_frames
-
-
-def get_total_frames(video_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Could not open video '{video_path}'")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    cap.release()
-    return total
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Annotate frames and train a simple cross detector."
-    )
-    parser.add_argument(
-        "--videos",
-        nargs="+",
-        default=["video.mp4"],
-        help="Paths to one or more video files to sample from.",
-    )
-    parser.add_argument(
-        "--patch-size",
-        type=int,
-        default=100,
-        help="Square patch size in pixels (default: 100).",
-    )
-    return parser.parse_args()
-
+    for path in input_paths:
+        if os.path.isfile(path):
+            if os.path.splitext(path)[1].lower() in supported_extensions:
+                video_files.append(path)
+        elif os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    if os.path.splitext(file)[1].lower() in supported_extensions:
+                        video_files.append(os.path.join(root, file))
+    
+    return sorted(list(set(video_files)))
 
 def main():
-    args = parse_args()
-    root = tk.Tk()
-    viewer = RandomPatchViewer(root, args.videos, args.patch_size)
-    root.mainloop()
+    parser = argparse.ArgumentParser(description="View random 400x400 patches from videos.")
+    parser.add_argument("videos", nargs="*", help="Video files or directories")
+    args = parser.parse_args()
+    
+    video_inputs = args.videos
+    if not video_inputs:
+        # Default to 'videos' directory if it exists
+        if os.path.exists("videos"):
+            video_inputs = ["videos"]
+        else:
+            print("No video paths provided and 'videos' folder not found.")
+            return
 
+    video_paths = find_videos(video_inputs)
+    
+    if not video_paths:
+        print("No video files found.")
+        return
+        
+    print(f"Found {len(video_paths)} videos.")
+    
+    root = tk.Tk()
+    root.geometry("1000x800")
+    
+    app = RandomPatchViewer(root, video_paths)
+    
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
-
