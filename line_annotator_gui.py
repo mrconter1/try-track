@@ -66,6 +66,7 @@ class RandomPatchViewer:
         self.display_scale = 1.0
         self.show_mask_mode = False  # Toggle between normal and mask view
         self.show_lines = True  # Toggle line visibility
+        self.selected_line_idx = None  # Index of currently selected line
         
         # State for editing existing points
         self.editing_point = None  # (line_index, point_index) being edited, or None
@@ -135,6 +136,7 @@ class RandomPatchViewer:
         self.lines_listbox = tk.Listbox(list_container, yscrollcommand=scrollbar.set, height=10)
         self.lines_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.lines_listbox.yview)
+        self.lines_listbox.bind('<<ListboxSelect>>', self.on_line_select)
         
         # Navigation Panel
         nav_frame = ttk.LabelFrame(sidebar, text="Navigation", padding=10)
@@ -356,6 +358,12 @@ class RandomPatchViewer:
                 p1, p2 = line
                 text = f"Line {i+1}: ({p1[0]:.1f}, {p1[1]:.1f}) → ({p2[0]:.1f}, {p2[1]:.1f})"
                 self.lines_listbox.insert(tk.END, text)
+            
+            # Select the currently selected line in the listbox
+            if self.selected_line_idx is not None and self.selected_line_idx < len(self.lines):
+                self.lines_listbox.selection_clear(0, tk.END)
+                self.lines_listbox.selection_set(self.selected_line_idx)
+                self.lines_listbox.see(self.selected_line_idx)
     
     def toggle_mask(self):
         """Toggle between normal view and mask view."""
@@ -374,6 +382,14 @@ class RandomPatchViewer:
         """Toggle visibility of lines on the canvas."""
         self.show_lines = not self.show_lines
         self.draw_image()
+    
+    def on_line_select(self, event):
+        """Handle selection of a line from the listbox."""
+        selection = self.lines_listbox.curselection()
+        if selection:
+            # selection is a tuple of indices
+            self.selected_line_idx = selection[0]
+            self.draw_image()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
@@ -403,15 +419,22 @@ class RandomPatchViewer:
             canvas_x1, canvas_y1 = self.image_to_canvas_coords(p1[0], p1[1])
             canvas_x2, canvas_y2 = self.image_to_canvas_coords(p2[0], p2[1])
             
-            # Check if this line is being edited
+            # Check if this line is being edited or selected
             is_editing = (self.editing_point is not None and 
                          self.editing_point[0] == line_idx)
+            is_selected = (self.selected_line_idx == line_idx)
             
             if is_editing:
                 # Draw yellow dotted line while editing
                 self.canvas.create_line(
                     canvas_x1, canvas_y1, canvas_x2, canvas_y2,
                     fill="yellow", width=2, dash=(4, 4)
+                )
+            elif is_selected:
+                # Draw green line for selected
+                self.canvas.create_line(
+                    canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                    fill="lime", width=3
                 )
             else:
                 # Draw solid cyan line normally
@@ -420,9 +443,13 @@ class RandomPatchViewer:
                     fill="cyan", width=2
                 )
             
-            # Draw endpoints
-            self.draw_point_on_canvas(p1, "lime", 5)
-            self.draw_point_on_canvas(p2, "red", 5)
+            # Draw endpoints - highlight if selected
+            if is_selected:
+                self.draw_point_on_canvas(p1, "lime", 6)
+                self.draw_point_on_canvas(p2, "lime", 6)
+            else:
+                self.draw_point_on_canvas(p1, "lime", 5)
+                self.draw_point_on_canvas(p2, "red", 5)
     
     def on_canvas_press(self, event):
         """Handle mouse press on canvas - start dragging a new point or edit existing."""
@@ -479,6 +506,7 @@ class RandomPatchViewer:
             # Finished editing existing point
             line_idx, point_idx = self.editing_point
             self.lines[line_idx][point_idx] = (img_x, img_y)
+            self.selected_line_idx = line_idx  # Select the edited line
             self.editing_point = None
             self.update_lines_list()
         else:
@@ -492,6 +520,7 @@ class RandomPatchViewer:
             else:
                 # Second point - create the line
                 self.lines.append([self.first_point, final_point])
+                self.selected_line_idx = len(self.lines) - 1  # Select the newly created line
                 self.first_point = None
                 self.current_point = None
                 # Update the lines list
