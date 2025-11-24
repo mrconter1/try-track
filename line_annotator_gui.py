@@ -7,6 +7,7 @@ import random
 import bisect
 import argparse
 import sys
+import numpy as np
 
 def get_video_props(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -63,6 +64,7 @@ class RandomPatchViewer:
         self.canvas_offset_x = 0
         self.canvas_offset_y = 0
         self.display_scale = 1.0
+        self.show_mask_mode = False  # Toggle between normal and mask view
         
         # UI Setup
         self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
@@ -74,6 +76,7 @@ class RandomPatchViewer:
         self.root.bind("<d>", lambda e: self.next_patch())
         self.root.bind("<Left>", lambda e: self.prev_patch())
         self.root.bind("<Right>", lambda e: self.next_patch())
+        self.root.bind("<m>", lambda e: self.toggle_mask())
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
@@ -137,6 +140,9 @@ class RandomPatchViewer:
         
         btn_next = ttk.Button(nav_frame, text="Next Random (D) >>", command=self.next_patch)
         btn_next.pack(fill=tk.X, pady=5)
+        
+        self.btn_toggle_mask = ttk.Button(nav_frame, text="Show Mask (M)", command=self.toggle_mask)
+        self.btn_toggle_mask.pack(fill=tk.X, pady=5)
 
         # Instructions
         ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
@@ -267,6 +273,20 @@ class RandomPatchViewer:
             self.root.after(100, self.draw_image)
             return
         
+        # Choose what to display based on mode
+        if self.show_mask_mode:
+            # Create mask view
+            display_arr = np.zeros((img_h, img_w, 3), dtype=np.uint8)
+            # Draw each line as 3px wide white line
+            for line in self.lines:
+                p1, p2 = line
+                x1, y1 = int(round(p1[0])), int(round(p1[1]))
+                x2, y2 = int(round(p2[0])), int(round(p2[1]))
+                cv2.line(display_arr, (x1, y1), (x2, y2), (255, 255, 255), thickness=3)
+        else:
+            # Normal view - show image
+            display_arr = img_arr
+        
         # Scale image to ~33% of screen height while maintaining aspect ratio
         target_height = int(canvas_h * 0.33)
         scale = target_height / img_h
@@ -275,7 +295,7 @@ class RandomPatchViewer:
         interp = cv2.INTER_NEAREST if scale > 1.5 else cv2.INTER_LINEAR
         
         new_w, new_h = int(img_w * scale), int(img_h * scale)
-        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=interp)
+        resized = cv2.resize(display_arr, (new_w, new_h), interpolation=interp)
         
         self.photo_image = ImageTk.PhotoImage(Image.fromarray(resized))
         
@@ -290,27 +310,29 @@ class RandomPatchViewer:
         self.canvas.delete("all")
         self.canvas.create_image(x_offset, y_offset, anchor="nw", image=self.photo_image)
         
-        # Draw existing lines
-        self.draw_lines_on_canvas()
-        
-        # Draw locked first point if it exists
-        if self.first_point is not None:
-            self.draw_point_on_canvas(self.first_point, "lime", 8)
-        
-        # Draw the point being currently dragged
-        if self.current_point is not None:
-            if self.first_point is None:
-                # Dragging first point
-                self.draw_point_on_canvas(self.current_point, "yellow", 8)
-            else:
-                # Dragging second point - also show preview line
-                self.draw_point_on_canvas(self.current_point, "red", 8)
-                canvas_x1, canvas_y1 = self.image_to_canvas_coords(self.first_point[0], self.first_point[1])
-                canvas_x2, canvas_y2 = self.image_to_canvas_coords(self.current_point[0], self.current_point[1])
-                self.canvas.create_line(
-                    canvas_x1, canvas_y1, canvas_x2, canvas_y2,
-                    fill="yellow", width=2, dash=(4, 4)
-                )
+        # Only draw UI overlays in normal mode
+        if not self.show_mask_mode:
+            # Draw existing lines
+            self.draw_lines_on_canvas()
+            
+            # Draw locked first point if it exists
+            if self.first_point is not None:
+                self.draw_point_on_canvas(self.first_point, "lime", 8)
+            
+            # Draw the point being currently dragged
+            if self.current_point is not None:
+                if self.first_point is None:
+                    # Dragging first point
+                    self.draw_point_on_canvas(self.current_point, "yellow", 8)
+                else:
+                    # Dragging second point - also show preview line
+                    self.draw_point_on_canvas(self.current_point, "red", 8)
+                    canvas_x1, canvas_y1 = self.image_to_canvas_coords(self.first_point[0], self.first_point[1])
+                    canvas_x2, canvas_y2 = self.image_to_canvas_coords(self.current_point[0], self.current_point[1])
+                    self.canvas.create_line(
+                        canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                        fill="yellow", width=2, dash=(4, 4)
+                    )
 
     def on_resize(self, event):
         # Debounce or just redraw
@@ -328,6 +350,19 @@ class RandomPatchViewer:
                 p1, p2 = line
                 text = f"Line {i+1}: ({p1[0]:.1f}, {p1[1]:.1f}) → ({p2[0]:.1f}, {p2[1]:.1f})"
                 self.lines_listbox.insert(tk.END, text)
+    
+    def toggle_mask(self):
+        """Toggle between normal view and mask view."""
+        self.show_mask_mode = not self.show_mask_mode
+        
+        # Update button text
+        if self.show_mask_mode:
+            self.btn_toggle_mask.config(text="Show Image (M)")
+        else:
+            self.btn_toggle_mask.config(text="Show Mask (M)")
+        
+        # Redraw
+        self.draw_image()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
