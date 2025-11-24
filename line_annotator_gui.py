@@ -237,8 +237,8 @@ class RandomPatchViewer:
             self.root.after(100, self.draw_image)
             return
         
-        # Scale image to ~25% of screen height while maintaining aspect ratio
-        target_height = int(canvas_h * 0.25)
+        # Scale image to ~33% of screen height while maintaining aspect ratio
+        target_height = int(canvas_h * 0.33)
         scale = target_height / img_h
         
         # Use Nearest Neighbor for sharp upscaling, Linear for downscaling
