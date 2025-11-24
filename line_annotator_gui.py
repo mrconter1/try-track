@@ -165,6 +165,11 @@ class RandomPatchViewer:
         # State for editing existing points
         self.editing_point = None  # (line_index, point_index) being edited, or None
         
+        # Data generation state
+        self.generated_patches = []  # List of {image, mask, source_info}
+        self.gen_patch_idx = -1
+        self.show_gen_mask = False  # Toggle between image and mask in gen tab
+        
         # UI Setup
         self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
         self._build_ui()
@@ -228,7 +233,25 @@ class RandomPatchViewer:
         print(f"Loaded {len(self.history)} samples from database")
     
     def _build_ui(self):
-        main_frame = ttk.Frame(self.root)
+        # Tab control for whole GUI
+        self.tab_control = ttk.Notebook(self.root)
+        self.tab_control.pack(fill=tk.BOTH, expand=True)
+        
+        # Labelling Tab
+        self.labelling_tab = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.labelling_tab, text="Labelling")
+        
+        # Data Generation Tab
+        self.data_gen_tab = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.data_gen_tab, text="Data Generation")
+        
+        self._build_labelling_tab()
+        self._build_data_generation_tab()
+    
+    def _build_labelling_tab(self):
+        """Build the UI for the labelling tab."""
+        # Main frame with canvas and sidebar
+        main_frame = ttk.Frame(self.labelling_tab)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Canvas Area (Left)
@@ -239,9 +262,6 @@ class RandomPatchViewer:
         sidebar = ttk.Frame(main_frame, width=300, padding=10)
         sidebar.pack(side=tk.RIGHT, fill=tk.Y)
         sidebar.pack_propagate(False) # Force width
-        
-        # Title
-        ttk.Label(sidebar, text="Patch Viewer", font=("Arial", 14, "bold")).pack(pady=(0, 20), anchor="w")
         
         # Info Panel
         info_frame = ttk.LabelFrame(sidebar, text="Current Sample", padding=10)
@@ -308,6 +328,45 @@ class RandomPatchViewer:
         # Instructions
         ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
         ttk.Label(sidebar, text="• Press 'D' or Right Arrow for a new random sample\n• Press 'A' or Left Arrow to go back\n• Click to place lines\n• Delete key to remove selected line\n• Ctrl+S to save").pack(anchor="w")
+    
+    def _build_data_generation_tab(self):
+        """Build the UI for the data generation tab."""
+        # Main frame with canvas and sidebar
+        main_frame = ttk.Frame(self.data_gen_tab)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Canvas Area (Left)
+        self.gen_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
+        self.gen_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Sidebar (Right)
+        sidebar = ttk.Frame(main_frame, width=300, padding=10)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False) # Force width
+        
+        # Generation controls
+        gen_frame = ttk.LabelFrame(sidebar, text="Generation Controls", padding=10)
+        gen_frame.pack(fill=tk.X, pady=(10, 10))
+        
+        ttk.Label(gen_frame, text="Patch size: 128x128").pack(anchor="w", pady=2)
+        ttk.Label(gen_frame, text="Grid: 4x4 (16 patches)").pack(anchor="w", pady=2)
+        
+        btn_generate = ttk.Button(gen_frame, text="Generate 16 Random Patches", command=self.generate_training_patches)
+        btn_generate.pack(fill=tk.X, pady=5)
+        
+        self.btn_toggle_gen_view = ttk.Button(gen_frame, text="Show: Images", command=self.toggle_generation_view)
+        self.btn_toggle_gen_view.pack(fill=tk.X, pady=5)
+        
+        # Generation info
+        info_frame = ttk.LabelFrame(sidebar, text="Grid Info", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.lbl_gen_count = ttk.Label(info_frame, text="Patches: 0")
+        self.lbl_gen_count.pack(anchor="w", pady=2)
+        
+        # Instructions
+        ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
+        ttk.Label(sidebar, text="• Generate 4x4 grid of patches from labeled data\n• Toggle between images and masks view").pack(anchor="w")
 
     def get_random_frame_location(self):
         """Select a video and frame index proportional to frame count."""
@@ -629,6 +688,181 @@ class RandomPatchViewer:
         """Handle window close event."""
         self.save_annotations(show_message=False)
         self.root.destroy()
+    
+    # Data Generation Methods
+    
+    def generate_training_patches(self):
+        """Generate 16 random 128x128 patches from labeled samples for 4x4 grid."""
+        self.generated_patches = []
+        
+        # Only use samples with lines
+        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        
+        if not labeled_samples:
+            messagebox.showwarning("No Labeled Data", "No labeled samples found. Please label some data first.")
+            return
+        
+        print(f"Generating 16 patches from {len(labeled_samples)} labeled samples...")
+        
+        for i in range(16):
+            # Pick random labeled sample
+            sample = random.choice(labeled_samples)
+            
+            # Load the frame
+            cap = cv2.VideoCapture(sample.video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret or frame is None:
+                print(f"Warning: Could not load frame for patch {i+1}")
+                continue
+            
+            # Extract the original crop
+            x, y, w, h = sample.crop_rect
+            crop = frame[y:y+h, x:x+w]
+            
+            # Random 128x128 location within the crop
+            if w < 128 or h < 128:
+                # If crop is smaller than 128x128, use the whole thing
+                patch_x, patch_y = 0, 0
+                patch_w, patch_h = min(w, 128), min(h, 128)
+            else:
+                patch_x = random.randint(0, w - 128)
+                patch_y = random.randint(0, h - 128)
+                patch_w, patch_h = 128, 128
+            
+            # Extract patch
+            patch_img = crop[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+            patch_img_rgb = cv2.cvtColor(patch_img, cv2.COLOR_BGR2RGB)
+            
+            # Create mask
+            mask = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
+            
+            # Draw lines that intersect with this patch
+            for line in sample.lines:
+                # Line coords are relative to the crop
+                p1_x, p1_y = line.start
+                p2_x, p2_y = line.end
+                
+                # Translate to patch coordinates
+                p1_patch = (int(p1_x - patch_x), int(p1_y - patch_y))
+                p2_patch = (int(p2_x - patch_x), int(p2_y - patch_y))
+                
+                # Draw line (even if it goes outside - OpenCV clips it)
+                cv2.line(mask, p1_patch, p2_patch, (255, 255, 255), thickness=3)
+            
+            patch_data = {
+                "image": patch_img_rgb,
+                "mask": mask,
+                "source_video": os.path.basename(sample.video_path),
+                "source_frame": sample.frame_idx,
+                "source_crop": sample.crop_rect,
+                "patch_offset": (patch_x, patch_y, patch_w, patch_h)
+            }
+            
+            self.generated_patches.append(patch_data)
+        
+        print(f"Generated {len(self.generated_patches)} patches")
+        
+        if self.generated_patches:
+            self.show_gen_mask = False
+            self.display_gen_grid()
+    
+    def display_gen_grid(self):
+        """Display all generated patches in a 4x4 grid with padding."""
+        if not self.generated_patches:
+            return
+        
+        # Update info
+        self.lbl_gen_count.config(text=f"Patches: {len(self.generated_patches)}")
+        
+        # Update button text
+        if self.show_gen_mask:
+            self.btn_toggle_gen_view.config(text="Show: Masks")
+        else:
+            self.btn_toggle_gen_view.config(text="Show: Images")
+        
+        # Create 4x4 grid with padding
+        grid_rows = 4
+        grid_cols = 4
+        patch_size = 128
+        padding = 4  # Padding between patches
+        
+        # Calculate grid dimensions with padding
+        grid_width = grid_cols * patch_size + (grid_cols + 1) * padding
+        grid_height = grid_rows * patch_size + (grid_rows + 1) * padding
+        
+        # Create the grid image with dark background
+        grid_img = np.full((grid_height, grid_width, 3), 32, dtype=np.uint8)
+        
+        for idx, patch in enumerate(self.generated_patches):
+            if idx >= 16:
+                break
+            
+            row = idx // grid_cols
+            col = idx % grid_cols
+            
+            # Choose image or mask
+            if self.show_gen_mask:
+                patch_data = patch["mask"]
+            else:
+                patch_data = patch["image"]
+            
+            # Get patch dimensions
+            ph, pw = patch_data.shape[:2]
+            
+            # Calculate position with padding
+            y_start = padding + row * (patch_size + padding)
+            x_start = padding + col * (patch_size + padding)
+            grid_img[y_start:y_start+ph, x_start:x_start+pw] = patch_data
+        
+        # Display the grid
+        self._draw_generated_image(grid_img)
+    
+    def _draw_generated_image(self, img_arr):
+        """Draw a generated patch on the generation canvas."""
+        img_h, img_w = img_arr.shape[:2]
+        
+        canvas_w = self.gen_canvas.winfo_width()
+        canvas_h = self.gen_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, lambda: self._draw_generated_image(img_arr))
+            return
+        
+        # Scale to fit canvas while maintaining aspect ratio
+        scale_w = canvas_w * 0.8 / img_w
+        scale_h = canvas_h * 0.8 / img_h
+        scale = min(scale_w, scale_h)
+        
+        new_w = int(img_w * scale)
+        new_h = int(img_h * scale)
+        
+        # Resize
+        if scale > 1.5:
+            interp = cv2.INTER_NEAREST
+        else:
+            interp = cv2.INTER_LINEAR
+        
+        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=interp)
+        
+        # Convert to PhotoImage
+        img_pil = Image.fromarray(resized)
+        self.gen_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        # Center on canvas
+        offset_x = (canvas_w - new_w) // 2
+        offset_y = (canvas_h - new_h) // 2
+        
+        # Clear and draw
+        self.gen_canvas.delete("all")
+        self.gen_canvas.create_image(offset_x, offset_y, anchor=tk.NW, image=self.gen_photo_image)
+    
+    def toggle_generation_view(self):
+        """Toggle between images and masks view in data generation."""
+        self.show_gen_mask = not self.show_gen_mask
+        self.display_gen_grid()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
