@@ -83,6 +83,7 @@ class RandomPatchViewer:
         self.root.bind("<Right>", lambda e: self.next_patch())
         self.root.bind("<m>", lambda e: self.toggle_mask())
         self.root.bind("<l>", lambda e: self.toggle_lines())
+        self.root.bind("<Delete>", lambda e: self.delete_selected_line())
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
@@ -137,6 +138,10 @@ class RandomPatchViewer:
         self.lines_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.lines_listbox.yview)
         self.lines_listbox.bind('<<ListboxSelect>>', self.on_line_select)
+        
+        # Delete button
+        self.btn_delete = ttk.Button(lines_frame, text="Delete Line", command=self.delete_selected_line)
+        self.btn_delete.pack(pady=5)
         
         # Navigation Panel
         nav_frame = ttk.LabelFrame(sidebar, text="Navigation", padding=10)
@@ -389,6 +394,14 @@ class RandomPatchViewer:
         if selection:
             # selection is a tuple of indices
             self.selected_line_idx = selection[0]
+            self.draw_image()
+    
+    def delete_selected_line(self):
+        """Delete the currently selected line."""
+        if self.selected_line_idx is not None and 0 <= self.selected_line_idx < len(self.lines):
+            del self.lines[self.selected_line_idx]
+            self.selected_line_idx = None
+            self.update_lines_list()
             self.draw_image()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
