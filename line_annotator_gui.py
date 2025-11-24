@@ -723,38 +723,99 @@ class RandomPatchViewer:
             x, y, w, h = sample.crop_rect
             crop = frame[y:y+h, x:x+w]
             
-            # Random 128x128 location within the crop
-            if w < 128 or h < 128:
-                # If crop is smaller than 128x128, use the whole thing
+            # Apply random augmentations
+            # Random zoom (±5%)
+            zoom_factor = random.uniform(0.95, 1.05)
+            
+            # Random rotation (±180 degrees)
+            rotation_angle = random.uniform(-180, 180)
+            
+            # Random stretch in x and y
+            stretch_x = random.uniform(0.9, 1.1)
+            stretch_y = random.uniform(0.9, 1.1)
+            
+            # To ensure the final 128x128 patch is fully filled after transformation,
+            # we need to sample from a larger region initially
+            # The required size depends on rotation and zoom
+            # Worst case: 45° rotation requires sqrt(2) * size, plus zoom/stretch
+            buffer_factor = 1.8  # Conservative factor to ensure full coverage
+            initial_size = int(128 * buffer_factor)
+            
+            # Random location for the larger initial patch
+            if w < initial_size or h < initial_size:
+                # If crop is too small, work with what we have
                 patch_x, patch_y = 0, 0
-                patch_w, patch_h = min(w, 128), min(h, 128)
+                patch_w, patch_h = w, h
             else:
-                patch_x = random.randint(0, w - 128)
-                patch_y = random.randint(0, h - 128)
-                patch_w, patch_h = 128, 128
+                patch_x = random.randint(0, w - initial_size)
+                patch_y = random.randint(0, h - initial_size)
+                patch_w, patch_h = initial_size, initial_size
             
-            # Extract patch
-            patch_img = crop[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-            patch_img_rgb = cv2.cvtColor(patch_img, cv2.COLOR_BGR2RGB)
+            # Extract larger patch
+            large_patch = crop[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+            large_patch_rgb = cv2.cvtColor(large_patch, cv2.COLOR_BGR2RGB)
             
-            # Create mask
-            mask = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
+            # Calculate center of large patch
+            center_x, center_y = patch_w / 2, patch_h / 2
             
-            # Draw lines that intersect with this patch
+            # Build transformation matrix
+            M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
+            
+            # Rotation matrix
+            rad = np.deg2rad(rotation_angle)
+            cos_a = np.cos(rad)
+            sin_a = np.sin(rad)
+            M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
+            
+            # Scale/stretch/zoom matrix
+            scale_x = zoom_factor * stretch_x
+            scale_y = zoom_factor * stretch_y
+            M_scale = np.array([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]], dtype=np.float32)
+            
+            # Translate back
+            M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
+            
+            # Combine transformations
+            M_combined = M_back @ M_scale @ M_rot @ M_center
+            M_2x3 = M_combined[:2, :]
+            
+            # Apply transformation to large image
+            transformed = cv2.warpAffine(large_patch_rgb, M_2x3, (patch_w, patch_h), 
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            
+            # Crop center 128x128 region from transformed image
+            crop_x = (patch_w - 128) // 2
+            crop_y = (patch_h - 128) // 2
+            patch_img_aug = transformed[crop_y:crop_y+128, crop_x:crop_x+128]
+            
+            # Create mask with same transformation
+            mask_large = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
+            
+            # Draw lines on large mask with transformation
             for line in sample.lines:
-                # Line coords are relative to the crop
+                # Line coords are relative to the original crop
                 p1_x, p1_y = line.start
                 p2_x, p2_y = line.end
                 
-                # Translate to patch coordinates
-                p1_patch = (int(p1_x - patch_x), int(p1_y - patch_y))
-                p2_patch = (int(p2_x - patch_x), int(p2_y - patch_y))
+                # Translate to large patch coordinates
+                p1_patch = np.array([p1_x - patch_x, p1_y - patch_y, 1], dtype=np.float32)
+                p2_patch = np.array([p2_x - patch_x, p2_y - patch_y, 1], dtype=np.float32)
                 
-                # Draw line (even if it goes outside - OpenCV clips it)
-                cv2.line(mask, p1_patch, p2_patch, (255, 255, 255), thickness=3)
+                # Apply transformation
+                p1_transformed = M_combined @ p1_patch
+                p2_transformed = M_combined @ p2_patch
+                
+                # Draw transformed line on large mask
+                p1_final = (int(p1_transformed[0]), int(p1_transformed[1]))
+                p2_final = (int(p2_transformed[0]), int(p2_transformed[1]))
+                
+                cv2.line(mask_large, p1_final, p2_final, (255, 255, 255), thickness=3)
+            
+            # Crop center 128x128 region from mask
+            mask = mask_large[crop_y:crop_y+128, crop_x:crop_x+128]
             
             patch_data = {
-                "image": patch_img_rgb,
+                "image": patch_img_aug,
                 "mask": mask,
                 "source_video": os.path.basename(sample.video_path),
                 "source_frame": sample.frame_idx,
