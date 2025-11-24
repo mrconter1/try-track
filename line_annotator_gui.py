@@ -390,15 +390,28 @@ class RandomPatchViewer:
     
     def draw_lines_on_canvas(self):
         """Draw all placed lines on the canvas."""
-        for line in self.lines:
+        for line_idx, line in enumerate(self.lines):
             p1, p2 = line
             canvas_x1, canvas_y1 = self.image_to_canvas_coords(p1[0], p1[1])
             canvas_x2, canvas_y2 = self.image_to_canvas_coords(p2[0], p2[1])
             
-            self.canvas.create_line(
-                canvas_x1, canvas_y1, canvas_x2, canvas_y2,
-                fill="cyan", width=2
-            )
+            # Check if this line is being edited
+            is_editing = (self.editing_point is not None and 
+                         self.editing_point[0] == line_idx)
+            
+            if is_editing:
+                # Draw yellow dotted line while editing
+                self.canvas.create_line(
+                    canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                    fill="yellow", width=2, dash=(4, 4)
+                )
+            else:
+                # Draw solid cyan line normally
+                self.canvas.create_line(
+                    canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                    fill="cyan", width=2
+                )
+            
             # Draw endpoints
             self.draw_point_on_canvas(p1, "lime", 5)
             self.draw_point_on_canvas(p2, "red", 5)
