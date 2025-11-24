@@ -55,6 +55,15 @@ class RandomPatchViewer:
         self.photo_image = None
         self.scale = 1.0
         
+        # Line drawing state
+        self.lines = [] # List of [(x1, y1), (x2, y2)] in image coords
+        self.first_point = None # The locked-in first point
+        self.current_point = None # The point being dragged right now
+        self.is_dragging = False
+        self.canvas_offset_x = 0
+        self.canvas_offset_y = 0
+        self.display_scale = 1.0
+        
         # UI Setup
         self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
         self._build_ui()
@@ -65,6 +74,9 @@ class RandomPatchViewer:
         self.root.bind("<d>", lambda e: self.next_patch())
         self.root.bind("<Left>", lambda e: self.prev_patch())
         self.root.bind("<Right>", lambda e: self.next_patch())
+        self.canvas.bind("<Button-1>", self.on_canvas_press)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
         
         # Initial patch
         if self.total_combined_frames > 0:
@@ -253,13 +265,136 @@ class RandomPatchViewer:
         x_offset = (canvas_w - new_w) // 2
         y_offset = (canvas_h - new_h) // 2
         
+        self.canvas_offset_x = x_offset
+        self.canvas_offset_y = y_offset
+        self.display_scale = scale
+        
         self.canvas.delete("all")
         self.canvas.create_image(x_offset, y_offset, anchor="nw", image=self.photo_image)
+        
+        # Draw existing lines
+        self.draw_lines_on_canvas()
+        
+        # Draw locked first point if it exists
+        if self.first_point is not None:
+            self.draw_point_on_canvas(self.first_point, "lime", 8)
+        
+        # Draw the point being currently dragged
+        if self.current_point is not None:
+            if self.first_point is None:
+                # Dragging first point
+                self.draw_point_on_canvas(self.current_point, "yellow", 8)
+            else:
+                # Dragging second point - also show preview line
+                self.draw_point_on_canvas(self.current_point, "red", 8)
+                canvas_x1, canvas_y1 = self.image_to_canvas_coords(self.first_point[0], self.first_point[1])
+                canvas_x2, canvas_y2 = self.image_to_canvas_coords(self.current_point[0], self.current_point[1])
+                self.canvas.create_line(
+                    canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                    fill="yellow", width=2, dash=(4, 4)
+                )
 
     def on_resize(self, event):
         # Debounce or just redraw
         if self.current_patch_info:
             self.draw_image()
+    
+    def canvas_to_image_coords(self, canvas_x, canvas_y):
+        """Convert canvas coordinates to image coordinates."""
+        img_x = (canvas_x - self.canvas_offset_x) / self.display_scale
+        img_y = (canvas_y - self.canvas_offset_y) / self.display_scale
+        return img_x, img_y
+    
+    def image_to_canvas_coords(self, img_x, img_y):
+        """Convert image coordinates to canvas coordinates."""
+        canvas_x = self.canvas_offset_x + img_x * self.display_scale
+        canvas_y = self.canvas_offset_y + img_y * self.display_scale
+        return canvas_x, canvas_y
+    
+    def draw_point_on_canvas(self, point, color, size):
+        """Draw a point on the canvas."""
+        canvas_x, canvas_y = self.image_to_canvas_coords(point[0], point[1])
+        self.canvas.create_oval(
+            canvas_x - size, canvas_y - size,
+            canvas_x + size, canvas_y + size,
+            fill=color, outline=color
+        )
+    
+    def draw_lines_on_canvas(self):
+        """Draw all placed lines on the canvas."""
+        for line in self.lines:
+            p1, p2 = line
+            canvas_x1, canvas_y1 = self.image_to_canvas_coords(p1[0], p1[1])
+            canvas_x2, canvas_y2 = self.image_to_canvas_coords(p2[0], p2[1])
+            
+            self.canvas.create_line(
+                canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                fill="cyan", width=2
+            )
+            # Draw endpoints
+            self.draw_point_on_canvas(p1, "lime", 5)
+            self.draw_point_on_canvas(p2, "red", 5)
+    
+    def on_canvas_press(self, event):
+        """Handle mouse press on canvas - start dragging a new point."""
+        if not self.current_patch_info:
+            return
+        
+        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        
+        # Clamp to image bounds
+        img_h, img_w = self.current_patch_info['image'].shape[:2]
+        img_x = max(0, min(img_x, img_w - 1))
+        img_y = max(0, min(img_y, img_h - 1))
+        
+        # Start dragging
+        self.is_dragging = True
+        self.current_point = (img_x, img_y)
+        self.draw_image()
+    
+    def on_canvas_drag(self, event):
+        """Handle mouse drag on canvas - update the point being dragged."""
+        if not self.is_dragging or not self.current_patch_info:
+            return
+        
+        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        
+        # Clamp to image bounds
+        img_h, img_w = self.current_patch_info['image'].shape[:2]
+        img_x = max(0, min(img_x, img_w - 1))
+        img_y = max(0, min(img_y, img_h - 1))
+        
+        # Update the current point being dragged
+        self.current_point = (img_x, img_y)
+        self.draw_image()
+    
+    def on_canvas_release(self, event):
+        """Handle mouse release on canvas - lock in the point."""
+        if not self.is_dragging or not self.current_patch_info:
+            return
+        
+        self.is_dragging = False
+        
+        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        
+        # Clamp to image bounds
+        img_h, img_w = self.current_patch_info['image'].shape[:2]
+        img_x = max(0, min(img_x, img_w - 1))
+        img_y = max(0, min(img_y, img_h - 1))
+        
+        final_point = (img_x, img_y)
+        
+        if self.first_point is None:
+            # First point is now locked in
+            self.first_point = final_point
+            self.current_point = None
+        else:
+            # Second point - create the line
+            self.lines.append([self.first_point, final_point])
+            self.first_point = None
+            self.current_point = None
+        
+        self.draw_image()
 
 def find_videos(input_paths):
     video_files = []
