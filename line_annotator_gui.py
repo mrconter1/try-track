@@ -180,10 +180,11 @@ class RandomPatchViewer:
         self.root.bind("<d>", lambda e: self.next_patch())
         self.root.bind("<Left>", lambda e: self.prev_patch())
         self.root.bind("<Right>", lambda e: self.next_patch())
-        self.root.bind("<m>", lambda e: self.toggle_mask())
+        self.root.bind("<m>", lambda e: self.on_toggle_mask_key())
         self.root.bind("<l>", lambda e: self.toggle_lines())
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
         self.root.bind("<Control-s>", lambda e: self.save_annotations())
+        self.root.bind("<r>", lambda e: self.on_regenerate_key())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
@@ -366,7 +367,7 @@ class RandomPatchViewer:
         
         # Instructions
         ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
-        ttk.Label(sidebar, text="• Generate 4x4 grid of patches from labeled data\n• Toggle between images and masks view").pack(anchor="w")
+        ttk.Label(sidebar, text="• Press 'R' to generate new patches\n• Press 'M' to toggle images/masks\n• Generates 4x4 grid from labeled data").pack(anchor="w")
 
     def get_random_frame_location(self):
         """Select a video and frame index proportional to frame count."""
@@ -863,6 +864,22 @@ class RandomPatchViewer:
         """Toggle between images and masks view in data generation."""
         self.show_gen_mask = not self.show_gen_mask
         self.display_gen_grid()
+    
+    def on_regenerate_key(self):
+        """Handle 'r' key press - regenerate if in data generation tab, otherwise do nothing."""
+        # Check which tab is active
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 1:  # Data Generation tab (index 1)
+            self.generate_training_patches()
+    
+    def on_toggle_mask_key(self):
+        """Handle 'm' key press - toggle mask based on active tab."""
+        # Check which tab is active
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 0:  # Labelling tab
+            self.toggle_mask()
+        elif current_tab == 1:  # Data Generation tab
+            self.toggle_generation_view()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
