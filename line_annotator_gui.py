@@ -113,6 +113,21 @@ class RandomPatchViewer:
         self.lbl_coords = ttk.Label(info_frame, text="Crop: -")
         self.lbl_coords.pack(anchor="w", pady=2)
         
+        # Lines List Panel
+        lines_frame = ttk.LabelFrame(sidebar, text="Lines", padding=10)
+        lines_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        # Create scrollable list for lines
+        list_container = ttk.Frame(lines_frame)
+        list_container.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(list_container)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.lines_listbox = tk.Listbox(list_container, yscrollcommand=scrollbar.set, height=10)
+        self.lines_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.lines_listbox.yview)
+        
         # Navigation Panel
         nav_frame = ttk.LabelFrame(sidebar, text="Navigation", padding=10)
         nav_frame.pack(fill=tk.X, pady=(0, 20))
@@ -231,6 +246,9 @@ class RandomPatchViewer:
         x, y, w, h = info['crop_rect']
         self.lbl_coords.config(text=f"Crop: x={x}, y={y} ({w}x{h})")
         
+        # Update Lines List
+        self.update_lines_list()
+        
         # Display Image on Canvas
         self.draw_image()
 
@@ -298,6 +316,18 @@ class RandomPatchViewer:
         # Debounce or just redraw
         if self.current_patch_info:
             self.draw_image()
+    
+    def update_lines_list(self):
+        """Update the lines listbox with current lines."""
+        self.lines_listbox.delete(0, tk.END)
+        
+        if not self.lines:
+            self.lines_listbox.insert(tk.END, "No lines yet")
+        else:
+            for i, line in enumerate(self.lines):
+                p1, p2 = line
+                text = f"Line {i+1}: ({p1[0]:.1f}, {p1[1]:.1f}) → ({p2[0]:.1f}, {p2[1]:.1f})"
+                self.lines_listbox.insert(tk.END, text)
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
@@ -379,6 +409,8 @@ class RandomPatchViewer:
             self.lines.append([self.first_point, final_point])
             self.first_point = None
             self.current_point = None
+            # Update the lines list
+            self.update_lines_list()
         
         self.draw_image()
 
