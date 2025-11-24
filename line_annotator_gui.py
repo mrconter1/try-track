@@ -294,6 +294,11 @@ class RandomPatchViewer:
         self.is_training = False
         self.training_samples = []
         
+        # Inference state
+        self.inference_samples = []
+        self.inference_idx = 0
+        self.show_inference_prediction = False
+        
         # UI Setup
         self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
         self._build_ui()
@@ -374,9 +379,14 @@ class RandomPatchViewer:
         self.training_tab = ttk.Frame(self.tab_control)
         self.tab_control.add(self.training_tab, text="Training")
         
+        # Inference Tab
+        self.inference_tab = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.inference_tab, text="Inference")
+        
         self._build_labelling_tab()
         self._build_data_generation_tab()
         self._build_training_tab()
+        self._build_inference_tab()
     
     def _build_labelling_tab(self):
         """Build the UI for the labelling tab."""
@@ -586,6 +596,64 @@ class RandomPatchViewer:
         
         btn_save_model = ttk.Button(model_frame, text="Save Model", command=self.save_model)
         btn_save_model.pack(fill=tk.X, pady=5)
+    
+    def _build_inference_tab(self):
+        """Build the UI for the inference tab."""
+        # Main frame with canvas and sidebar
+        main_frame = ttk.Frame(self.inference_tab)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Canvas Area (Left)
+        self.inference_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
+        self.inference_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Sidebar (Right)
+        sidebar = ttk.Frame(main_frame, width=300, padding=10)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        
+        # Model controls
+        model_frame = ttk.LabelFrame(sidebar, text="Model", padding=10)
+        model_frame.pack(fill=tk.X, pady=(10, 10))
+        
+        self.lbl_inference_model = ttk.Label(model_frame, text="Model: Not loaded")
+        self.lbl_inference_model.pack(anchor="w", pady=5)
+        
+        btn_load_model = ttk.Button(model_frame, text="Load Model", command=self.load_model_for_inference)
+        btn_load_model.pack(fill=tk.X, pady=5)
+        
+        # Sample controls
+        sample_frame = ttk.LabelFrame(sidebar, text="Test Samples", padding=10)
+        sample_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(sample_frame, text="Number of samples:").pack(anchor="w", pady=2)
+        self.inference_samples_var = tk.IntVar(value=16)
+        samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=100, increment=1, 
+                                       textvariable=self.inference_samples_var, width=10)
+        samples_spinbox.pack(anchor="w", pady=5)
+        
+        btn_generate_inference = ttk.Button(sample_frame, text="Generate Test Samples", 
+                                           command=self.generate_inference_samples)
+        btn_generate_inference.pack(fill=tk.X, pady=5)
+        
+        # View controls
+        view_frame = ttk.LabelFrame(sidebar, text="View", padding=10)
+        view_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.btn_toggle_inference = ttk.Button(view_frame, text="Show: Image", 
+                                               command=self.toggle_inference_view)
+        self.btn_toggle_inference.pack(fill=tk.X, pady=5)
+        
+        # Info
+        info_frame = ttk.LabelFrame(sidebar, text="Grid Info", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.lbl_inference_idx = ttk.Label(info_frame, text="Samples: 0")
+        self.lbl_inference_idx.pack(anchor="w", pady=5)
+        
+        # Instructions
+        ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
+        ttk.Label(sidebar, text="• Load trained model\n• Generate 16 test samples\n• Toggle between images/predictions\n• View as 4x4 grid").pack(anchor="w")
 
     def get_random_frame_location(self):
         """Select a video and frame index proportional to frame count."""
@@ -1397,6 +1465,176 @@ class RandomPatchViewer:
         torch.save(self.model.state_dict(), "line_detector_unet.pth")
         self.log_training("Model saved to line_detector_unet.pth")
         messagebox.showinfo("Success", "Model saved successfully!")
+    
+    # Inference Methods
+    
+    def load_model_for_inference(self):
+        """Load a trained model for inference."""
+        try:
+            if self.model is None:
+                self.model = MobileUNet(pretrained=False).to(self.device)
+            
+            self.model.load_state_dict(torch.load("line_detector_unet.pth", map_location=self.device))
+            self.model.eval()
+            self.lbl_inference_model.config(text="Model: Loaded ✓", foreground="green")
+            messagebox.showinfo("Success", "Model loaded successfully!")
+        except FileNotFoundError:
+            messagebox.showerror("Error", "Model file 'line_detector_unet.pth' not found.\nPlease train and save a model first.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load model: {str(e)}")
+    
+    def generate_inference_samples(self):
+        """Generate random test samples from any video frames."""
+        if self.model is None:
+            messagebox.showwarning("No Model", "Please load a model first.")
+            return
+        
+        num_samples = self.inference_samples_var.get()
+        self.inference_samples = []
+        
+        print(f"Generating {num_samples} test samples...")
+        
+        for i in range(num_samples):
+            # Get random video and frame
+            video_path, frame_idx = self.get_random_frame_location()
+            if not video_path:
+                continue
+            
+            cap = cv2.VideoCapture(video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret or frame is None:
+                continue
+            
+            h, w = frame.shape[:2]
+            
+            # Random 128x128 crop
+            if h < 128 or w < 128:
+                continue
+            
+            x = random.randint(0, w - 128)
+            y = random.randint(0, h - 128)
+            
+            patch = frame[y:y+128, x:x+128]
+            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+            
+            # Run inference
+            with torch.no_grad():
+                # Prepare input
+                input_tensor = torch.from_numpy(patch_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                input_tensor = input_tensor.to(self.device)
+                
+                # Predict
+                prediction = self.model(input_tensor)
+                pred_mask = (prediction.squeeze().cpu().numpy() * 255).astype(np.uint8)
+                pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+            
+            self.inference_samples.append({
+                'image': patch_rgb,
+                'prediction': pred_mask_rgb,
+                'source_video': os.path.basename(video_path),
+                'source_frame': frame_idx,
+                'location': (x, y)
+            })
+        
+        print(f"Generated {len(self.inference_samples)} test samples")
+        
+        if self.inference_samples:
+            self.inference_idx = 0
+            self.show_inference_prediction = False
+            self.display_inference_sample()
+        else:
+            messagebox.showwarning("No Samples", "Failed to generate test samples.")
+    
+    def display_inference_sample(self):
+        """Display all inference samples in a 4x4 grid."""
+        if not self.inference_samples:
+            return
+        
+        # Update info
+        self.lbl_inference_idx.config(text=f"Samples: {len(self.inference_samples)}")
+        
+        # Update button text
+        if self.show_inference_prediction:
+            self.btn_toggle_inference.config(text="Show: Predictions")
+        else:
+            self.btn_toggle_inference.config(text="Show: Images")
+        
+        # Create 4x4 grid
+        grid_rows = 4
+        grid_cols = 4
+        patch_size = 128
+        padding = 4
+        
+        grid_width = grid_cols * patch_size + (grid_cols + 1) * padding
+        grid_height = grid_rows * patch_size + (grid_rows + 1) * padding
+        
+        grid_img = np.full((grid_height, grid_width, 3), 32, dtype=np.uint8)
+        
+        for idx, sample in enumerate(self.inference_samples):
+            if idx >= 16:
+                break
+            
+            row = idx // grid_cols
+            col = idx % grid_cols
+            
+            # Choose image or prediction
+            if self.show_inference_prediction:
+                patch_data = sample['prediction']
+            else:
+                patch_data = sample['image']
+            
+            ph, pw = patch_data.shape[:2]
+            
+            # Place in grid
+            y_start = padding + row * (patch_size + padding)
+            x_start = padding + col * (patch_size + padding)
+            grid_img[y_start:y_start+ph, x_start:x_start+pw] = patch_data
+        
+        # Display the grid
+        self._draw_inference_image(grid_img)
+    
+    def _draw_inference_image(self, img_arr):
+        """Draw inference image on canvas."""
+        img_h, img_w = img_arr.shape[:2]
+        
+        canvas_w = self.inference_canvas.winfo_width()
+        canvas_h = self.inference_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, lambda: self._draw_inference_image(img_arr))
+            return
+        
+        # Scale to fit
+        scale_w = canvas_w * 0.8 / img_w
+        scale_h = canvas_h * 0.8 / img_h
+        scale = min(scale_w, scale_h)
+        
+        new_w = int(img_w * scale)
+        new_h = int(img_h * scale)
+        
+        if scale > 1.5:
+            interp = cv2.INTER_NEAREST
+        else:
+            interp = cv2.INTER_LINEAR
+        
+        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=interp)
+        
+        img_pil = Image.fromarray(resized)
+        self.inference_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        offset_x = (canvas_w - new_w) // 2
+        offset_y = (canvas_h - new_h) // 2
+        
+        self.inference_canvas.delete("all")
+        self.inference_canvas.create_image(offset_x, offset_y, anchor=tk.NW, image=self.inference_photo_image)
+    
+    def toggle_inference_view(self):
+        """Toggle between images and predictions view."""
+        self.show_inference_prediction = not self.show_inference_prediction
+        self.display_inference_sample()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
