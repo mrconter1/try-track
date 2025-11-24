@@ -8,6 +8,119 @@ import bisect
 import argparse
 import sys
 import numpy as np
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple
+import json
+
+@dataclass
+class Line:
+    """Represents a line annotation with start and end points (crop-relative coords)."""
+    start: Tuple[float, float]  # (x, y)
+    end: Tuple[float, float]    # (x, y)
+
+@dataclass
+class Region:
+    """Represents an annotated region within a frame."""
+    crop_rect: Tuple[int, int, int, int]  # (x, y, w, h)
+    lines: List[Line] = field(default_factory=list)
+    
+    def add_line(self, start: Tuple[float, float], end: Tuple[float, float]):
+        self.lines.append(Line(start, end))
+
+@dataclass
+class Frame:
+    """Represents a frame with potentially multiple annotated regions."""
+    frame_idx: int
+    regions: Dict[Tuple[int, int, int, int], Region] = field(default_factory=dict)
+    
+    def get_or_create_region(self, crop_rect: Tuple[int, int, int, int]) -> Region:
+        if crop_rect not in self.regions:
+            self.regions[crop_rect] = Region(crop_rect)
+        return self.regions[crop_rect]
+
+@dataclass
+class Video:
+    """Represents a video with annotated frames."""
+    path: str
+    frames: Dict[int, Frame] = field(default_factory=dict)
+    
+    def get_or_create_frame(self, frame_idx: int) -> Frame:
+        if frame_idx not in self.frames:
+            self.frames[frame_idx] = Frame(frame_idx)
+        return self.frames[frame_idx]
+
+@dataclass
+class AnnotationDatabase:
+    """Top-level container for all video annotations."""
+    videos: Dict[str, Video] = field(default_factory=dict)
+    
+    def get_or_create_video(self, video_path: str) -> Video:
+        if video_path not in self.videos:
+            self.videos[video_path] = Video(video_path)
+        return self.videos[video_path]
+    
+    def get_region(self, video_path: str, frame_idx: int, 
+                   crop_rect: Tuple[int, int, int, int]) -> Region:
+        """Get or create a region for the given video/frame/crop."""
+        video = self.get_or_create_video(video_path)
+        frame = video.get_or_create_frame(frame_idx)
+        return frame.get_or_create_region(crop_rect)
+    
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization."""
+        return {
+            video_path: {
+                "frames": {
+                    frame_idx: {
+                        "regions": [
+                            {
+                                "crop_rect": list(region.crop_rect),
+                                "lines": [
+                                    {
+                                        "start": list(line.start),
+                                        "end": list(line.end)
+                                    }
+                                    for line in region.lines
+                                ]
+                            }
+                            for region in frame.regions.values()
+                        ]
+                    }
+                    for frame_idx, frame in video.frames.items()
+                }
+            }
+            for video_path, video in self.videos.items()
+        }
+    
+    def save(self, filepath: str):
+        """Save to JSON file."""
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+    
+    @classmethod
+    def load(cls, filepath: str) -> 'AnnotationDatabase':
+        """Load from JSON file."""
+        if not os.path.exists(filepath):
+            return cls()
+            
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        
+        db = cls()
+        for video_path, video_data in data.items():
+            video = db.get_or_create_video(video_path)
+            for frame_idx_str, frame_data in video_data["frames"].items():
+                frame_idx = int(frame_idx_str)
+                frame = video.get_or_create_frame(frame_idx)
+                for region_data in frame_data["regions"]:
+                    crop_rect = tuple(region_data["crop_rect"])
+                    region = frame.get_or_create_region(crop_rect)
+                    for line_data in region_data["lines"]:
+                        region.add_line(
+                            tuple(line_data["start"]),
+                            tuple(line_data["end"])
+                        )
+        return db
 
 def get_video_props(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -48,6 +161,9 @@ class RandomPatchViewer:
         self.total_combined_frames = current_total
         print(f"Total frames across {len(self.active_video_paths)} videos: {self.total_combined_frames}")
 
+        # Annotation database - load existing or create new
+        self.db = AnnotationDatabase.load("line_annotations.json")
+        
         # State
         self.current_patch_info = None # {video_path, frame_idx, crop_rect: (x,y,w,h), image}
         self.history = [] # List of patch_info dicts
@@ -56,8 +172,8 @@ class RandomPatchViewer:
         self.photo_image = None
         self.scale = 1.0
         
-        # Line drawing state
-        self.lines = [] # List of [(x1, y1), (x2, y2)] in image coords
+        # Line drawing state (working copy for current region)
+        self.lines = [] # List of [(x1, y1), (x2, y2)] in image coords (crop-relative)
         self.first_point = None # The locked-in first point
         self.current_point = None # The point being dragged right now
         self.is_dragging = False
@@ -84,6 +200,8 @@ class RandomPatchViewer:
         self.root.bind("<m>", lambda e: self.toggle_mask())
         self.root.bind("<l>", lambda e: self.toggle_lines())
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
+        self.root.bind("<Control-s>", lambda e: self.save_annotations())
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
@@ -155,10 +273,13 @@ class RandomPatchViewer:
         
         self.btn_toggle_mask = ttk.Button(nav_frame, text="Show Mask (M)", command=self.toggle_mask)
         self.btn_toggle_mask.pack(fill=tk.X, pady=5)
+        
+        btn_save = ttk.Button(nav_frame, text="Save (Ctrl+S)", command=self.save_annotations)
+        btn_save.pack(fill=tk.X, pady=5)
 
         # Instructions
         ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
-        ttk.Label(sidebar, text="• Press 'D' or Right Arrow for a new random sample\n• Press 'A' or Left Arrow to go back\n• Resizing window scales the patch").pack(anchor="w")
+        ttk.Label(sidebar, text="• Press 'D' or Right Arrow for a new random sample\n• Press 'A' or Left Arrow to go back\n• Click to place lines\n• Delete key to remove selected line\n• Ctrl+S to save").pack(anchor="w")
 
     def get_random_frame_location(self):
         """Select a video and frame index proportional to frame count."""
@@ -232,6 +353,9 @@ class RandomPatchViewer:
         return None
 
     def next_patch(self):
+        # Save current lines to database before moving
+        self._save_current_lines()
+        
         if self.history_idx < len(self.history) - 1:
             # Move forward in history
             self.history_idx += 1
@@ -244,14 +368,61 @@ class RandomPatchViewer:
                 self.history_idx = len(self.history) - 1
                 self.current_patch_info = new_info
         
+        # Load lines for the new patch
+        self._load_current_lines()
         self.display_current_patch()
-
+    
     def prev_patch(self):
+        # Save current lines to database before moving
+        self._save_current_lines()
+        
         if self.history_idx > 0:
             self.history_idx -= 1
             self.current_patch_info = self.history[self.history_idx]
+            
+            # Load lines for this patch
+            self._load_current_lines()
             self.display_current_patch()
 
+    def _save_current_lines(self):
+        """Save current working lines to the database."""
+        if not self.current_patch_info:
+            return
+        
+        info = self.current_patch_info
+        region = self.db.get_region(
+            info['video_path'],
+            info['frame_idx'],
+            info['crop_rect']
+        )
+        
+        # Clear existing lines and add current ones
+        region.lines.clear()
+        for line in self.lines:
+            region.add_line(line[0], line[1])
+    
+    def _load_current_lines(self):
+        """Load lines from database for current patch."""
+        self.lines = []
+        self.selected_line_idx = None
+        self.first_point = None
+        self.current_point = None
+        self.editing_point = None
+        
+        if not self.current_patch_info:
+            return
+        
+        info = self.current_patch_info
+        region = self.db.get_region(
+            info['video_path'],
+            info['frame_idx'],
+            info['crop_rect']
+        )
+        
+        # Convert from Line dataclass to list format
+        for line in region.lines:
+            self.lines.append([line.start, line.end])
+    
     def display_current_patch(self):
         if not self.current_patch_info:
             return
@@ -401,8 +572,21 @@ class RandomPatchViewer:
         if self.selected_line_idx is not None and 0 <= self.selected_line_idx < len(self.lines):
             del self.lines[self.selected_line_idx]
             self.selected_line_idx = None
+            self._save_current_lines()  # Save after deletion
             self.update_lines_list()
             self.draw_image()
+    
+    def save_annotations(self, show_message=True):
+        """Save all annotations to file."""
+        self._save_current_lines()  # Save current work
+        self.db.save("line_annotations.json")
+        if show_message:
+            print("Annotations saved to line_annotations.json")
+    
+    def on_close(self):
+        """Handle window close event."""
+        self.save_annotations(show_message=False)
+        self.root.destroy()
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
@@ -521,6 +705,7 @@ class RandomPatchViewer:
             self.lines[line_idx][point_idx] = (img_x, img_y)
             self.selected_line_idx = line_idx  # Select the edited line
             self.editing_point = None
+            self._save_current_lines()  # Save after editing
             self.update_lines_list()
         else:
             # No clamping - allow points outside image bounds
@@ -536,6 +721,7 @@ class RandomPatchViewer:
                 self.selected_line_idx = len(self.lines) - 1  # Select the newly created line
                 self.first_point = None
                 self.current_point = None
+                self._save_current_lines()  # Save after creating new line
                 # Update the lines list
                 self.update_lines_list()
         
