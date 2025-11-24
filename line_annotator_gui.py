@@ -11,6 +11,11 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple
 import json
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import threading
 
 @dataclass
 class Line:
@@ -99,6 +104,113 @@ class AnnotationDatabase:
         
         return db
 
+# Lightweight U-Net Model
+class DoubleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+    
+    def forward(self, x):
+        return self.conv(x)
+
+class UNet(nn.Module):
+    def __init__(self, in_channels=3, out_channels=1):
+        super().__init__()
+        
+        # Encoder
+        self.enc1 = DoubleConv(in_channels, 32)
+        self.pool1 = nn.MaxPool2d(2)
+        
+        self.enc2 = DoubleConv(32, 64)
+        self.pool2 = nn.MaxPool2d(2)
+        
+        self.enc3 = DoubleConv(64, 128)
+        self.pool3 = nn.MaxPool2d(2)
+        
+        self.enc4 = DoubleConv(128, 256)
+        self.pool4 = nn.MaxPool2d(2)
+        
+        # Bottleneck
+        self.bottleneck = DoubleConv(256, 512)
+        
+        # Decoder
+        self.up4 = nn.ConvTranspose2d(512, 256, 2, stride=2)
+        self.dec4 = DoubleConv(512, 256)
+        
+        self.up3 = nn.ConvTranspose2d(256, 128, 2, stride=2)
+        self.dec3 = DoubleConv(256, 128)
+        
+        self.up2 = nn.ConvTranspose2d(128, 64, 2, stride=2)
+        self.dec2 = DoubleConv(128, 64)
+        
+        self.up1 = nn.ConvTranspose2d(64, 32, 2, stride=2)
+        self.dec1 = DoubleConv(64, 32)
+        
+        # Output
+        self.out = nn.Conv2d(32, out_channels, 1)
+    
+    def forward(self, x):
+        # Encoder
+        e1 = self.enc1(x)
+        p1 = self.pool1(e1)
+        
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
+        
+        e3 = self.enc3(p2)
+        p3 = self.pool3(e3)
+        
+        e4 = self.enc4(p3)
+        p4 = self.pool4(e4)
+        
+        # Bottleneck
+        b = self.bottleneck(p4)
+        
+        # Decoder with skip connections
+        d4 = self.up4(b)
+        d4 = torch.cat([d4, e4], dim=1)
+        d4 = self.dec4(d4)
+        
+        d3 = self.up3(d4)
+        d3 = torch.cat([d3, e3], dim=1)
+        d3 = self.dec3(d3)
+        
+        d2 = self.up2(d3)
+        d2 = torch.cat([d2, e2], dim=1)
+        d2 = self.dec2(d2)
+        
+        d1 = self.up1(d2)
+        d1 = torch.cat([d1, e1], dim=1)
+        d1 = self.dec1(d1)
+        
+        return torch.sigmoid(self.out(d1))
+
+# Dataset class
+class LineDataset(Dataset):
+    def __init__(self, samples):
+        self.samples = samples
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        image = sample['image'].astype(np.float32) / 255.0
+        mask = sample['mask'][:, :, 0].astype(np.float32) / 255.0
+        
+        # Convert to tensors (C, H, W)
+        image = torch.from_numpy(image).permute(2, 0, 1)
+        mask = torch.from_numpy(mask).unsqueeze(0)
+        
+        return image, mask
+
 def get_video_props(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -169,6 +281,12 @@ class RandomPatchViewer:
         self.generated_patches = []  # List of {image, mask, source_info}
         self.gen_patch_idx = -1
         self.show_gen_mask = False  # Toggle between image and mask in gen tab
+        
+        # Training state
+        self.model = None
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.is_training = False
+        self.training_samples = []
         
         # UI Setup
         self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
@@ -246,8 +364,13 @@ class RandomPatchViewer:
         self.data_gen_tab = ttk.Frame(self.tab_control)
         self.tab_control.add(self.data_gen_tab, text="Data Generation")
         
+        # Training Tab
+        self.training_tab = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.training_tab, text="Training")
+        
         self._build_labelling_tab()
         self._build_data_generation_tab()
+        self._build_training_tab()
     
     def _build_labelling_tab(self):
         """Build the UI for the labelling tab."""
@@ -368,6 +491,92 @@ class RandomPatchViewer:
         # Instructions
         ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
         ttk.Label(sidebar, text="• Press 'R' to generate new patches\n• Press 'M' to toggle images/masks\n• Generates 4x4 grid from labeled data").pack(anchor="w")
+    
+    def _build_training_tab(self):
+        """Build the UI for the training tab."""
+        # Main frame
+        main_frame = ttk.Frame(self.training_tab, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Training controls
+        controls_frame = ttk.LabelFrame(main_frame, text="Training Configuration", padding=10)
+        controls_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Number of samples
+        ttk.Label(controls_frame, text="Training Samples:").grid(row=0, column=0, sticky="w", pady=5)
+        self.train_samples_var = tk.IntVar(value=1000)
+        samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=10000, increment=100, 
+                                       textvariable=self.train_samples_var, width=10)
+        samples_spinbox.grid(row=0, column=1, sticky="w", pady=5, padx=(10, 0))
+        
+        # Epochs
+        ttk.Label(controls_frame, text="Epochs:").grid(row=1, column=0, sticky="w", pady=5)
+        self.epochs_var = tk.IntVar(value=50)
+        epochs_spinbox = ttk.Spinbox(controls_frame, from_=10, to=200, increment=10, 
+                                      textvariable=self.epochs_var, width=10)
+        epochs_spinbox.grid(row=1, column=1, sticky="w", pady=5, padx=(10, 0))
+        
+        # Batch size
+        ttk.Label(controls_frame, text="Batch Size:").grid(row=2, column=0, sticky="w", pady=5)
+        self.batch_size_var = tk.IntVar(value=16)
+        batch_spinbox = ttk.Spinbox(controls_frame, from_=4, to=64, increment=4, 
+                                     textvariable=self.batch_size_var, width=10)
+        batch_spinbox.grid(row=2, column=1, sticky="w", pady=5, padx=(10, 0))
+        
+        # Learning rate
+        ttk.Label(controls_frame, text="Learning Rate:").grid(row=3, column=0, sticky="w", pady=5)
+        self.lr_var = tk.DoubleVar(value=0.001)
+        lr_entry = ttk.Entry(controls_frame, textvariable=self.lr_var, width=10)
+        lr_entry.grid(row=3, column=1, sticky="w", pady=5, padx=(10, 0))
+        
+        # Device info
+        device_text = f"Device: {self.device}"
+        ttk.Label(controls_frame, text=device_text, foreground="blue").grid(row=4, column=0, columnspan=2, sticky="w", pady=5)
+        
+        # Train button
+        self.btn_train = ttk.Button(controls_frame, text="Start Training", command=self.start_training)
+        self.btn_train.grid(row=5, column=0, columnspan=2, sticky="ew", pady=10)
+        
+        # Progress frame
+        progress_frame = ttk.LabelFrame(main_frame, text="Training Progress", padding=10)
+        progress_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=tk.X, pady=5)
+        
+        # Status label
+        self.lbl_train_status = ttk.Label(progress_frame, text="Ready to train")
+        self.lbl_train_status.pack(anchor="w", pady=5)
+        
+        # Loss display
+        self.lbl_train_loss = ttk.Label(progress_frame, text="Train Loss: -")
+        self.lbl_train_loss.pack(anchor="w", pady=2)
+        
+        self.lbl_val_loss = ttk.Label(progress_frame, text="Val Loss: -")
+        self.lbl_val_loss.pack(anchor="w", pady=2)
+        
+        # Log text area
+        log_frame = ttk.Frame(progress_frame)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        scrollbar = ttk.Scrollbar(log_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.train_log = tk.Text(log_frame, height=15, yscrollcommand=scrollbar.set, state='disabled')
+        self.train_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.train_log.yview)
+        
+        # Model info
+        model_frame = ttk.LabelFrame(main_frame, text="Model Info", padding=10)
+        model_frame.pack(fill=tk.X)
+        
+        self.lbl_model_status = ttk.Label(model_frame, text="Model: Not trained")
+        self.lbl_model_status.pack(anchor="w", pady=2)
+        
+        btn_save_model = ttk.Button(model_frame, text="Save Model", command=self.save_model)
+        btn_save_model.pack(fill=tk.X, pady=5)
 
     def get_random_frame_location(self):
         """Select a video and frame index proportional to frame count."""
@@ -941,6 +1150,243 @@ class RandomPatchViewer:
             self.toggle_mask()
         elif current_tab == 1:  # Data Generation tab
             self.toggle_generation_view()
+    
+    # Training Methods
+    
+    def log_training(self, message):
+        """Add message to training log."""
+        self.train_log.config(state='normal')
+        self.train_log.insert(tk.END, message + '\n')
+        self.train_log.see(tk.END)
+        self.train_log.config(state='disabled')
+    
+    def generate_training_samples(self, num_samples):
+        """Generate augmented training samples."""
+        samples = []
+        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        
+        if not labeled_samples:
+            return samples
+        
+        self.log_training(f"Generating {num_samples} training samples from {len(labeled_samples)} labeled regions...")
+        
+        for i in range(num_samples):
+            if i % 100 == 0:
+                progress = (i / num_samples) * 50  # First 50% is generation
+                self.progress_var.set(progress)
+                self.root.update_idletasks()
+            
+            sample = random.choice(labeled_samples)
+            
+            cap = cv2.VideoCapture(sample.video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret or frame is None:
+                continue
+            
+            x, y, w, h = sample.crop_rect
+            crop = frame[y:y+h, x:x+w]
+            
+            # Apply same augmentation logic as in generate_training_patches
+            zoom_factor = random.uniform(0.95, 1.05)
+            rotation_angle = random.uniform(-180, 180)
+            stretch_x = random.uniform(0.9, 1.1)
+            stretch_y = random.uniform(0.9, 1.1)
+            
+            buffer_factor = 1.8
+            initial_size = int(128 * buffer_factor)
+            
+            if w < initial_size or h < initial_size:
+                patch_x, patch_y = 0, 0
+                patch_w, patch_h = w, h
+            else:
+                patch_x = random.randint(0, w - initial_size)
+                patch_y = random.randint(0, h - initial_size)
+                patch_w, patch_h = initial_size, initial_size
+            
+            large_patch = crop[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+            large_patch_rgb = cv2.cvtColor(large_patch, cv2.COLOR_BGR2RGB)
+            
+            center_x, center_y = patch_w / 2, patch_h / 2
+            
+            M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
+            
+            rad = np.deg2rad(rotation_angle)
+            cos_a = np.cos(rad)
+            sin_a = np.sin(rad)
+            M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
+            
+            scale_x = zoom_factor * stretch_x
+            scale_y = zoom_factor * stretch_y
+            M_scale = np.array([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]], dtype=np.float32)
+            
+            M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
+            
+            M_combined = M_back @ M_scale @ M_rot @ M_center
+            M_2x3 = M_combined[:2, :]
+            
+            transformed = cv2.warpAffine(large_patch_rgb, M_2x3, (patch_w, patch_h), 
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            
+            crop_x = (patch_w - 128) // 2
+            crop_y = (patch_h - 128) // 2
+            patch_img_aug = transformed[crop_y:crop_y+128, crop_x:crop_x+128]
+            
+            mask_large = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
+            
+            for line in sample.lines:
+                p1_x, p1_y = line.start
+                p2_x, p2_y = line.end
+                
+                p1_patch = np.array([p1_x - patch_x, p1_y - patch_y, 1], dtype=np.float32)
+                p2_patch = np.array([p2_x - patch_x, p2_y - patch_y, 1], dtype=np.float32)
+                
+                p1_transformed = M_combined @ p1_patch
+                p2_transformed = M_combined @ p2_patch
+                
+                p1_final = (int(p1_transformed[0]), int(p1_transformed[1]))
+                p2_final = (int(p2_transformed[0]), int(p2_transformed[1]))
+                
+                cv2.line(mask_large, p1_final, p2_final, (255, 255, 255), thickness=3)
+            
+            mask = mask_large[crop_y:crop_y+128, crop_x:crop_x+128]
+            
+            samples.append({'image': patch_img_aug, 'mask': mask})
+        
+        self.log_training(f"Generated {len(samples)} samples")
+        return samples
+    
+    def train_model_thread(self, num_samples, epochs, batch_size, lr):
+        """Training thread function."""
+        try:
+            # Generate samples
+            all_samples = self.generate_training_samples(num_samples)
+            
+            if len(all_samples) < 10:
+                self.log_training("Error: Not enough samples generated")
+                self.is_training = False
+                return
+            
+            # Split into train/val
+            split_idx = int(len(all_samples) * 0.8)
+            train_samples = all_samples[:split_idx]
+            val_samples = all_samples[split_idx:]
+            
+            self.log_training(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
+            
+            # Create datasets
+            train_dataset = LineDataset(train_samples)
+            val_dataset = LineDataset(val_samples)
+            
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+            
+            # Initialize model
+            self.model = UNet(in_channels=3, out_channels=1).to(self.device)
+            optimizer = optim.Adam(self.model.parameters(), lr=lr)
+            criterion = nn.BCELoss()
+            
+            self.log_training("Starting training...")
+            
+            best_val_loss = float('inf')
+            
+            for epoch in range(epochs):
+                if not self.is_training:
+                    self.log_training("Training cancelled")
+                    break
+                
+                # Train
+                self.model.train()
+                train_loss = 0
+                for images, masks in train_loader:
+                    images = images.to(self.device)
+                    masks = masks.to(self.device)
+                    
+                    optimizer.zero_grad()
+                    outputs = self.model(images)
+                    loss = criterion(outputs, masks)
+                    loss.backward()
+                    optimizer.step()
+                    
+                    train_loss += loss.item()
+                
+                train_loss /= len(train_loader)
+                
+                # Validate
+                self.model.eval()
+                val_loss = 0
+                with torch.no_grad():
+                    for images, masks in val_loader:
+                        images = images.to(self.device)
+                        masks = masks.to(self.device)
+                        outputs = self.model(images)
+                        loss = criterion(outputs, masks)
+                        val_loss += loss.item()
+                
+                val_loss /= len(val_loader)
+                
+                # Update UI
+                progress = 50 + (epoch / epochs) * 50
+                self.progress_var.set(progress)
+                self.lbl_train_loss.config(text=f"Train Loss: {train_loss:.4f}")
+                self.lbl_val_loss.config(text=f"Val Loss: {val_loss:.4f}")
+                
+                log_msg = f"Epoch {epoch+1}/{epochs} - Train: {train_loss:.4f}, Val: {val_loss:.4f}"
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    log_msg += " (Best)"
+                
+                self.log_training(log_msg)
+                self.root.update_idletasks()
+            
+            self.log_training("Training completed!")
+            self.lbl_model_status.config(text=f"Model: Trained ({epochs} epochs)")
+            
+        except Exception as e:
+            self.log_training(f"Error: {str(e)}")
+        finally:
+            self.is_training = False
+            self.btn_train.config(text="Start Training", state='normal')
+            self.lbl_train_status.config(text="Training finished")
+    
+    def start_training(self):
+        """Start training in a separate thread."""
+        if self.is_training:
+            self.log_training("Already training...")
+            return
+        
+        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        if not labeled_samples:
+            messagebox.showwarning("No Data", "No labeled samples found. Please label some data first.")
+            return
+        
+        self.is_training = True
+        self.btn_train.config(text="Training...", state='disabled')
+        self.lbl_train_status.config(text="Generating training data...")
+        self.progress_var.set(0)
+        
+        num_samples = self.train_samples_var.get()
+        epochs = self.epochs_var.get()
+        batch_size = self.batch_size_var.get()
+        lr = self.lr_var.get()
+        
+        # Start training in thread
+        thread = threading.Thread(target=self.train_model_thread, 
+                                  args=(num_samples, epochs, batch_size, lr))
+        thread.daemon = True
+        thread.start()
+    
+    def save_model(self):
+        """Save the trained model."""
+        if self.model is None:
+            messagebox.showwarning("No Model", "No trained model to save.")
+            return
+        
+        torch.save(self.model.state_dict(), "line_detector_unet.pth")
+        self.log_training("Model saved to line_detector_unet.pth")
+        messagebox.showinfo("Success", "Model saved successfully!")
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
