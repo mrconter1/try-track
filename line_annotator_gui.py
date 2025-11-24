@@ -66,6 +66,9 @@ class RandomPatchViewer:
         self.display_scale = 1.0
         self.show_mask_mode = False  # Toggle between normal and mask view
         
+        # State for editing existing points
+        self.editing_point = None  # (line_index, point_index) being edited, or None
+        
         # UI Setup
         self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
         self._build_ui()
@@ -401,13 +404,26 @@ class RandomPatchViewer:
             self.draw_point_on_canvas(p2, "red", 5)
     
     def on_canvas_press(self, event):
-        """Handle mouse press on canvas - start dragging a new point."""
-        if not self.current_patch_info:
+        """Handle mouse press on canvas - start dragging a new point or edit existing."""
+        if not self.current_patch_info or self.show_mask_mode:
             return
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # Start dragging (no clamping - allow points outside image)
+        # Check if clicking near an existing point (within 15px in image coords)
+        click_threshold = 15 / self.display_scale
+        
+        for line_idx, line in enumerate(self.lines):
+            for point_idx, point in enumerate(line):
+                dist = ((point[0] - img_x)**2 + (point[1] - img_y)**2)**0.5
+                if dist < click_threshold:
+                    # Start editing this point
+                    self.is_dragging = True
+                    self.editing_point = (line_idx, point_idx)
+                    self.draw_image()
+                    return
+        
+        # Not clicking on existing point - start new point/line
         self.is_dragging = True
         self.current_point = (img_x, img_y)
         self.draw_image()
@@ -419,8 +435,14 @@ class RandomPatchViewer:
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # Update the current point being dragged (no clamping - allow points outside image)
-        self.current_point = (img_x, img_y)
+        if self.editing_point is not None:
+            # Update existing point
+            line_idx, point_idx = self.editing_point
+            self.lines[line_idx][point_idx] = (img_x, img_y)
+        else:
+            # Update the current point being dragged (no clamping - allow points outside image)
+            self.current_point = (img_x, img_y)
+        
         self.draw_image()
     
     def on_canvas_release(self, event):
@@ -432,20 +454,27 @@ class RandomPatchViewer:
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # No clamping - allow points outside image bounds
-        final_point = (img_x, img_y)
-        
-        if self.first_point is None:
-            # First point is now locked in
-            self.first_point = final_point
-            self.current_point = None
-        else:
-            # Second point - create the line
-            self.lines.append([self.first_point, final_point])
-            self.first_point = None
-            self.current_point = None
-            # Update the lines list
+        if self.editing_point is not None:
+            # Finished editing existing point
+            line_idx, point_idx = self.editing_point
+            self.lines[line_idx][point_idx] = (img_x, img_y)
+            self.editing_point = None
             self.update_lines_list()
+        else:
+            # No clamping - allow points outside image bounds
+            final_point = (img_x, img_y)
+            
+            if self.first_point is None:
+                # First point is now locked in
+                self.first_point = final_point
+                self.current_point = None
+            else:
+                # Second point - create the line
+                self.lines.append([self.first_point, final_point])
+                self.first_point = None
+                self.current_point = None
+                # Update the lines list
+                self.update_lines_list()
         
         self.draw_image()
 
