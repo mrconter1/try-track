@@ -1967,12 +1967,12 @@ class RandomPatchViewer:
             if self.model is None:
                 self.model = MobileUNet(pretrained=False).to(self.device)
             
-            self.model.load_state_dict(torch.load("line_detector_unet.pth", map_location=self.device))
+            self.model.load_state_dict(torch.load("line_detector_unet_best.pth", map_location=self.device))
             self.model.eval()
             self.lbl_inference_model.config(text="Model: Loaded ✓", foreground="green")
             messagebox.showinfo("Success", "Model loaded successfully!")
         except FileNotFoundError:
-            messagebox.showerror("Error", "Model file 'line_detector_unet.pth' not found.\nPlease train and save a model first.")
+            messagebox.showerror("Error", "Model file 'line_detector_unet_best.pth' not found.\nPlease train and save a model first.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load model: {str(e)}")
     
