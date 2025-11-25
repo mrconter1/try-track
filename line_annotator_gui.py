@@ -283,6 +283,10 @@ class RandomPatchViewer:
         # State for editing existing points
         self.editing_point = None  # (line_index, point_index) being edited, or None
         
+        # Undo/Redo stack
+        self.undo_stack = []  # Stack of states for undo
+        self.current_sample_id = None  # To track sample changes
+        
         # Data generation state
         self.generated_patches = []  # List of {image, mask, source_info}
         self.gen_patch_idx = -1
@@ -313,6 +317,7 @@ class RandomPatchViewer:
         self.root.bind("<l>", lambda e: self.toggle_lines())
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
         self.root.bind("<Control-s>", lambda e: self.save_annotations())
+        self.root.bind("<Control-z>", lambda e: self.undo_last_action())
         self.root.bind("<r>", lambda e: self.on_regenerate_key())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.canvas.bind("<Button-1>", self.on_canvas_press)
@@ -776,6 +781,7 @@ class RandomPatchViewer:
         self.first_point = None
         self.current_point = None
         self.editing_point = None
+        self.undo_stack = []  # Clear undo stack when switching samples
         
         if not self.current_patch_info:
             return
@@ -954,12 +960,45 @@ class RandomPatchViewer:
     def delete_selected_line(self):
         """Delete the currently selected line."""
         if self.selected_line_idx is not None and 0 <= self.selected_line_idx < len(self.lines):
+            self._push_undo_state("Delete line")
             del self.lines[self.selected_line_idx]
             self.selected_line_idx = None
             self._save_current_lines()  # Save after deletion
             self.update_statistics()  # Update stats after deletion
             self.update_lines_list()
             self.draw_image()
+    
+    def _push_undo_state(self, action_name=""):
+        """Save current state to undo stack."""
+        state = {
+            'lines': [line.copy() for line in self.lines],  # Deep copy of lines
+            'selected_line_idx': self.selected_line_idx,
+            'action': action_name
+        }
+        self.undo_stack.append(state)
+    
+    def undo_last_action(self):
+        """Undo the last action."""
+        if not self.current_patch_info or not self.undo_stack:
+            return
+        
+        # Pop the last state
+        state = self.undo_stack.pop()
+        
+        # Restore state
+        self.lines = [line.copy() for line in state['lines']]
+        self.selected_line_idx = state['selected_line_idx']
+        
+        # Clear any in-progress drawing
+        self.first_point = None
+        self.current_point = None
+        self.is_dragging = False
+        self.editing_point = None
+        
+        self._save_current_lines()
+        self.update_statistics()
+        self.update_lines_list()
+        self.draw_image()
     
     def save_annotations(self, show_message=True):
         """Save all annotations to file."""
@@ -1730,7 +1769,8 @@ class RandomPatchViewer:
             for point_idx, point in enumerate(line):
                 dist = ((point[0] - img_x)**2 + (point[1] - img_y)**2)**0.5
                 if dist < click_threshold:
-                    # Start editing this point
+                    # Start editing this point - save undo state BEFORE starting drag
+                    self._push_undo_state("Edit point")
                     self.is_dragging = True
                     self.editing_point = (line_idx, point_idx)
                     self.draw_image()
@@ -1766,6 +1806,10 @@ class RandomPatchViewer:
         self.is_dragging = False
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        
+        # Save undo state BEFORE making changes (for new points/lines)
+        if self.editing_point is None:
+            self._push_undo_state()
         
         if self.editing_point is not None:
             # Finished editing existing point
