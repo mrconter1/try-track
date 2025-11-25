@@ -1818,17 +1818,25 @@ class RandomPatchViewer:
         if self.total_combined_frames == 0:
             return
         
+        # Remove old sample from database if it exists
+        if self.current_patch_info:
+            old_info = self.current_patch_info
+            for i, sample in enumerate(self.db.samples):
+                if (sample.video_path == old_info['video_path'] and 
+                    sample.frame_idx == old_info['frame_idx'] and 
+                    sample.crop_rect == old_info['crop_rect']):
+                    del self.db.samples[i]
+                    break
+        
         # Generate a new random patch
         new_info = self.generate_new_patch()
         if not new_info:
             return
         
-        # Replace current position in history (or add if at end)
+        # Replace current position in history
         if self.history_idx >= 0 and self.history_idx < len(self.history):
-            # Replace the current sample
             self.history[self.history_idx] = new_info
         else:
-            # Add new
             self.history.append(new_info)
             self.history_idx = len(self.history) - 1
         
@@ -1841,6 +1849,9 @@ class RandomPatchViewer:
         self.current_point = None
         self.editing_point = None
         self.undo_stack = []
+        
+        # Save to disk (removes old sample)
+        self.save_annotations(show_message=False)
         
         self.display_current_patch()
     
