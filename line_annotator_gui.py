@@ -465,9 +465,6 @@ class RandomPatchViewer:
         btn_save = ttk.Button(nav_frame, text="Save (Ctrl+S)", command=self.save_annotations)
         btn_save.pack(fill=tk.X, pady=5)
 
-        # Instructions
-        ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
-        ttk.Label(sidebar, text="• Press 'D' or Right Arrow for a new random sample\n• Press 'A' or Left Arrow to go back\n• Click to place lines\n• Delete key to remove selected line\n• Ctrl+S to save").pack(anchor="w")
     
     def _build_data_generation_tab(self):
         """Build the UI for the data generation tab."""
@@ -504,9 +501,6 @@ class RandomPatchViewer:
         self.lbl_gen_count = ttk.Label(info_frame, text="Patches: 0")
         self.lbl_gen_count.pack(anchor="w", pady=2)
         
-        # Instructions
-        ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
-        ttk.Label(sidebar, text="• Press 'R' to generate new patches\n• Press 'M' to toggle images/masks\n• Generates 4x4 grid from labeled data").pack(anchor="w")
     
     def _build_training_tab(self):
         """Build the UI for the training tab."""
@@ -651,9 +645,6 @@ class RandomPatchViewer:
         self.lbl_inference_idx = ttk.Label(info_frame, text="Samples: 0")
         self.lbl_inference_idx.pack(anchor="w", pady=5)
         
-        # Instructions
-        ttk.Label(sidebar, text="Instructions:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(20, 5))
-        ttk.Label(sidebar, text="• Load trained model\n• Generate 16 test samples\n• Toggle between images/predictions\n• View as 4x4 grid").pack(anchor="w")
 
     def get_random_frame_location(self):
         """Select a video and frame index proportional to frame count."""
