@@ -1474,7 +1474,9 @@ class RandomPatchViewer:
                 # Train
                 self.model.train()
                 train_loss = 0
-                for images, masks in train_loader:
+                total_batches = len(train_loader)
+                
+                for batch_idx, (images, masks) in enumerate(train_loader):
                     images = images.to(self.device)
                     masks = masks.to(self.device)
                     
@@ -1484,7 +1486,23 @@ class RandomPatchViewer:
                     loss.backward()
                     optimizer.step()
                     
-                    train_loss += loss.item()
+                    loss_val = loss.item()
+                    train_loss += loss_val
+                    
+                    # Update UI every 25 batches
+                    if batch_idx % 25 == 0:
+                        # Calculate progress: Base 50% + (current_epoch_progress / total_epochs) * 50%
+                        # current_epoch_progress = epoch + (batch_idx / total_batches)
+                        current_progress = 50 + ((epoch + (batch_idx / total_batches)) / epochs) * 50
+                        self.progress_var.set(current_progress)
+                        
+                        # Show current batch loss
+                        self.lbl_train_loss.config(text=f"Train Loss: {loss_val:.4f} (Batch {batch_idx}/{total_batches})")
+                        
+                        # Update status label with detailed progress
+                        status_msg = f"Training Epoch {epoch+1}/{epochs} - Batch {batch_idx}/{total_batches}"
+                        self.lbl_train_status.config(text=status_msg)
+                        self.root.update_idletasks()
                 
                 train_loss /= len(train_loader)
                 
