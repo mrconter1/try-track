@@ -520,7 +520,7 @@ class RandomPatchViewer:
         
         # Number of samples
         ttk.Label(controls_frame, text="Training Samples:").grid(row=0, column=0, sticky="w", pady=5)
-        self.train_samples_var = tk.IntVar(value=1000)
+        self.train_samples_var = tk.IntVar(value=5000)
         samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=10000, increment=100, 
                                        textvariable=self.train_samples_var, width=10)
         samples_spinbox.grid(row=0, column=1, sticky="w", pady=5, padx=(10, 0))
