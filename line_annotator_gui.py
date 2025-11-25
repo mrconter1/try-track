@@ -1671,30 +1671,34 @@ class RandomPatchViewer:
             
             if is_editing:
                 # Draw yellow dotted line while editing
+                line_width = 2
                 self.canvas.create_line(
                     canvas_x1, canvas_y1, canvas_x2, canvas_y2,
-                    fill="yellow", width=2, dash=(4, 4)
+                    fill="yellow", width=line_width, dash=(4, 4)
                 )
+                # Draw endpoints with same width as line
+                self.draw_point_on_canvas(p1, "yellow", line_width)
+                self.draw_point_on_canvas(p2, "yellow", line_width)
             elif is_selected:
                 # Draw green line for selected
+                line_width = 3
                 self.canvas.create_line(
                     canvas_x1, canvas_y1, canvas_x2, canvas_y2,
-                    fill="lime", width=3
+                    fill="lime", width=line_width
                 )
+                # Draw endpoints with same width as line
+                self.draw_point_on_canvas(p1, "lime", line_width)
+                self.draw_point_on_canvas(p2, "lime", line_width)
             else:
                 # Draw solid cyan line normally
+                line_width = 2
                 self.canvas.create_line(
                     canvas_x1, canvas_y1, canvas_x2, canvas_y2,
-                    fill="cyan", width=2
+                    fill="cyan", width=line_width
                 )
-            
-            # Draw endpoints - highlight if selected
-            if is_selected:
-                self.draw_point_on_canvas(p1, "lime", 6)
-                self.draw_point_on_canvas(p2, "lime", 6)
-            else:
-                self.draw_point_on_canvas(p1, "lime", 5)
-                self.draw_point_on_canvas(p2, "red", 5)
+                # Draw endpoints with same width as line
+                self.draw_point_on_canvas(p1, "cyan", line_width)
+                self.draw_point_on_canvas(p2, "cyan", line_width)
     
     def on_canvas_press(self, event):
         """Handle mouse press on canvas - start dragging a new point or edit existing."""
