@@ -243,11 +243,12 @@ def get_video_props(video_path):
     return total_frames
 
 class RandomPatchViewer:
-    def __init__(self, root, video_paths, patch_size=400, test_graph=False):
+    def __init__(self, root, video_paths, patch_size=400, test_graph=False, default_train_samples=25000):
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
         self.test_graph = test_graph
+        self.default_train_samples = default_train_samples
         
         # Pre-calculate frame counts for proportional sampling (parallel)
         self.video_frame_counts = {}
@@ -601,7 +602,7 @@ class RandomPatchViewer:
         
         # Number of samples
         ttk.Label(controls_frame, text="Training Samples:").grid(row=0, column=0, sticky="w", pady=5)
-        self.train_samples_var = tk.IntVar(value=10000)
+        self.train_samples_var = tk.IntVar(value=self.default_train_samples)
         samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=100000, increment=1000, 
                                        textvariable=self.train_samples_var, width=10)
         samples_spinbox.grid(row=0, column=1, sticky="w", pady=5, padx=(10, 0))
@@ -2827,6 +2828,7 @@ def main():
     parser = argparse.ArgumentParser(description="View random 400x400 patches from videos.")
     parser.add_argument("videos", nargs="*", help="Video files or directories")
     parser.add_argument("--test-graph", action="store_true", help="Show training graph with mock data for testing")
+    parser.add_argument("--train-samples", type=int, default=25000, help="Number of training samples (default: 25000)")
     args = parser.parse_args()
     
     video_inputs = args.videos
@@ -2849,7 +2851,8 @@ def main():
     root = tk.Tk()
     root.state('zoomed')  # Fullscreen on Windows
     
-    app = RandomPatchViewer(root, video_paths, test_graph=args.test_graph)
+    app = RandomPatchViewer(root, video_paths, test_graph=args.test_graph, 
+                           default_train_samples=args.train_samples)
     
     root.mainloop()
 
