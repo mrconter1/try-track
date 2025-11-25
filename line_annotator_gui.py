@@ -227,10 +227,11 @@ def get_video_props(video_path):
     return total_frames
 
 class RandomPatchViewer:
-    def __init__(self, root, video_paths, patch_size=400):
+    def __init__(self, root, video_paths, patch_size=400, test_graph=False):
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
+        self.test_graph = test_graph
         
         # Pre-calculate frame counts for proportional sampling (parallel)
         self.video_frame_counts = {}
@@ -309,6 +310,22 @@ class RandomPatchViewer:
         self.is_training = False
         self.training_samples = []
         self.loss_history = {'train': [], 'val': []}
+        
+        # Populate mock data if test_graph flag is set
+        if self.test_graph:
+            import math
+            # Generate mock training loss data (decaying curve with noise)
+            for i in range(500):
+                epoch = i / 10.0  # 0 to 50 epochs
+                base_loss = 0.8 * math.exp(-epoch / 15) + 0.05
+                noise = random.uniform(-0.02, 0.02)
+                self.loss_history['train'].append((epoch, max(0.01, base_loss + noise)))
+            # Generate mock validation loss (sampled less frequently, slightly higher)
+            for i in range(50):
+                epoch = float(i + 1)
+                base_loss = 0.85 * math.exp(-epoch / 15) + 0.08
+                noise = random.uniform(-0.03, 0.03)
+                self.loss_history['val'].append((epoch, max(0.01, base_loss + noise)))
         
         # Inference state
         self.inference_samples = []
@@ -551,8 +568,8 @@ class RandomPatchViewer:
         
         # Number of samples
         ttk.Label(controls_frame, text="Training Samples:").grid(row=0, column=0, sticky="w", pady=5)
-        self.train_samples_var = tk.IntVar(value=10000)
-        samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=20000, increment=100, 
+        self.train_samples_var = tk.IntVar(value=25000)
+        samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=100000, increment=1000, 
                                        textvariable=self.train_samples_var, width=10)
         samples_spinbox.grid(row=0, column=1, sticky="w", pady=5, padx=(10, 0))
         
@@ -652,13 +669,16 @@ class RandomPatchViewer:
         if w < 10 or h < 10:
             return
             
-        padding = 20
-        graph_w = w - 2 * padding
-        graph_h = h - 2 * padding
+        padding_left = 55  # Extra space for y-axis labels
+        padding_right = 15
+        padding_top = 25
+        padding_bottom = 40  # Extra space for x-axis labels
+        graph_w = w - padding_left - padding_right
+        graph_h = h - padding_top - padding_bottom
         
         # Draw axes
-        canvas.create_line(padding, h - padding, w - padding, h - padding, fill="black", width=2) # X axis
-        canvas.create_line(padding, h - padding, padding, padding, fill="black", width=2) # Y axis
+        canvas.create_line(padding_left, h - padding_bottom, w - padding_right, h - padding_bottom, fill="black", width=2)  # X axis
+        canvas.create_line(padding_left, h - padding_bottom, padding_left, padding_top, fill="black", width=2)  # Y axis
         
         train_loss = self.loss_history['train']
         val_loss = self.loss_history['val']
@@ -673,11 +693,7 @@ class RandomPatchViewer:
         max_loss = max(max_train, max_val)
         
         if max_loss == 0: max_loss = 1.0
-        max_loss = max_loss * 1.1 # Add some headroom
-        
-        # Helper to convert coords
-        # x-axis is now 0 to current_max_epoch_reached
-        # y-axis is 0 to max_loss
+        max_loss = max_loss * 1.1  # Add some headroom
         
         # Determine the maximum epoch reached so far in the data
         max_epoch_reached = 0
@@ -688,15 +704,37 @@ class RandomPatchViewer:
             
         # Ensure we have at least some range to avoid division by zero
         if max_epoch_reached == 0:
-            max_epoch_reached = 0.1  # Arbitrary small non-zero value
+            max_epoch_reached = 0.1
 
         def to_canvas(epoch_val, loss_val):
-            # Scale x from 0..max_epoch_reached to padding..(w-padding)
-            x = padding + (epoch_val / max_epoch_reached) * graph_w
-            
-            # Scale y
-            y = h - padding - (loss_val / max_loss) * graph_h
+            x = padding_left + (epoch_val / max_epoch_reached) * graph_w
+            y = h - padding_bottom - (loss_val / max_loss) * graph_h
             return x, y
+        
+        # Draw X-axis tick marks and labels (epochs)
+        num_x_ticks = min(6, max(2, int(max_epoch_reached)))
+        for i in range(num_x_ticks + 1):
+            epoch_val = (i / num_x_ticks) * max_epoch_reached
+            x, _ = to_canvas(epoch_val, 0)
+            # Tick mark
+            canvas.create_line(x, h - padding_bottom, x, h - padding_bottom + 5, fill="black", width=1)
+            # Label
+            label = f"{epoch_val:.0f}" if epoch_val >= 1 else f"{epoch_val:.1f}"
+            canvas.create_text(x, h - padding_bottom + 12, text=label, fill="black", font=("TkDefaultFont", 8))
+        
+        # Draw Y-axis tick marks and labels (loss)
+        num_y_ticks = 5
+        for i in range(num_y_ticks + 1):
+            loss_val = (i / num_y_ticks) * max_loss
+            _, y = to_canvas(0, loss_val)
+            # Tick mark
+            canvas.create_line(padding_left - 4, y, padding_left, y, fill="black", width=1)
+            # Label (use 2 decimals if loss is small)
+            if max_loss < 1:
+                label = f"{loss_val:.2f}"
+            else:
+                label = f"{loss_val:.1f}"
+            canvas.create_text(padding_left - 6, y, text=label, fill="black", font=("TkDefaultFont", 8), anchor="e")
         
         # Draw train loss (Blue)
         if train_loss:
@@ -705,7 +743,7 @@ class RandomPatchViewer:
                 x, y = to_canvas(ep, loss)
                 points_train.append(x)
                 points_train.append(y)
-                # Only draw points if there aren't too many, otherwise just line
+                # Only draw points if there aren't too many
                 if len(train_loss) < 50:
                     canvas.create_oval(x-1, y-1, x+1, y+1, fill="blue", outline="blue")
                 
@@ -724,6 +762,20 @@ class RandomPatchViewer:
                 
             if len(points_val) >= 4:
                 canvas.create_line(points_val, fill="red", width=2, smooth=True)
+        
+        # Draw axis labels
+        canvas.create_text((padding_left + w - padding_right) / 2, h - 8, text="Epoch", fill="black", font=("TkDefaultFont", 9))
+        canvas.create_text(10, (padding_top + h - padding_bottom) / 2, text="Loss", fill="black", font=("TkDefaultFont", 9), angle=90)
+        
+        # Show current values (latest train loss and epoch)
+        if train_loss:
+            current_epoch = train_loss[-1][0]
+            current_loss = train_loss[-1][1]
+            status_text = f"Epoch: {current_epoch:.1f}  Train Loss: {current_loss:.4f}"
+            if val_loss:
+                status_text += f"  Val Loss: {val_loss[-1][1]:.4f}"
+            canvas.create_text(w - padding_right, padding_top - 5, text=status_text, 
+                             fill="black", font=("TkDefaultFont", 9, "bold"), anchor="ne")
     
     def _build_inference_tab(self):
         """Build the UI for the inference tab."""
@@ -2244,6 +2296,7 @@ def find_videos(input_paths):
 def main():
     parser = argparse.ArgumentParser(description="View random 400x400 patches from videos.")
     parser.add_argument("videos", nargs="*", help="Video files or directories")
+    parser.add_argument("--test-graph", action="store_true", help="Show training graph with mock data for testing")
     args = parser.parse_args()
     
     video_inputs = args.videos
@@ -2266,7 +2319,7 @@ def main():
     root = tk.Tk()
     root.state('zoomed')  # Fullscreen on Windows
     
-    app = RandomPatchViewer(root, video_paths)
+    app = RandomPatchViewer(root, video_paths, test_graph=args.test_graph)
     
     root.mainloop()
 
