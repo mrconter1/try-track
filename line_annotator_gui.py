@@ -1015,12 +1015,12 @@ class RandomPatchViewer:
         if self.show_mask_mode:
             # Create mask view
             display_arr = np.zeros((img_h, img_w, 3), dtype=np.uint8)
-            # Draw each line as 3px wide white line
+            # Draw each line as 1px wide white line
             for line in self.lines:
                 p1, p2 = line
                 x1, y1 = int(round(p1[0])), int(round(p1[1]))
                 x2, y2 = int(round(p2[0])), int(round(p2[1]))
-                cv2.line(display_arr, (x1, y1), (x2, y2), (255, 255, 255), thickness=3)
+                cv2.line(display_arr, (x1, y1), (x2, y2), (255, 255, 255), thickness=1)
         else:
             # Normal view - show image
             display_arr = img_arr
@@ -1253,7 +1253,7 @@ class RandomPatchViewer:
             # Translate to large patch coordinates
             p1_patch = (int(p1_x - patch_x), int(p1_y - patch_y))
             p2_patch = (int(p2_x - patch_x), int(p2_y - patch_y))
-            cv2.line(mask_large, p1_patch, p2_patch, (255, 255, 255), thickness=3)
+            cv2.line(mask_large, p1_patch, p2_patch, (255, 255, 255), thickness=1)
         
         # Try to find a valid transformation (retry if source region goes out of bounds)
         max_attempts = 10
@@ -1397,7 +1397,7 @@ class RandomPatchViewer:
             for line in sample.lines:
                 p1 = (int(line.start[0]), int(line.start[1]))
                 p2 = (int(line.end[0]), int(line.end[1]))
-                cv2.line(full_source_mask, p1, p2, (255, 255, 255), thickness=3)
+                cv2.line(full_source_mask, p1, p2, (255, 255, 255), thickness=1)
             
             result.update({
                 'source_video': os.path.basename(sample.video_path),
