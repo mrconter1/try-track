@@ -335,6 +335,9 @@ class RandomPatchViewer:
                 self.next_patch()
         else:
             messagebox.showerror("Error", "No valid frames found in the provided videos.")
+        
+        # Generate initial training patches for Data Generation tab
+        self.root.after(500, self._generate_initial_training_patches)
 
     def _load_history_from_db(self):
         """Reconstruct history from saved samples in database."""
@@ -971,6 +974,14 @@ class RandomPatchViewer:
         self.root.destroy()
     
     # Data Generation Methods
+    
+    def _generate_initial_training_patches(self):
+        """Generate initial training patches automatically on app start."""
+        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        if not labeled_samples:
+            return
+        
+        self.generate_training_patches()
     
     def generate_training_patches(self):
         """Generate 16 random 128x128 patches from labeled samples for 4x4 grid."""
