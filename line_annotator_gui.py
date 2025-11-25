@@ -17,6 +17,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 @dataclass
 class Line:
@@ -231,14 +232,24 @@ class RandomPatchViewer:
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
         
-        # Pre-calculate frame counts for proportional sampling
+        # Pre-calculate frame counts for proportional sampling (parallel)
         self.video_frame_counts = {}
-        print("Scanning videos...")
-        for path in self.video_paths:
-            count = get_video_props(path)
-            if count > 0:
-                self.video_frame_counts[path] = count
-                print(f"  {os.path.basename(path)}: {count} frames")
+        print("Scanning videos (parallel)...")
+        
+        # Use ThreadPoolExecutor to scan videos in parallel
+        max_workers = min(8, len(self.video_paths))  # Use up to 8 threads
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(get_video_props, path): path for path in self.video_paths}
+            
+            for future in as_completed(futures):
+                path = futures[future]
+                try:
+                    count = future.result()
+                    if count > 0:
+                        self.video_frame_counts[path] = count
+                        print(f"  {os.path.basename(path)}: {count} frames")
+                except Exception as e:
+                    print(f"  Error scanning {os.path.basename(path)}: {e}")
         
         # Setup proportional sampling (Cumulative Distribution)
         self.cumulative_frames = []
