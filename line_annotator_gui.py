@@ -300,7 +300,7 @@ class RandomPatchViewer:
         self.show_inference_prediction = False
         
         # UI Setup
-        self.root.title(f"Random Patch Viewer ({patch_size}x{patch_size})")
+        self.root.title("LineAnnotatorGUI")
         self._build_ui()
         
         # Bindings
