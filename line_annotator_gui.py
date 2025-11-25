@@ -902,16 +902,16 @@ class RandomPatchViewer:
             
             # Draw locked first point if it exists
             if self.first_point is not None:
-                self.draw_point_on_canvas(self.first_point, "lime", 8)
+                self.draw_point_on_canvas(self.first_point, "lime", 2)
             
             # Draw the point being currently dragged
             if self.current_point is not None:
                 if self.first_point is None:
                     # Dragging first point
-                    self.draw_point_on_canvas(self.current_point, "yellow", 8)
+                    self.draw_point_on_canvas(self.current_point, "yellow", 2)
                 else:
                     # Dragging second point - also show preview line
-                    self.draw_point_on_canvas(self.current_point, "red", 8)
+                    self.draw_point_on_canvas(self.current_point, "red", 2)
                     canvas_x1, canvas_y1 = self.image_to_canvas_coords(self.first_point[0], self.first_point[1])
                     canvas_x2, canvas_y2 = self.image_to_canvas_coords(self.current_point[0], self.current_point[1])
                     self.canvas.create_line(
