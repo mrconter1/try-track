@@ -355,29 +355,46 @@ class RandomPatchViewer:
         # Generate initial training patches for Data Generation tab
         self.root.after(500, self._generate_initial_training_patches)
 
-    def _load_history_from_db(self):
-        """Reconstruct history from saved samples in database."""
-        for sample in self.db.samples:
-            # Need to reload the actual image for each sample
-            cap = cv2.VideoCapture(sample.video_path)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
-            ret, frame = cap.read()
-            cap.release()
+    def _load_sample_image(self, sample):
+        """Helper to load a single sample image."""
+        cap = cv2.VideoCapture(sample.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if ret and frame is not None:
+            x, y, w, h = sample.crop_rect
+            patch = frame[y:y+h, x:x+w]
+            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
             
-            if ret and frame is not None:
-                x, y, w, h = sample.crop_rect
-                patch = frame[y:y+h, x:x+w]
-                patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
-                
-                patch_info = {
-                    "video_path": sample.video_path,
-                    "frame_idx": sample.frame_idx,
-                    "crop_rect": sample.crop_rect,
-                    "image": patch_rgb
-                }
-                self.history.append(patch_info)
-            else:
-                print(f"Warning: Could not reload sample from {sample.video_path} frame {sample.frame_idx}")
+            return {
+                "video_path": sample.video_path,
+                "frame_idx": sample.frame_idx,
+                "crop_rect": sample.crop_rect,
+                "image": patch_rgb
+            }
+        return None
+
+    def _load_history_from_db(self):
+        """Reconstruct history from saved samples in database (parallel)."""
+        if not self.db.samples:
+            return
+
+        print(f"Loading {len(self.db.samples)} history samples...")
+        
+        # Use ThreadPoolExecutor to load samples in parallel
+        max_workers = min(8, len(self.db.samples))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(self._load_sample_image, sample) for sample in self.db.samples]
+            
+            # Collect results in order
+            for future in futures:
+                try:
+                    patch_info = future.result()
+                    if patch_info:
+                        self.history.append(patch_info)
+                except Exception as e:
+                    print(f"Warning: Error loading sample: {e}")
         
         print(f"Loaded {len(self.history)} samples from database")
     
@@ -1031,34 +1048,46 @@ class RandomPatchViewer:
         if not labeled_samples:
             return
         
-        self.generate_training_patches()
+        # Run generation in separate thread
+        threading.Thread(target=self.generate_training_patches, daemon=True).start()
     
     def generate_training_patches(self):
         """Generate 16 random 128x128 patches from labeled samples for 4x4 grid."""
-        self.generated_patches = []
+        # Update UI to show loading state (schedule on main thread)
+        self.root.after(0, lambda: self.lbl_gen_count.config(text="Generating..."))
+        
+        self.generated_patches = []  # Clear existing
+        new_patches = []
         
         # Only use samples with lines
         labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
         
         if not labeled_samples:
-            messagebox.showwarning("No Labeled Data", "No labeled samples found. Please label some data first.")
+            self.root.after(0, lambda: messagebox.showwarning("No Labeled Data", "No labeled samples found. Please label some data first."))
             return
         
         print(f"Generating 16 patches from {len(labeled_samples)} labeled samples...")
         
-        for i in range(16):
-            # Pick random labeled sample
-            sample = random.choice(labeled_samples)
-            
-            # Load the frame
-            cap = cv2.VideoCapture(sample.video_path)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
-            ret, frame = cap.read()
-            cap.release()
-            
-            if not ret or frame is None:
-                print(f"Warning: Could not load frame for patch {i+1}")
+        # Pre-load frames needed for generation
+        frame_cache = {}
+        
+        # Select samples first to know which frames to load
+        selected_samples = [random.choice(labeled_samples) for _ in range(16)]
+        
+        for sample in selected_samples:
+            if sample.video_path not in frame_cache:
+                cap = cv2.VideoCapture(sample.video_path)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                if ret and frame is not None:
+                    frame_cache[sample.video_path] = frame
+        
+        for i, sample in enumerate(selected_samples):
+            if sample.video_path not in frame_cache:
                 continue
+            
+            frame = frame_cache[sample.video_path]
             
             # Extract the original crop
             x, y, w, h = sample.crop_rect
@@ -1164,13 +1193,18 @@ class RandomPatchViewer:
                 "patch_offset": (patch_x, patch_y, patch_w, patch_h)
             }
             
-            self.generated_patches.append(patch_data)
+            new_patches.append(patch_data)
         
-        print(f"Generated {len(self.generated_patches)} patches")
+        print(f"Generated {len(new_patches)} patches")
         
-        if self.generated_patches:
-            self.show_gen_mask = False
-            self.display_gen_grid()
+        # Update state and UI on main thread
+        def update_ui():
+            self.generated_patches = new_patches
+            if self.generated_patches:
+                self.show_gen_mask = False
+                self.display_gen_grid()
+        
+        self.root.after(0, update_ui)
     
     def display_gen_grid(self):
         """Display all generated patches in a 4x4 grid with padding."""
