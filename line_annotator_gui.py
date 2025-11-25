@@ -350,9 +350,10 @@ class RandomPatchViewer:
                 self.loss_history['val'].append((epoch, max(0.01, base_loss + noise)))
         
         # Inference state
-        self.inference_samples = []
+        self.inference_samples = []  # List of {frame, prediction, source_info}
         self.inference_idx = 0
         self.show_inference_prediction = False
+        self.inference_stride = 64  # Stride for sliding window (64 = 50% overlap)
         
         # UI Setup
         self.root.title("LineAnnotatorGUI")
@@ -821,16 +822,37 @@ class RandomPatchViewer:
         btn_load_model.pack(fill=tk.X, pady=5)
         
         # Sample controls
-        sample_frame = ttk.LabelFrame(sidebar, text="Test Samples", padding=10)
+        sample_frame = ttk.LabelFrame(sidebar, text="Full Frame Inference", padding=10)
         sample_frame.pack(fill=tk.X, pady=(0, 10))
         
-        ttk.Label(sample_frame, text="Number of samples:").pack(anchor="w", pady=2)
-        self.inference_samples_var = tk.IntVar(value=16)
-        samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=100, increment=1, 
+        ttk.Label(sample_frame, text="Number of frames:").pack(anchor="w", pady=2)
+        self.inference_samples_var = tk.IntVar(value=3)
+        samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=10, increment=1, 
                                        textvariable=self.inference_samples_var, width=10)
         samples_spinbox.pack(anchor="w", pady=5)
         
-        btn_generate_inference = ttk.Button(sample_frame, text="Generate Test Samples", 
+        # Full frame vs sliding window toggle
+        self.full_frame_mode_var = tk.BooleanVar(value=True)
+        full_frame_check = ttk.Checkbutton(sample_frame, text="Full frame (fast)", 
+                                           variable=self.full_frame_mode_var,
+                                           command=self._toggle_stride_controls)
+        full_frame_check.pack(anchor="w", pady=5)
+        
+        # Stride controls (only visible when not using full frame mode)
+        self.stride_frame = ttk.Frame(sample_frame)
+        self.stride_frame.pack(fill=tk.X)
+        
+        ttk.Label(self.stride_frame, text="Stride (overlap):").pack(anchor="w", pady=2)
+        self.inference_stride_var = tk.IntVar(value=64)
+        stride_spinbox = ttk.Spinbox(self.stride_frame, from_=32, to=128, increment=16, 
+                                      textvariable=self.inference_stride_var, width=10)
+        stride_spinbox.pack(anchor="w", pady=5)
+        ttk.Label(self.stride_frame, text="(64=50% overlap, 128=no overlap)", font=("TkDefaultFont", 8)).pack(anchor="w")
+        
+        # Initially hide stride controls if full frame is selected
+        self._toggle_stride_controls()
+        
+        btn_generate_inference = ttk.Button(sample_frame, text="Generate Predictions", 
                                            command=self.generate_inference_samples)
         btn_generate_inference.pack(fill=tk.X, pady=5)
         
@@ -2118,6 +2140,9 @@ class RandomPatchViewer:
         rows, cols = contour.shape[0], 2
         [vx, vy, x, y] = cv2.fitLine(contour, cv2.DIST_L2, 0, 0.01, 0.01)
         
+        # Extract scalar values from arrays (fixes NumPy deprecation warning)
+        vx, vy, x, y = float(vx[0]), float(vy[0]), float(x[0]), float(y[0])
+        
         # Extend line to image boundaries (0-128)
         leftmost = int(x - 64 * vx)
         topmost = int(y - 64 * vy)
@@ -2334,6 +2359,13 @@ class RandomPatchViewer:
         
         return result
     
+    def _toggle_stride_controls(self):
+        """Show/hide stride controls based on full frame mode."""
+        if self.full_frame_mode_var.get():
+            self.stride_frame.pack_forget()
+        else:
+            self.stride_frame.pack(fill=tk.X)
+    
     def load_model_for_inference(self):
         """Load a trained model for inference."""
         try:
@@ -2350,17 +2382,29 @@ class RandomPatchViewer:
             messagebox.showerror("Error", f"Failed to load model: {str(e)}")
     
     def generate_inference_samples(self):
-        """Generate random test samples from any video frames."""
+        """Generate full-frame predictions using either direct inference or sliding window."""
         if self.model is None:
             messagebox.showwarning("No Model", "Please load a model first.")
             return
         
-        num_samples = self.inference_samples_var.get()
+        num_frames = self.inference_samples_var.get()
+        use_full_frame = self.full_frame_mode_var.get()
         self.inference_samples = []
         
-        print(f"Generating {num_samples} test samples...")
+        self.model.eval()
         
-        for i in range(num_samples):
+        # Pre-compute normalization tensors
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
+        
+        if use_full_frame:
+            print(f"Generating {num_frames} predictions using FULL FRAME mode (fast)...")
+        else:
+            stride = self.inference_stride_var.get()
+            batch_size = 32
+            print(f"Generating {num_frames} predictions using SLIDING WINDOW mode (stride {stride})...")
+        
+        for i in range(num_frames):
             # Get random video and frame
             video_path, frame_idx = self.get_random_frame_location()
             if not video_path:
@@ -2374,115 +2418,194 @@ class RandomPatchViewer:
             if not ret or frame is None:
                 continue
             
-            h, w = frame.shape[:2]
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w = frame_rgb.shape[:2]
             
-            # Random 128x128 crop
             if h < 128 or w < 128:
                 continue
             
-            x = random.randint(0, w - 128)
-            y = random.randint(0, h - 128)
-            
-            patch = frame[y:y+128, x:x+128]
-            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
-            
-            # Run inference
-            with torch.no_grad():
-                # Prepare input with ImageNet normalization
-                input_tensor = torch.from_numpy(patch_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+            if use_full_frame:
+                # === FULL FRAME DIRECT INFERENCE ===
+                # Pad to nearest multiple of 32
+                pad_h = (32 - h % 32) % 32
+                pad_w = (32 - w % 32) % 32
                 
-                # Apply ImageNet normalization for pretrained MobileNetV2
-                mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
-                std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
-                input_tensor = (input_tensor - mean) / std
+                if pad_h > 0 or pad_w > 0:
+                    frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                else:
+                    frame_padded = frame_rgb
                 
-                input_tensor = input_tensor.to(self.device)
+                print(f"  Frame {i+1}: {w}x{h} (padded to {frame_padded.shape[1]}x{frame_padded.shape[0]})")
                 
-                # Predict
-                prediction = self.model(input_tensor)
-                pred_mask = (prediction.squeeze().cpu().numpy() * 255).astype(np.uint8)
+                with torch.no_grad():
+                    # Prepare full frame input
+                    input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                    input_tensor = input_tensor.to(self.device)
+                    
+                    # Apply ImageNet normalization
+                    input_tensor = (input_tensor - mean) / std
+                    
+                    # Single forward pass for entire frame!
+                    prediction = self.model(input_tensor)
+                    pred_full = prediction.squeeze().cpu().numpy()
+                
+                # Crop back to original size
+                pred_mask = (pred_full[:h, :w] * 255).astype(np.uint8)
+                pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+                num_patches = 1
+                
+            else:
+                # === SLIDING WINDOW INFERENCE ===
+                stride = self.inference_stride_var.get()
+                batch_size = 32
+                
+                pred_sum = np.zeros((h, w), dtype=np.float32)
+                pred_count = np.zeros((h, w), dtype=np.float32)
+                patch_size = 128
+                
+                # Calculate grid positions
+                y_positions = list(range(0, h - patch_size + 1, stride))
+                if y_positions[-1] + patch_size < h:
+                    y_positions.append(h - patch_size)
+                
+                x_positions = list(range(0, w - patch_size + 1, stride))
+                if x_positions[-1] + patch_size < w:
+                    x_positions.append(w - patch_size)
+                
+                all_positions = [(y, x) for y in y_positions for x in x_positions]
+                num_patches = len(all_positions)
+                print(f"  Frame {i+1}: {w}x{h}, {num_patches} patches...")
+                
+                with torch.no_grad():
+                    for batch_start in range(0, num_patches, batch_size):
+                        batch_end = min(batch_start + batch_size, num_patches)
+                        batch_positions = all_positions[batch_start:batch_end]
+                        
+                        batch_patches = []
+                        for y, x in batch_positions:
+                            patch = frame_rgb[y:y+patch_size, x:x+patch_size]
+                            patch_tensor = torch.from_numpy(patch.astype(np.float32) / 255.0).permute(2, 0, 1)
+                            batch_patches.append(patch_tensor)
+                        
+                        batch_tensor = torch.stack(batch_patches).to(self.device)
+                        batch_tensor = (batch_tensor - mean) / std
+                        
+                        predictions = self.model(batch_tensor)
+                        pred_patches = predictions.squeeze(1).cpu().numpy()
+                        
+                        for idx, (y, x) in enumerate(batch_positions):
+                            pred_sum[y:y+patch_size, x:x+patch_size] += pred_patches[idx]
+                            pred_count[y:y+patch_size, x:x+patch_size] += 1
+                
+                pred_count[pred_count == 0] = 1
+                pred_avg = pred_sum / pred_count
+                pred_mask = (pred_avg * 255).astype(np.uint8)
                 pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
             
-            # Detect lines from the prediction mask using LSD (Line Segment Detector)
+            # Detect lines from the full prediction
             detected_lines = self._detect_lines_lsd(pred_mask_rgb)
             
             self.inference_samples.append({
-                'image': patch_rgb,
+                'frame': frame_rgb,
                 'prediction': pred_mask_rgb,
                 'detected_lines': detected_lines,
                 'source_video': os.path.basename(video_path),
                 'source_frame': frame_idx,
-                'location': (x, y)
+                'size': (w, h),
+                'num_patches': num_patches
             })
         
-        print(f"Generated {len(self.inference_samples)} test samples")
+        print(f"Generated {len(self.inference_samples)} full-frame predictions")
         
         if self.inference_samples:
             self.inference_idx = 0
             self.show_inference_prediction = False
             self.display_inference_sample()
         else:
-            messagebox.showwarning("No Samples", "Failed to generate test samples.")
+            messagebox.showwarning("No Samples", "Failed to generate predictions.")
     
     def display_inference_sample(self):
-        """Display all inference samples in a 4x4 grid."""
+        """Display full-frame predictions in a grid layout."""
         if not self.inference_samples:
             return
         
         # Update info
-        self.lbl_inference_idx.config(text=f"Samples: {len(self.inference_samples)}")
+        num_frames = len(self.inference_samples)
+        self.lbl_inference_idx.config(text=f"Frames: {num_frames}")
         
         # Update button text
         if self.show_inference_prediction:
             self.btn_toggle_inference.config(text="Show: Predictions")
         else:
-            self.btn_toggle_inference.config(text="Show: Images")
+            self.btn_toggle_inference.config(text="Show: Frames")
         
-        # Create 4x4 grid
-        grid_rows = 4
-        grid_cols = 4
-        patch_size = 128
-        padding = 4
+        # Layout: Show frames in a row (or 2 rows if many)
+        num_cols = min(3, num_frames)
+        num_rows = (num_frames + num_cols - 1) // num_cols
         
-        grid_width = grid_cols * patch_size + (grid_cols + 1) * padding
-        grid_height = grid_rows * patch_size + (grid_rows + 1) * padding
+        # Get canvas size for scaling
+        canvas_w = self.inference_canvas.winfo_width()
+        canvas_h = self.inference_canvas.winfo_height()
         
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, self.display_inference_sample)
+            return
+        
+        # Calculate cell size
+        padding = 10
+        available_w = canvas_w - padding * (num_cols + 1)
+        available_h = canvas_h - padding * (num_rows + 1)
+        cell_w = available_w // num_cols
+        cell_h = available_h // num_rows
+        
+        # Create grid image
+        grid_width = canvas_w
+        grid_height = canvas_h
         grid_img = np.full((grid_height, grid_width, 3), 32, dtype=np.uint8)
         
         for idx, sample in enumerate(self.inference_samples):
-            if idx >= 16:
-                break
+            row = idx // num_cols
+            col = idx % num_cols
             
-            row = idx // grid_cols
-            col = idx % grid_cols
-            
-            # Choose image or prediction
+            # Choose frame or prediction
             if self.show_inference_prediction:
-                patch_data = sample['prediction'].copy()
+                img_data = sample['prediction'].copy()
                 
                 # Overlay detected lines on the prediction (if toggle enabled)
                 if self.show_inference_lines_var.get():
                     detected_lines = sample.get('detected_lines', [])
                     if detected_lines:
-                        # Draw lines with endpoints marked
-                        patch_data = self._draw_lines_on_image(
-                            patch_data, 
+                        # Scale line thickness based on image size
+                        img_h, img_w = img_data.shape[:2]
+                        thickness = max(1, min(img_w, img_h) // 200)
+                        endpoint_size = max(2, thickness + 1)
+                        
+                        img_data = self._draw_lines_on_image(
+                            img_data, 
                             detected_lines, 
                             color=(0, 255, 255),  # Cyan lines
-                            thickness=2,
-                            endpoint_size=3
+                            thickness=thickness,
+                            endpoint_size=endpoint_size
                         )
             else:
-                patch_data = sample['image']
+                img_data = sample['frame'].copy()
             
-            ph, pw = patch_data.shape[:2]
+            # Resize to fit cell while maintaining aspect ratio
+            img_h, img_w = img_data.shape[:2]
+            scale = min(cell_w / img_w, cell_h / img_h)
+            new_w = int(img_w * scale)
+            new_h = int(img_h * scale)
+            
+            resized = cv2.resize(img_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            
+            # Calculate position (centered in cell)
+            x_start = padding + col * (cell_w + padding) + (cell_w - new_w) // 2
+            y_start = padding + row * (cell_h + padding) + (cell_h - new_h) // 2
             
             # Place in grid
-            y_start = padding + row * (patch_size + padding)
-            x_start = padding + col * (patch_size + padding)
-            grid_img[y_start:y_start+ph, x_start:x_start+pw] = patch_data
+            grid_img[y_start:y_start+new_h, x_start:x_start+new_w] = resized
         
-        # Display the grid
+        # Display the grid directly
         self._draw_inference_image(grid_img)
     
     def _draw_inference_image(self, img_arr):
