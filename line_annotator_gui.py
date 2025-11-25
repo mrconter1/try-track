@@ -534,8 +534,18 @@ class RandomPatchViewer:
         btn_next = ttk.Button(nav_frame, text="Next Random (D) >>", command=self.next_patch)
         btn_next.pack(fill=tk.X, pady=5)
         
+        btn_resample = ttk.Button(nav_frame, text="Resample (R)", command=self.resample_current_patch)
+        btn_resample.pack(fill=tk.X, pady=5)
+        
         self.btn_toggle_mask = ttk.Button(nav_frame, text="Show Mask (M)", command=self.toggle_mask)
         self.btn_toggle_mask.pack(fill=tk.X, pady=5)
+        
+        # Sample management
+        sample_frame = ttk.LabelFrame(sidebar, text="Sample Management", padding=10)
+        sample_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        btn_delete_sample = ttk.Button(sample_frame, text="Delete Sample", command=self.delete_current_sample)
+        btn_delete_sample.pack(fill=tk.X, pady=5)
 
     
     def _build_data_generation_tab(self):
@@ -1728,6 +1738,45 @@ class RandomPatchViewer:
             self.resample_current_patch()
         elif current_tab == 1:  # Data Generation tab (index 1)
             self.generate_training_patches()
+    
+    def delete_current_sample(self):
+        """Delete the current sample from history and database."""
+        if not self.current_patch_info or len(self.history) == 0:
+            return
+        
+        # Remove from database if it exists there
+        info = self.current_patch_info
+        for i, sample in enumerate(self.db.samples):
+            if (sample.video_path == info['video_path'] and 
+                sample.frame_idx == info['frame_idx'] and 
+                sample.crop_rect == info['crop_rect']):
+                del self.db.samples[i]
+                break
+        
+        # Remove from history
+        if self.history_idx >= 0 and self.history_idx < len(self.history):
+            del self.history[self.history_idx]
+        
+        # Navigate to appropriate sample
+        if len(self.history) == 0:
+            # No samples left, generate a new one
+            self.history_idx = -1
+            self.current_patch_info = None
+            self.next_patch()
+        elif self.history_idx >= len(self.history):
+            # Was at end, go to new end
+            self.history_idx = len(self.history) - 1
+            self.current_patch_info = self.history[self.history_idx]
+            self._load_current_lines()
+            self.display_current_patch()
+        else:
+            # Stay at same index (now pointing to next sample)
+            self.current_patch_info = self.history[self.history_idx]
+            self._load_current_lines()
+            self.display_current_patch()
+        
+        # Save changes
+        self.save_annotations(show_message=False)
     
     def resample_current_patch(self):
         """Replace the current sample with a new random patch (to find difficult examples)."""
