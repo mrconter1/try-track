@@ -308,6 +308,7 @@ class RandomPatchViewer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.is_training = False
         self.training_samples = []
+        self.loss_history = {'train': [], 'val': []}
         
         # Inference state
         self.inference_samples = []
@@ -540,14 +541,18 @@ class RandomPatchViewer:
         main_frame = ttk.Frame(self.training_tab, padding=20)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Training controls
-        controls_frame = ttk.LabelFrame(main_frame, text="Training Configuration", padding=10)
-        controls_frame.pack(fill=tk.X, pady=(0, 10))
+        # Top container for Controls + Graph
+        top_container = ttk.Frame(main_frame)
+        top_container.pack(fill=tk.X, pady=(0, 10))
+        
+        # Training controls (Left)
+        controls_frame = ttk.LabelFrame(top_container, text="Training Configuration", padding=10)
+        controls_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
         
         # Number of samples
         ttk.Label(controls_frame, text="Training Samples:").grid(row=0, column=0, sticky="w", pady=5)
-        self.train_samples_var = tk.IntVar(value=5000)
-        samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=10000, increment=100, 
+        self.train_samples_var = tk.IntVar(value=10000)
+        samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=20000, increment=100, 
                                        textvariable=self.train_samples_var, width=10)
         samples_spinbox.grid(row=0, column=1, sticky="w", pady=5, padx=(10, 0))
         
@@ -581,6 +586,16 @@ class RandomPatchViewer:
         # Train button
         self.btn_train = ttk.Button(controls_frame, text="Start Training", command=self.start_training)
         self.btn_train.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
+        
+        # Graph (Right)
+        graph_frame = ttk.LabelFrame(top_container, text="Loss History (Blue: Train, Red: Val)", padding=10)
+        graph_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        self.loss_canvas = tk.Canvas(graph_frame, bg="white", height=200)
+        self.loss_canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Bind resize to redraw graph
+        self.loss_canvas.bind("<Configure>", lambda e: self.draw_loss_graph())
         
         # Progress frame
         progress_frame = ttk.LabelFrame(main_frame, text="Training Progress", padding=10)
@@ -622,6 +637,93 @@ class RandomPatchViewer:
         
         btn_save_model = ttk.Button(model_frame, text="Save Model", command=self.save_model)
         btn_save_model.pack(fill=tk.X, pady=5)
+
+    def draw_loss_graph(self):
+        """Draw the training and validation loss graph."""
+        if not hasattr(self, 'loss_canvas'):
+            return
+            
+        canvas = self.loss_canvas
+        canvas.delete("all")
+        
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        
+        if w < 10 or h < 10:
+            return
+            
+        padding = 20
+        graph_w = w - 2 * padding
+        graph_h = h - 2 * padding
+        
+        # Draw axes
+        canvas.create_line(padding, h - padding, w - padding, h - padding, fill="black", width=2) # X axis
+        canvas.create_line(padding, h - padding, padding, padding, fill="black", width=2) # Y axis
+        
+        train_loss = self.loss_history['train']
+        val_loss = self.loss_history['val']
+        
+        if not train_loss:
+            canvas.create_text(w/2, h/2, text="No training data yet", fill="gray")
+            return
+            
+        # Find max loss for scaling
+        max_train = max([x[1] for x in train_loss]) if train_loss else 0
+        max_val = max([x[1] for x in val_loss]) if val_loss else 0
+        max_loss = max(max_train, max_val)
+        
+        if max_loss == 0: max_loss = 1.0
+        max_loss = max_loss * 1.1 # Add some headroom
+        
+        # Helper to convert coords
+        # x-axis is now 0 to current_max_epoch_reached
+        # y-axis is 0 to max_loss
+        
+        # Determine the maximum epoch reached so far in the data
+        max_epoch_reached = 0
+        if train_loss:
+            max_epoch_reached = max(max_epoch_reached, train_loss[-1][0])
+        if val_loss:
+            max_epoch_reached = max(max_epoch_reached, val_loss[-1][0])
+            
+        # Ensure we have at least some range to avoid division by zero
+        if max_epoch_reached == 0:
+            max_epoch_reached = 0.1  # Arbitrary small non-zero value
+
+        def to_canvas(epoch_val, loss_val):
+            # Scale x from 0..max_epoch_reached to padding..(w-padding)
+            x = padding + (epoch_val / max_epoch_reached) * graph_w
+            
+            # Scale y
+            y = h - padding - (loss_val / max_loss) * graph_h
+            return x, y
+        
+        # Draw train loss (Blue)
+        if train_loss:
+            points_train = []
+            for ep, loss in train_loss:
+                x, y = to_canvas(ep, loss)
+                points_train.append(x)
+                points_train.append(y)
+                # Only draw points if there aren't too many, otherwise just line
+                if len(train_loss) < 50:
+                    canvas.create_oval(x-1, y-1, x+1, y+1, fill="blue", outline="blue")
+                
+            if len(points_train) >= 4:
+                canvas.create_line(points_train, fill="blue", width=1, smooth=False)
+            
+        # Draw val loss (Red)
+        if val_loss:
+            points_val = []
+            for ep, loss in val_loss:
+                x, y = to_canvas(ep, loss)
+                points_val.append(x)
+                points_val.append(y)
+                # Draw point
+                canvas.create_oval(x-2, y-2, x+2, y+2, fill="red", outline="red")
+                
+            if len(points_val) >= 4:
+                canvas.create_line(points_val, fill="red", width=2, smooth=True)
     
     def _build_inference_tab(self):
         """Build the UI for the inference tab."""
@@ -1489,8 +1591,8 @@ class RandomPatchViewer:
                     loss_val = loss.item()
                     train_loss += loss_val
                     
-                    # Update UI every 25 batches
-                    if batch_idx % 25 == 0:
+                    # Update UI every 5 batches
+                    if batch_idx % 5 == 0:
                         # Calculate progress: Base 50% + (current_epoch_progress / total_epochs) * 50%
                         # current_epoch_progress = epoch + (batch_idx / total_batches)
                         current_progress = 50 + ((epoch + (batch_idx / total_batches)) / epochs) * 50
@@ -1502,6 +1604,13 @@ class RandomPatchViewer:
                         # Update status label with detailed progress
                         status_msg = f"Training Epoch {epoch+1}/{epochs} - Batch {batch_idx}/{total_batches}"
                         self.lbl_train_status.config(text=status_msg)
+                        
+                        # Update graph with partial epoch data
+                        # We store fractional epoch numbers for smooth plotting
+                        current_epoch_frac = epoch + (batch_idx / total_batches)
+                        self.loss_history['train'].append((current_epoch_frac, loss_val))
+                        self.root.after(0, self.draw_loss_graph)
+                        
                         self.root.update_idletasks()
                 
                 train_loss /= len(train_loader)
@@ -1524,6 +1633,12 @@ class RandomPatchViewer:
                 self.progress_var.set(progress)
                 self.lbl_train_loss.config(text=f"Train Loss: {train_loss:.4f}")
                 self.lbl_val_loss.config(text=f"Val Loss: {val_loss:.4f}")
+                
+                # Update graph history and redraw (Validation is plotted at integer epoch steps)
+                # For training, we just ensure the final point of the epoch is added if not already
+                # self.loss_history['train'].append((epoch + 1.0, train_loss)) 
+                self.loss_history['val'].append((epoch + 1.0, val_loss))
+                self.root.after(0, self.draw_loss_graph)
                 
                 log_msg = f"Epoch {epoch+1}/{epochs} - Train: {train_loss:.4f}, Val: {val_loss:.4f}"
                 if val_loss < best_val_loss:
@@ -1558,6 +1673,10 @@ class RandomPatchViewer:
         self.btn_train.config(text="Training...", state='disabled')
         self.lbl_train_status.config(text="Generating training data...")
         self.progress_var.set(0)
+        
+        # Reset graph
+        self.loss_history = {'train': [], 'val': []}
+        self.draw_loss_graph()
         
         num_samples = self.train_samples_var.get()
         epochs = self.epochs_var.get()
