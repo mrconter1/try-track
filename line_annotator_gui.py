@@ -1961,6 +1961,236 @@ class RandomPatchViewer:
     
     # Inference Methods
     
+    def _fit_line_to_contour(self, contour):
+        """
+        Fit a line to a contour using cv2.fitLine.
+        
+        Args:
+            contour: OpenCV contour
+            
+        Returns:
+            Tuple (x1, y1, x2, y2) representing the fitted line
+        """
+        # Fit line to contour
+        rows, cols = contour.shape[0], 2
+        [vx, vy, x, y] = cv2.fitLine(contour, cv2.DIST_L2, 0, 0.01, 0.01)
+        
+        # Extend line to image boundaries (0-128)
+        leftmost = int(x - 64 * vx)
+        topmost = int(y - 64 * vy)
+        rightmost = int(x + 64 * vx)
+        bottommost = int(y + 64 * vy)
+        
+        return (leftmost, topmost, rightmost, bottommost)
+    
+    def _lines_are_aligned(self, line1, line2, angle_threshold=5, distance_threshold=10):
+        """
+        Check if two lines are aligned (parallel/collinear) and close to each other.
+        
+        Args:
+            line1, line2: Tuples (x1, y1, x2, y2)
+            angle_threshold: Maximum angle difference in degrees
+            distance_threshold: Maximum distance between lines in pixels
+            
+        Returns:
+            True if lines are aligned and close
+        """
+        x1a, y1a, x2a, y2a = line1
+        x1b, y1b, x2b, y2b = line2
+        
+        # Calculate angles
+        angle1 = np.arctan2(y2a - y1a, x2a - x1a) * 180 / np.pi
+        angle2 = np.arctan2(y2b - y1b, x2b - x1b) * 180 / np.pi
+        
+        # Normalize angles to [0, 180)
+        angle1 = angle1 % 180
+        angle2 = angle2 % 180
+        
+        # Check angle difference (considering 180° wrapping)
+        angle_diff = min(abs(angle1 - angle2), 180 - abs(angle1 - angle2))
+        
+        if angle_diff > angle_threshold:
+            return False
+        
+        # Check distance between line segments
+        # Distance from point to line
+        def point_to_line_distance(px, py, x1, y1, x2, y2):
+            line_len_sq = (x2 - x1)**2 + (y2 - y1)**2
+            if line_len_sq == 0:
+                return np.sqrt((px - x1)**2 + (py - y1)**2)
+            t = max(0, min(1, ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / line_len_sq))
+            proj_x = x1 + t * (x2 - x1)
+            proj_y = y1 + t * (y2 - y1)
+            return np.sqrt((px - proj_x)**2 + (py - proj_y)**2)
+        
+        # Check distance from line1 endpoints to line2
+        d1 = point_to_line_distance(x1a, y1a, x1b, y1b, x2b, y2b)
+        d2 = point_to_line_distance(x2a, y2a, x1b, y1b, x2b, y2b)
+        
+        return min(d1, d2) < distance_threshold
+    
+    def _merge_aligned_lines(self, lines):
+        """
+        Merge lines that are aligned and close to each other.
+        
+        Args:
+            lines: List of lines as [(x1, y1, x2, y2), ...]
+            
+        Returns:
+            Merged list of lines
+        """
+        if len(lines) <= 1:
+            return lines
+        
+        merged = []
+        used = set()
+        
+        for i, line in enumerate(lines):
+            if i in used:
+                continue
+            
+            # Start a new merged group
+            group = [line]
+            used.add(i)
+            
+            # Find all aligned lines and merge them
+            for j in range(i + 1, len(lines)):
+                if j in used:
+                    continue
+                
+                if self._lines_are_aligned(line, lines[j]):
+                    group.append(lines[j])
+                    used.add(j)
+            
+            # Merge group into single line (if multiple)
+            if len(group) > 1:
+                # Concatenate all endpoints and fit a new line
+                all_points = []
+                for x1, y1, x2, y2 in group:
+                    all_points.append([x1, y1])
+                    all_points.append([x2, y2])
+                
+                all_points = np.array(all_points, dtype=np.float32)
+                [vx, vy, x, y] = cv2.fitLine(all_points, cv2.DIST_L2, 0, 0.01, 0.01)
+                
+                # Extend to boundaries
+                leftmost = int(x - 64 * vx)
+                topmost = int(y - 64 * vy)
+                rightmost = int(x + 64 * vx)
+                bottommost = int(y + 64 * vy)
+                
+                merged.append((leftmost, topmost, rightmost, bottommost))
+            else:
+                merged.append(line)
+        
+        return merged
+    
+    def _detect_lines_lsd(self, mask):
+        """
+        Detect lines from a binary mask using Line Segment Detector (LSD).
+        Fits lines directly to mask contours and merges aligned lines.
+        
+        Args:
+            mask: Binary mask (single channel or 3-channel)
+            
+        Returns:
+            List of lines as [(x1, y1, x2, y2), ...] (consolidated, max ~10 lines)
+        """
+        # Convert to grayscale if needed
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        # Threshold to binary
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Dilate slightly to connect broken lines
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary = cv2.dilate(binary, kernel, iterations=2)
+        
+        # Thin the mask to extract skeletons/centerlines (handles thick predicted regions)
+        # This gives us the medial axis of thick white areas
+        size = np.size(binary)
+        skel = np.zeros(binary.shape, np.uint8)
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        while True:
+            eroded = cv2.erode(binary, element)
+            temp = cv2.dilate(eroded, element)
+            temp = cv2.subtract(binary, temp)
+            skel = cv2.bitwise_or(skel, temp)
+            binary = eroded.copy()
+            if cv2.countNonZero(binary) == 0:
+                break
+        
+        # Use the skeleton for line fitting
+        binary = skel
+        
+        # Find contours in the mask
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        detected_lines = []
+        
+        # Fit line to each contour
+        for contour in contours:
+            if len(contour) >= 4:  # Need at least 4 points to fit a line
+                try:
+                    line = self._fit_line_to_contour(contour)
+                    detected_lines.append(line)
+                except:
+                    continue
+        
+        # If no lines from contours, fall back to LSD edge detection
+        if not detected_lines:
+            edges = cv2.Canny(binary, 50, 150)
+            lsd = cv2.createLineSegmentDetector(0)
+            lines, _, _, _ = lsd.detect(edges)
+            
+            if lines is not None and len(lines) > 0:
+                detected_lines = [tuple(line[0].astype(int)) for line in lines]
+        
+        # Merge aligned lines
+        if detected_lines:
+            detected_lines = self._merge_aligned_lines(detected_lines)
+        
+        # Sort by line length and keep top 10
+        detected_lines.sort(
+            key=lambda line: ((line[2] - line[0])**2 + (line[3] - line[1])**2)**0.5,
+            reverse=True
+        )
+        
+        return detected_lines[:10]
+    
+    def _draw_lines_on_image(self, img, lines, color=(0, 255, 255), thickness=2, endpoint_size=3):
+        """
+        Draw lines on an image with endpoints marked (similar to training labeler).
+        
+        Args:
+            img: Image to draw on (will be copied)
+            lines: List of lines as [(x1, y1, x2, y2), ...]
+            color: RGB color tuple (default cyan)
+            thickness: Line thickness
+            endpoint_size: Radius of endpoint circles
+            
+        Returns:
+            Image with lines drawn
+        """
+        result = img.copy()
+        
+        for x1, y1, x2, y2 in lines:
+            # Draw line
+            cv2.line(result, (x1, y1), (x2, y2), color, thickness)
+            
+            # Draw endpoints (start point in one shade, end point in another)
+            cv2.circle(result, (x1, y1), endpoint_size, (0, 255, 0), -1)  # Green start
+            cv2.circle(result, (x2, y2), endpoint_size, (255, 0, 0), -1)  # Blue end
+            
+            # Draw outer ring for better visibility
+            cv2.circle(result, (x1, y1), endpoint_size, (255, 255, 255), 1)
+            cv2.circle(result, (x2, y2), endpoint_size, (255, 255, 255), 1)
+        
+        return result
+    
     def load_model_for_inference(self):
         """Load a trained model for inference."""
         try:
@@ -2024,9 +2254,13 @@ class RandomPatchViewer:
                 pred_mask = (prediction.squeeze().cpu().numpy() * 255).astype(np.uint8)
                 pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
             
+            # Detect lines from the prediction mask using LSD (Line Segment Detector)
+            detected_lines = self._detect_lines_lsd(pred_mask_rgb)
+            
             self.inference_samples.append({
                 'image': patch_rgb,
                 'prediction': pred_mask_rgb,
+                'detected_lines': detected_lines,
                 'source_video': os.path.basename(video_path),
                 'source_frame': frame_idx,
                 'location': (x, y)
@@ -2051,7 +2285,7 @@ class RandomPatchViewer:
         
         # Update button text
         if self.show_inference_prediction:
-            self.btn_toggle_inference.config(text="Show: Predictions")
+            self.btn_toggle_inference.config(text="Show: Predictions + Lines")
         else:
             self.btn_toggle_inference.config(text="Show: Images")
         
@@ -2075,7 +2309,19 @@ class RandomPatchViewer:
             
             # Choose image or prediction
             if self.show_inference_prediction:
-                patch_data = sample['prediction']
+                patch_data = sample['prediction'].copy()
+                
+                # Overlay detected lines on the prediction
+                detected_lines = sample.get('detected_lines', [])
+                if detected_lines:
+                    # Draw lines with endpoints marked
+                    patch_data = self._draw_lines_on_image(
+                        patch_data, 
+                        detected_lines, 
+                        color=(0, 255, 255),  # Cyan lines
+                        thickness=2,
+                        endpoint_size=3
+                    )
             else:
                 patch_data = sample['image']
             
