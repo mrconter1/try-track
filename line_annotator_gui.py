@@ -368,7 +368,7 @@ class RandomPatchViewer:
         self.root.bind("<l>", lambda e: self.toggle_lines())
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
         self.root.bind("<Control-z>", lambda e: self.undo_last_action())
-        self.root.bind("<r>", lambda e: self.on_regenerate_key())
+        self.root.bind("<r>", lambda e: self.on_r_key())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
@@ -1720,12 +1720,45 @@ class RandomPatchViewer:
         self.show_gen_mask = not self.show_gen_mask
         self.display_gen_grid()
     
-    def on_regenerate_key(self):
-        """Handle 'r' key press - regenerate if in data generation tab, otherwise do nothing."""
+    def on_r_key(self):
+        """Handle 'r' key press - resample current in labelling tab, regenerate in data generation tab."""
         # Check which tab is active
         current_tab = self.tab_control.index(self.tab_control.select())
-        if current_tab == 1:  # Data Generation tab (index 1)
+        if current_tab == 0:  # Labelling tab
+            self.resample_current_patch()
+        elif current_tab == 1:  # Data Generation tab (index 1)
             self.generate_training_patches()
+    
+    def resample_current_patch(self):
+        """Replace the current sample with a new random patch (to find difficult examples)."""
+        if self.total_combined_frames == 0:
+            return
+        
+        # Generate a new random patch
+        new_info = self.generate_new_patch()
+        if not new_info:
+            return
+        
+        # Replace current position in history (or add if at end)
+        if self.history_idx >= 0 and self.history_idx < len(self.history):
+            # Replace the current sample
+            self.history[self.history_idx] = new_info
+        else:
+            # Add new
+            self.history.append(new_info)
+            self.history_idx = len(self.history) - 1
+        
+        self.current_patch_info = new_info
+        
+        # Clear lines for new sample
+        self.lines = []
+        self.selected_line_idx = None
+        self.first_point = None
+        self.current_point = None
+        self.editing_point = None
+        self.undo_stack = []
+        
+        self.display_current_patch()
     
     def on_toggle_mask_key(self):
         """Handle 'm' key press - toggle mask based on active tab."""
