@@ -1159,7 +1159,7 @@ class RandomPatchViewer:
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         
         # Random augmentation parameters
-        zoom_factor = random.uniform(0.95, 1.05)
+        zoom_factor = random.uniform(0.75, 1.25)
         rotation_angle = random.uniform(-180, 180)
         stretch_x = random.uniform(0.9, 1.1)
         stretch_y = random.uniform(0.9, 1.1)
