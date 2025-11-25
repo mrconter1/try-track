@@ -842,6 +842,13 @@ class RandomPatchViewer:
                                                command=self.toggle_inference_view)
         self.btn_toggle_inference.pack(fill=tk.X, pady=5)
         
+        # Toggle to show/hide detected lines
+        self.show_inference_lines_var = tk.BooleanVar(value=True)
+        show_lines_check = ttk.Checkbutton(view_frame, text="Show detected lines", 
+                                           variable=self.show_inference_lines_var,
+                                           command=self.display_inference_sample)
+        show_lines_check.pack(fill=tk.X, pady=5)
+        
         # Info
         info_frame = ttk.LabelFrame(sidebar, text="Grid Info", padding=10)
         info_frame.pack(fill=tk.X, pady=(0, 10))
@@ -2427,7 +2434,7 @@ class RandomPatchViewer:
         
         # Update button text
         if self.show_inference_prediction:
-            self.btn_toggle_inference.config(text="Show: Predictions + Lines")
+            self.btn_toggle_inference.config(text="Show: Predictions")
         else:
             self.btn_toggle_inference.config(text="Show: Images")
         
@@ -2453,17 +2460,18 @@ class RandomPatchViewer:
             if self.show_inference_prediction:
                 patch_data = sample['prediction'].copy()
                 
-                # Overlay detected lines on the prediction
-                detected_lines = sample.get('detected_lines', [])
-                if detected_lines:
-                    # Draw lines with endpoints marked
-                    patch_data = self._draw_lines_on_image(
-                        patch_data, 
-                        detected_lines, 
-                        color=(0, 255, 255),  # Cyan lines
-                        thickness=2,
-                        endpoint_size=3
-                    )
+                # Overlay detected lines on the prediction (if toggle enabled)
+                if self.show_inference_lines_var.get():
+                    detected_lines = sample.get('detected_lines', [])
+                    if detected_lines:
+                        # Draw lines with endpoints marked
+                        patch_data = self._draw_lines_on_image(
+                            patch_data, 
+                            detected_lines, 
+                            color=(0, 255, 255),  # Cyan lines
+                            thickness=2,
+                            endpoint_size=3
+                        )
             else:
                 patch_data = sample['image']
             
