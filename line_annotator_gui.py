@@ -629,12 +629,18 @@ class RandomPatchViewer:
         device_text = f"Device: {self.device}"
         ttk.Label(controls_frame, text=device_text, foreground="blue").grid(row=4, column=0, columnspan=2, sticky="w", pady=5)
         
+        # Only use labeled samples toggle
+        self.only_labeled_var = tk.BooleanVar(value=True)
+        only_labeled_check = ttk.Checkbutton(controls_frame, text="Only samples with lines", 
+                                              variable=self.only_labeled_var)
+        only_labeled_check.grid(row=5, column=0, columnspan=2, sticky="w", pady=5)
+        
         # Model info
-        ttk.Label(controls_frame, text="Backbone: MobileNetV2 (ImageNet)", foreground="green").grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(controls_frame, text="Backbone: MobileNetV2 (ImageNet)", foreground="green").grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
         
         # Train button
         self.btn_train = ttk.Button(controls_frame, text="Start Training", command=self.start_training)
-        self.btn_train.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
+        self.btn_train.grid(row=7, column=0, columnspan=2, sticky="ew", pady=10)
         
         # Graph (Right)
         graph_frame = ttk.LabelFrame(top_container, text="Validation Loss", padding=10)
@@ -1830,7 +1836,12 @@ class RandomPatchViewer:
     def generate_training_samples(self, num_samples):
         """Generate augmented training samples using the unified generation function."""
         samples = []
-        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        
+        # Filter samples based on toggle
+        if self.only_labeled_var.get():
+            labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        else:
+            labeled_samples = self.db.samples
         
         if not labeled_samples:
             return samples
@@ -2042,10 +2053,17 @@ class RandomPatchViewer:
             self.log_training("Already training...")
             return
         
-        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
-        if not labeled_samples:
-            messagebox.showwarning("No Data", "No labeled samples found. Please label some data first.")
-            return
+        # Check for available samples based on toggle
+        if self.only_labeled_var.get():
+            available_samples = [s for s in self.db.samples if len(s.lines) > 0]
+            if not available_samples:
+                messagebox.showwarning("No Data", "No samples with lines found. Please label some data first.")
+                return
+        else:
+            available_samples = self.db.samples
+            if not available_samples:
+                messagebox.showwarning("No Data", "No samples found. Please create some samples first.")
+                return
         
         self.is_training = True
         self.btn_train.config(text="Training...", state='disabled')
