@@ -906,7 +906,10 @@ class RandomPatchViewer:
         labeled_samples = sum(1 for sample in self.db.samples if len(sample.lines) > 0)
         total_lines = sum(len(sample.lines) for sample in self.db.samples)
         
-        self.lbl_total_samples.config(text=f"Total samples: {total_samples}")
+        # Current sample number
+        current_sample = self.history_idx + 1 if self.history_idx >= 0 else 0
+        
+        self.lbl_total_samples.config(text=f"Total samples: {current_sample} / {total_samples}")
         self.lbl_labeled_samples.config(text=f"Labeled samples: {labeled_samples}")
         self.lbl_total_lines.config(text=f"Total lines: {total_lines}")
     
