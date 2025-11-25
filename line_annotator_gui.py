@@ -1172,6 +1172,10 @@ class RandomPatchViewer:
             for _ in range(4)
         ]
         
+        # Flip augmentations
+        flip_horizontal = random.random() < 0.5
+        flip_vertical = random.random() < 0.5
+        
         # Buffer factor to ensure 128x128 is fully filled after transformation
         # Increased to handle zoom + perspective + rotation
         buffer_factor = 2.5
@@ -1291,6 +1295,14 @@ class RandomPatchViewer:
         final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         final_mask = transformed_mask[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         
+        # Apply flip augmentations
+        if flip_horizontal:
+            final_image = cv2.flip(final_image, 1)  # 1 = horizontal flip
+            final_mask = cv2.flip(final_mask, 1)
+        if flip_vertical:
+            final_image = cv2.flip(final_image, 0)  # 0 = vertical flip
+            final_mask = cv2.flip(final_mask, 0)
+        
         result = {
             'image': final_image,
             'mask': final_mask
@@ -1315,7 +1327,9 @@ class RandomPatchViewer:
                     'zoom': zoom_factor,
                     'stretch_x': stretch_x,
                     'stretch_y': stretch_y,
-                    'perspective': perspective_corners
+                    'perspective': perspective_corners,
+                    'flip_h': flip_horizontal,
+                    'flip_v': flip_vertical
                 },
                 'homography': H,  # Store the full homography matrix
                 'step5_final': final_image
@@ -1527,6 +1541,27 @@ class RandomPatchViewer:
                         # Just draw green polygon (now with perspective!)
                         if display_corners is not None:
                             cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                    
+                    # Draw flip indicators
+                    step3_params = patch.get("step3_params", {})
+                    flip_h = step3_params.get("flip_h", False)
+                    flip_v = step3_params.get("flip_v", False)
+                    
+                    if flip_h or flip_v:
+                        # Draw flip arrows/indicators at the center of the polygon
+                        if display_corners is not None:
+                            cx = int(np.mean(display_corners[:, 0]))
+                            cy = int(np.mean(display_corners[:, 1]))
+                            
+                            if flip_h:
+                                # Draw horizontal double arrow (↔)
+                                cv2.arrowedLine(left_img_display, (cx - 15, cy - 10), (cx + 15, cy - 10), (255, 255, 0), 2, tipLength=0.3)
+                                cv2.arrowedLine(left_img_display, (cx + 15, cy - 10), (cx - 15, cy - 10), (255, 255, 0), 2, tipLength=0.3)
+                            
+                            if flip_v:
+                                # Draw vertical double arrow (↕)
+                                cv2.arrowedLine(left_img_display, (cx, cy - 15 + (10 if flip_h else 0)), (cx, cy + 15 + (10 if flip_h else 0)), (255, 0, 255), 2, tipLength=0.3)
+                                cv2.arrowedLine(left_img_display, (cx, cy + 15 + (10 if flip_h else 0)), (cx, cy - 15 + (10 if flip_h else 0)), (255, 0, 255), 2, tipLength=0.3)
                 
                 # Place region image
                 grid_img[cell_y:cell_y+region_size, cell_x:cell_x+region_size] = left_img_display
