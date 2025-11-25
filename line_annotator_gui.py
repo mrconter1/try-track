@@ -203,6 +203,9 @@ class MobileUNet(nn.Module):
 class LineDataset(Dataset):
     def __init__(self, samples):
         self.samples = samples
+        # ImageNet normalization statistics
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     
     def __len__(self):
         return len(self.samples)
@@ -214,6 +217,12 @@ class LineDataset(Dataset):
         
         # Convert to tensors (C, H, W)
         image = torch.from_numpy(image).permute(2, 0, 1)
+        
+        # Apply ImageNet normalization for pretrained MobileNetV2
+        mean = torch.from_numpy(self.mean).reshape(3, 1, 1)
+        std = torch.from_numpy(self.std).reshape(3, 1, 1)
+        image = (image - mean) / std
+        
         mask = torch.from_numpy(mask).unsqueeze(0)
         
         return image, mask
@@ -1771,6 +1780,15 @@ class RandomPatchViewer:
         self.log_training(f"Generated {len(samples)} samples")
         return samples
     
+    def _dice_loss(self, pred, target, smooth=1e-8):
+        """
+        Compute Dice loss for thin line segmentation.
+        Better than BCELoss alone for sparse targets.
+        """
+        intersection = (pred * target).sum()
+        dice = 1 - (2 * intersection + smooth) / (pred.sum() + target.sum() + smooth)
+        return dice
+    
     def train_model_thread(self, num_samples, epochs, batch_size, lr):
         """Training thread function."""
         try:
@@ -1802,6 +1820,8 @@ class RandomPatchViewer:
             optimizer = optim.Adam(self.model.parameters(), lr=lr)
             criterion = nn.BCELoss()
             
+            self.log_training("Using combined BCELoss (0.5) + DiceLoss (0.5)")
+            
             self.log_training("Starting training...")
             
             best_val_loss = float('inf')
@@ -1822,8 +1842,17 @@ class RandomPatchViewer:
                     
                     optimizer.zero_grad()
                     outputs = self.model(images)
-                    loss = criterion(outputs, masks)
+                    
+                    # Combined loss: BCELoss (0.5) + DiceLoss (0.5)
+                    bce_loss = criterion(outputs, masks)
+                    dice_loss = self._dice_loss(outputs, masks)
+                    loss = 0.5 * bce_loss + 0.5 * dice_loss
+                    
                     loss.backward()
+                    
+                    # Gradient clipping for stable training
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
                     optimizer.step()
                     
                     loss_val = loss.item()
@@ -1861,7 +1890,12 @@ class RandomPatchViewer:
                         images = images.to(self.device)
                         masks = masks.to(self.device)
                         outputs = self.model(images)
-                        loss = criterion(outputs, masks)
+                        
+                        # Same combined loss for validation
+                        bce_loss = criterion(outputs, masks)
+                        dice_loss = self._dice_loss(outputs, masks)
+                        loss = 0.5 * bce_loss + 0.5 * dice_loss
+                        
                         val_loss += loss.item()
                 
                 val_loss /= len(val_loader)
@@ -2225,8 +2259,14 @@ class RandomPatchViewer:
             
             # Run inference
             with torch.no_grad():
-                # Prepare input
+                # Prepare input with ImageNet normalization
                 input_tensor = torch.from_numpy(patch_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                
+                # Apply ImageNet normalization for pretrained MobileNetV2
+                mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
+                input_tensor = (input_tensor - mean) / std
+                
                 input_tensor = input_tensor.to(self.device)
                 
                 # Predict
