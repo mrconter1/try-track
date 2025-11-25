@@ -1140,6 +1140,118 @@ class RandomPatchViewer:
     
     # Data Generation Methods
     
+    def _generate_single_patch(self, sample, frame, include_visualization=False):
+        """
+        Generate a single augmented training patch + mask from a sample.
+        
+        Args:
+            sample: Sample object with video_path, frame_idx, crop_rect, lines
+            frame: The video frame (BGR format)
+            include_visualization: If True, include extra data for visualization
+            
+        Returns:
+            Dictionary with 'image' (128x128 RGB), 'mask' (128x128 RGB), 
+            and optionally visualization data
+        """
+        # Extract the original crop
+        x, y, w, h = sample.crop_rect
+        crop = frame[y:y+h, x:x+w]
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        
+        # Random augmentation parameters
+        zoom_factor = random.uniform(0.95, 1.05)
+        rotation_angle = random.uniform(-180, 180)
+        stretch_x = random.uniform(0.9, 1.1)
+        stretch_y = random.uniform(0.9, 1.1)
+        
+        # Buffer factor to ensure 128x128 is fully filled after transformation
+        buffer_factor = 1.8
+        initial_size = int(128 * buffer_factor)
+        
+        # Random location for the larger initial patch
+        if w < initial_size or h < initial_size:
+            patch_x, patch_y = 0, 0
+            patch_w, patch_h = w, h
+        else:
+            patch_x = random.randint(0, w - initial_size)
+            patch_y = random.randint(0, h - initial_size)
+            patch_w, patch_h = initial_size, initial_size
+        
+        # Extract larger patch from image
+        large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+        
+        # Create mask for the large patch area (draw lines BEFORE transformation)
+        mask_large = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
+        for line in sample.lines:
+            p1_x, p1_y = line.start
+            p2_x, p2_y = line.end
+            # Translate to large patch coordinates
+            p1_patch = (int(p1_x - patch_x), int(p1_y - patch_y))
+            p2_patch = (int(p2_x - patch_x), int(p2_y - patch_y))
+            cv2.line(mask_large, p1_patch, p2_patch, (255, 255, 255), thickness=3)
+        
+        # Build transformation matrix
+        center_x, center_y = patch_w / 2, patch_h / 2
+        
+        rad = np.deg2rad(rotation_angle)
+        cos_a = np.cos(rad)
+        sin_a = np.sin(rad)
+        
+        scale_x = zoom_factor * stretch_x
+        scale_y = zoom_factor * stretch_y
+        
+        # Build transformation matrices
+        M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
+        M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
+        M_scale = np.array([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]], dtype=np.float32)
+        M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
+        
+        # Combine: translate to center → rotate → scale → translate back
+        M_combined = M_back @ M_scale @ M_rot @ M_center
+        M_2x3 = M_combined[:2, :]
+        
+        # Apply the SAME transformation to both image and mask
+        transformed_img = cv2.warpAffine(large_patch, M_2x3, (patch_w, patch_h), 
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        transformed_mask = cv2.warpAffine(mask_large, M_2x3, (patch_w, patch_h), 
+                                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        
+        # Crop center 128x128 from both
+        crop_x_offset = (patch_w - 128) // 2
+        crop_y_offset = (patch_h - 128) // 2
+        final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+        final_mask = transformed_mask[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+        
+        result = {
+            'image': final_image,
+            'mask': final_mask
+        }
+        
+        if include_visualization:
+            # Create source mask for visualization (full region, no transformation)
+            full_source_mask = np.zeros((h, w, 3), dtype=np.uint8)
+            for line in sample.lines:
+                p1 = (int(line.start[0]), int(line.start[1]))
+                p2 = (int(line.end[0]), int(line.end[1]))
+                cv2.line(full_source_mask, p1, p2, (255, 255, 255), thickness=3)
+            
+            result.update({
+                'source_video': os.path.basename(sample.video_path),
+                'source_frame': sample.frame_idx,
+                'source_crop': sample.crop_rect,
+                'source_mask': full_source_mask,
+                'patch_offset': (patch_x, patch_y, patch_w, patch_h),
+                'step3_params': {
+                    'rotation': rotation_angle,
+                    'zoom': zoom_factor,
+                    'stretch_x': stretch_x,
+                    'stretch_y': stretch_y
+                },
+                'step5_final': final_image
+            })
+        
+        return result
+    
     def _generate_initial_training_patches(self):
         """Generate initial training patches automatically on app start."""
         labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
@@ -1150,7 +1262,7 @@ class RandomPatchViewer:
         threading.Thread(target=self.generate_training_patches, daemon=True).start()
     
     def generate_training_patches(self):
-        """Generate 16 random 128x128 patches from labeled samples for 4x4 grid."""
+        """Generate 16 random 128x128 patches from labeled samples for visualization."""
         # Update UI to show loading state (schedule on main thread)
         self.root.after(0, lambda: self.lbl_gen_count.config(text="Generating..."))
         
@@ -1167,130 +1279,31 @@ class RandomPatchViewer:
         print(f"Generating 16 patches from {len(labeled_samples)} labeled samples...")
         
         # Pre-load frames needed for generation
+        # Key by (video_path, frame_idx) to handle multiple frames from same video
         frame_cache = {}
         
         # Select samples first to know which frames to load
         selected_samples = [random.choice(labeled_samples) for _ in range(16)]
         
         for sample in selected_samples:
-            if sample.video_path not in frame_cache:
+            cache_key = (sample.video_path, sample.frame_idx)
+            if cache_key not in frame_cache:
                 cap = cv2.VideoCapture(sample.video_path)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
                 ret, frame = cap.read()
                 cap.release()
                 if ret and frame is not None:
-                    frame_cache[sample.video_path] = frame
+                    frame_cache[cache_key] = frame
         
-        for i, sample in enumerate(selected_samples):
-            if sample.video_path not in frame_cache:
+        for sample in selected_samples:
+            cache_key = (sample.video_path, sample.frame_idx)
+            if cache_key not in frame_cache:
                 continue
             
-            frame = frame_cache[sample.video_path]
+            frame = frame_cache[cache_key]
             
-            # Extract the original crop
-            x, y, w, h = sample.crop_rect
-            crop = frame[y:y+h, x:x+w]
-            
-            # Apply random augmentations
-            # Random zoom (±5%)
-            zoom_factor = random.uniform(0.95, 1.05)
-            
-            # Random rotation (±180 degrees)
-            rotation_angle = random.uniform(-180, 180)
-            
-            # Random stretch in x and y
-            stretch_x = random.uniform(0.9, 1.1)
-            stretch_y = random.uniform(0.9, 1.1)
-            
-            # To ensure the final 128x128 patch is fully filled after transformation,
-            # we need to sample from a larger region initially
-            # The required size depends on rotation and zoom
-            # Worst case: 45° rotation requires sqrt(2) * size, plus zoom/stretch
-            buffer_factor = 1.8  # Conservative factor to ensure full coverage
-            initial_size = int(128 * buffer_factor)
-            
-            # Random location for the larger initial patch
-            if w < initial_size or h < initial_size:
-                # If crop is too small, work with what we have
-                patch_x, patch_y = 0, 0
-                patch_w, patch_h = w, h
-            else:
-                patch_x = random.randint(0, w - initial_size)
-                patch_y = random.randint(0, h - initial_size)
-                patch_w, patch_h = initial_size, initial_size
-            
-            # Extract larger patch
-            large_patch = crop[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-            large_patch_rgb = cv2.cvtColor(large_patch, cv2.COLOR_BGR2RGB)
-            
-            # Calculate center of large patch
-            center_x, center_y = patch_w / 2, patch_h / 2
-            
-            # Build transformation matrix
-            M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
-            
-            # Rotation matrix
-            rad = np.deg2rad(rotation_angle)
-            cos_a = np.cos(rad)
-            sin_a = np.sin(rad)
-            M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
-            
-            # Scale/stretch/zoom matrix
-            scale_x = zoom_factor * stretch_x
-            scale_y = zoom_factor * stretch_y
-            M_scale = np.array([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]], dtype=np.float32)
-            
-            # Translate back
-            M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
-            
-            # Combine transformations
-            M_combined = M_back @ M_scale @ M_rot @ M_center
-            M_2x3 = M_combined[:2, :]
-            
-            # Apply transformation to large image
-            transformed = cv2.warpAffine(large_patch_rgb, M_2x3, (patch_w, patch_h), 
-                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-            
-            # Crop center 128x128 region from transformed image
-            crop_x = (patch_w - 128) // 2
-            crop_y = (patch_h - 128) // 2
-            patch_img_aug = transformed[crop_y:crop_y+128, crop_x:crop_x+128]
-            
-            # Create mask with same transformation
-            mask_large = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
-            
-            # Draw lines on large mask with transformation
-            for line in sample.lines:
-                # Line coords are relative to the original crop
-                p1_x, p1_y = line.start
-                p2_x, p2_y = line.end
-                
-                # Translate to large patch coordinates
-                p1_patch = np.array([p1_x - patch_x, p1_y - patch_y, 1], dtype=np.float32)
-                p2_patch = np.array([p2_x - patch_x, p2_y - patch_y, 1], dtype=np.float32)
-                
-                # Apply transformation
-                p1_transformed = M_combined @ p1_patch
-                p2_transformed = M_combined @ p2_patch
-                
-                # Draw transformed line on large mask
-                p1_final = (int(p1_transformed[0]), int(p1_transformed[1]))
-                p2_final = (int(p2_transformed[0]), int(p2_transformed[1]))
-                
-                cv2.line(mask_large, p1_final, p2_final, (255, 255, 255), thickness=3)
-            
-            # Crop center 128x128 region from mask
-            mask = mask_large[crop_y:crop_y+128, crop_x:crop_x+128]
-            
-            patch_data = {
-                "image": patch_img_aug,
-                "mask": mask,
-                "source_video": os.path.basename(sample.video_path),
-                "source_frame": sample.frame_idx,
-                "source_crop": sample.crop_rect,
-                "patch_offset": (patch_x, patch_y, patch_w, patch_h)
-            }
-            
+            # Use unified function with visualization data
+            patch_data = self._generate_single_patch(sample, frame, include_visualization=True)
             new_patches.append(patch_data)
         
         print(f"Generated {len(new_patches)} patches")
@@ -1305,7 +1318,7 @@ class RandomPatchViewer:
         self.root.after(0, update_ui)
     
     def display_gen_grid(self):
-        """Display all generated patches in a 4x4 grid with padding."""
+        """Display 3x3 grid showing: Full region with green highlight | Final 128x128 warped patch."""
         if not self.generated_patches:
             return
         
@@ -1316,41 +1329,163 @@ class RandomPatchViewer:
         if self.show_gen_mask:
             self.btn_toggle_gen_view.config(text="Show: Masks")
         else:
-            self.btn_toggle_gen_view.config(text="Show: Images")
+            self.btn_toggle_gen_view.config(text="Show: Step 5 Results")
         
-        # Create 4x4 grid with padding
-        grid_rows = 4
-        grid_cols = 4
-        patch_size = 128
-        padding = 4  # Padding between patches
+        # Layout: 3x3 grid, each cell has [Full Region | Warped 128x128]
+        num_rows = 3
+        num_cols = 3
+        region_size = 180  # Smaller to fit 3 columns
+        patch_size = 128   # Training sample size
+        padding = 6
+        cell_spacing = 12  # Space between cells
         
-        # Calculate grid dimensions with padding
-        grid_width = grid_cols * patch_size + (grid_cols + 1) * padding
-        grid_height = grid_rows * patch_size + (grid_rows + 1) * padding
+        # Calculate cell dimensions
+        cell_width = region_size + padding + patch_size
+        cell_height = region_size
+        
+        # Calculate grid dimensions
+        grid_width = num_cols * cell_width + (num_cols - 1) * cell_spacing + 2 * padding
+        grid_height = num_rows * cell_height + (num_rows - 1) * cell_spacing + 2 * padding
         
         # Create the grid image with dark background
         grid_img = np.full((grid_height, grid_width, 3), 32, dtype=np.uint8)
         
-        for idx, patch in enumerate(self.generated_patches):
-            if idx >= 16:
-                break
-            
-            row = idx // grid_cols
-            col = idx % grid_cols
-            
-            # Choose image or mask
-            if self.show_gen_mask:
-                patch_data = patch["mask"]
-            else:
-                patch_data = patch["image"]
-            
-            # Get patch dimensions
-            ph, pw = patch_data.shape[:2]
-            
-            # Calculate position with padding
-            y_start = padding + row * (patch_size + padding)
-            x_start = padding + col * (patch_size + padding)
-            grid_img[y_start:y_start+ph, x_start:x_start+pw] = patch_data
+        patch_idx = 0
+        for row_idx in range(num_rows):
+            for col_idx in range(num_cols):
+                if patch_idx >= len(self.generated_patches):
+                    break
+                
+                patch = self.generated_patches[patch_idx]
+                patch_idx += 1
+                
+                # Calculate cell position
+                cell_x = padding + col_idx * (cell_width + cell_spacing)
+                cell_y = padding + row_idx * (cell_height + cell_spacing)
+                
+                # ===== LEFT: Full source region with green highlight =====
+                source_video = patch.get("source_video")
+                source_frame = patch.get("source_frame")
+                source_crop = patch.get("source_crop")
+                patch_offset = patch.get("patch_offset")
+                
+                left_img = None
+                if source_video and source_frame is not None and source_crop:
+                    video_path = None
+                    for vp in self.video_paths:
+                        if os.path.basename(vp) == source_video:
+                            video_path = vp
+                            break
+                    
+                    if video_path:
+                        cap = cv2.VideoCapture(video_path)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, source_frame)
+                        ret, frame = cap.read()
+                        cap.release()
+                        
+                        if ret and frame is not None:
+                            x, y, w, h = source_crop
+                            left_img = frame[y:y+h, x:x+w]
+                            left_img = cv2.cvtColor(left_img, cv2.COLOR_BGR2RGB)
+                
+                if left_img is None:
+                    left_img = np.full((region_size, region_size, 3), 64, dtype=np.uint8)
+                
+                # Remember original size for scaling
+                orig_h, orig_w = left_img.shape[:2]
+                
+                # Resize to region_size
+                left_img = cv2.resize(left_img, (region_size, region_size), interpolation=cv2.INTER_LINEAR)
+                
+                # Draw green polygon or mask overlay depending on mode
+                left_img_display = left_img.copy()
+                
+                if patch_offset and source_crop:
+                    patch_x, patch_y, patch_w, patch_h = patch_offset
+                    step3_params = patch.get("step3_params", {})
+                    
+                    rotation_angle = step3_params.get("rotation", 0)
+                    zoom_factor = step3_params.get("zoom", 1.0)
+                    stretch_x = step3_params.get("stretch_x", 1.0)
+                    stretch_y = step3_params.get("stretch_y", 1.0)
+                    
+                    center_x, center_y = patch_w / 2, patch_h / 2
+                    rad = np.deg2rad(rotation_angle)
+                    cos_a = np.cos(rad)
+                    sin_a = np.sin(rad)
+                    sx = zoom_factor * stretch_x
+                    sy = zoom_factor * stretch_y
+                    
+                    M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
+                    M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
+                    M_scale = np.array([[sx, 0, 0], [0, sy, 0], [0, 0, 1]], dtype=np.float32)
+                    M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
+                    
+                    M_forward = M_back @ M_scale @ M_rot @ M_center
+                    M_inverse = np.linalg.inv(M_forward)
+                    
+                    crop_x_offset = (patch_w - 128) // 2
+                    crop_y_offset = (patch_h - 128) // 2
+                    
+                    output_corners = np.array([
+                        [crop_x_offset, crop_y_offset, 1],
+                        [crop_x_offset + 128, crop_y_offset, 1],
+                        [crop_x_offset + 128, crop_y_offset + 128, 1],
+                        [crop_x_offset, crop_y_offset + 128, 1]
+                    ], dtype=np.float32)
+                    
+                    source_corners = (M_inverse @ output_corners.T).T[:, :2]
+                    source_corners[:, 0] += patch_x
+                    source_corners[:, 1] += patch_y
+                    
+                    _, _, crop_w, crop_h = source_crop
+                    scale_x_display = region_size / crop_w
+                    scale_y_display = region_size / crop_h
+                    
+                    display_corners = source_corners.copy()
+                    display_corners[:, 0] *= scale_x_display
+                    display_corners[:, 1] *= scale_y_display
+                    display_corners = display_corners.astype(np.int32)
+                    
+                    if self.show_gen_mask:
+                        # Show source mask overlay on region
+                        source_mask = patch.get("source_mask")
+                        if source_mask is not None:
+                            # Resize mask to match region_size
+                            mask_resized = cv2.resize(source_mask, (region_size, region_size), interpolation=cv2.INTER_LINEAR)
+                            # Blend mask with image (white lines on image)
+                            mask_gray = cv2.cvtColor(mask_resized, cv2.COLOR_RGB2GRAY) if len(mask_resized.shape) == 3 else mask_resized
+                            left_img_display[mask_gray > 128] = [255, 255, 255]
+                        # Also draw the green polygon
+                        cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                    else:
+                        # Just draw green polygon
+                        cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                
+                # Place region image
+                grid_img[cell_y:cell_y+region_size, cell_x:cell_x+region_size] = left_img_display
+                
+                # ===== RIGHT: Final 128x128 training sample =====
+                if self.show_gen_mask:
+                    right_img = patch.get("mask")
+                    if right_img is None:
+                        right_img = np.full((patch_size, patch_size, 3), 64, dtype=np.uint8)
+                    if len(right_img.shape) == 2:
+                        right_img = cv2.cvtColor(right_img, cv2.COLOR_GRAY2RGB)
+                else:
+                    right_img = patch.get("step5_final")
+                    if right_img is None:
+                        right_img = np.full((patch_size, patch_size, 3), 64, dtype=np.uint8)
+                
+                rh, rw = right_img.shape[:2]
+                if rh != patch_size or rw != patch_size:
+                    right_img = cv2.resize(right_img, (patch_size, patch_size), interpolation=cv2.INTER_LINEAR)
+                
+                # Place patch image (centered vertically)
+                right_x = cell_x + region_size + padding
+                right_y_offset = (region_size - patch_size) // 2
+                grid_img[cell_y + right_y_offset:cell_y + right_y_offset + patch_size,
+                         right_x:right_x + patch_size] = right_img
         
         # Display the grid
         self._draw_generated_image(grid_img)
@@ -1425,7 +1560,7 @@ class RandomPatchViewer:
         self.train_log.config(state='disabled')
     
     def generate_training_samples(self, num_samples):
-        """Generate augmented training samples (optimized)."""
+        """Generate augmented training samples using the unified generation function."""
         samples = []
         labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
         
@@ -1435,21 +1570,20 @@ class RandomPatchViewer:
         self.log_training(f"Generating {num_samples} training samples from {len(labeled_samples)} labeled regions...")
         
         # Pre-load all frames into memory for speed
+        # Key by (video_path, frame_idx) to handle multiple frames from same video
         frame_cache = {}
         self.log_training("Pre-loading frames...")
         for sample in labeled_samples:
-            if sample.video_path not in frame_cache:
+            cache_key = (sample.video_path, sample.frame_idx)
+            if cache_key not in frame_cache:
                 cap = cv2.VideoCapture(sample.video_path)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
                 ret, frame = cap.read()
                 cap.release()
                 if ret and frame is not None:
-                    frame_cache[sample.video_path] = (sample.frame_idx, frame)
+                    frame_cache[cache_key] = frame
         
-        self.log_training(f"Cached frames, generating {num_samples} samples...")
-        
-        buffer_factor = 1.8
-        initial_size = int(128 * buffer_factor)
+        self.log_training(f"Cached {len(frame_cache)} frames, generating {num_samples} samples...")
         
         for i in range(num_samples):
             if i % 500 == 0:
@@ -1458,77 +1592,17 @@ class RandomPatchViewer:
                 self.root.update_idletasks()
             
             sample = random.choice(labeled_samples)
+            cache_key = (sample.video_path, sample.frame_idx)
             
             # Get cached frame
-            if sample.video_path not in frame_cache:
+            if cache_key not in frame_cache:
                 continue
             
-            _, frame = frame_cache[sample.video_path]
+            frame = frame_cache[cache_key]
             
-            x, y, w, h = sample.crop_rect
-            crop = frame[y:y+h, x:x+w]
-            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            
-            # Random augmentation parameters
-            zoom_factor = random.uniform(0.95, 1.05)
-            rotation_angle = random.uniform(-180, 180)
-            stretch_x = random.uniform(0.9, 1.1)
-            stretch_y = random.uniform(0.9, 1.1)
-            
-            if w < initial_size or h < initial_size:
-                patch_x, patch_y = 0, 0
-                patch_w, patch_h = w, h
-            else:
-                patch_x = random.randint(0, w - initial_size)
-                patch_y = random.randint(0, h - initial_size)
-                patch_w, patch_h = initial_size, initial_size
-            
-            large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-            
-            # Build transformation matrix
-            center_x, center_y = patch_w / 2, patch_h / 2
-            
-            rad = np.deg2rad(rotation_angle)
-            cos_a = np.cos(rad)
-            sin_a = np.sin(rad)
-            
-            scale_x = zoom_factor * stretch_x
-            scale_y = zoom_factor * stretch_y
-            
-            # Combined transform: translate → rotate → scale → translate back
-            M = np.array([
-                [scale_x * cos_a, -scale_x * sin_a, center_x - scale_x * cos_a * center_x + scale_x * sin_a * center_y],
-                [scale_y * sin_a, scale_y * cos_a, center_y - scale_y * sin_a * center_x - scale_y * cos_a * center_y]
-            ], dtype=np.float32)
-            
-            transformed = cv2.warpAffine(large_patch, M, (patch_w, patch_h), 
-                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-            
-            crop_x = (patch_w - 128) // 2
-            crop_y = (patch_h - 128) // 2
-            patch_img_aug = transformed[crop_y:crop_y+128, crop_x:crop_x+128]
-            
-            # Create mask
-            mask_large = np.zeros((patch_h, patch_w), dtype=np.uint8)
-            
-            for line in sample.lines:
-                p1_x = line.start[0] - patch_x
-                p1_y = line.start[1] - patch_y
-                p2_x = line.end[0] - patch_x
-                p2_y = line.end[1] - patch_y
-                
-                # Apply transformation directly to line points
-                p1_t = np.array([M[0, 0] * p1_x + M[0, 1] * p1_y + M[0, 2], 
-                                 M[1, 0] * p1_x + M[1, 1] * p1_y + M[1, 2]], dtype=np.int32)
-                p2_t = np.array([M[0, 0] * p2_x + M[0, 1] * p2_y + M[0, 2],
-                                 M[1, 0] * p2_x + M[1, 1] * p2_y + M[1, 2]], dtype=np.int32)
-                
-                cv2.line(mask_large, tuple(p1_t), tuple(p2_t), 255, thickness=3)
-            
-            mask = mask_large[crop_y:crop_y+128, crop_x:crop_x+128]
-            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
-            
-            samples.append({'image': patch_img_aug, 'mask': mask_rgb})
+            # Use unified function (without visualization data for speed)
+            patch_data = self._generate_single_patch(sample, frame, include_visualization=False)
+            samples.append(patch_data)
         
         self.log_training(f"Generated {len(samples)} samples")
         return samples
