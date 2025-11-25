@@ -1643,7 +1643,9 @@ class RandomPatchViewer:
                 log_msg = f"Epoch {epoch+1}/{epochs} - Train: {train_loss:.4f}, Val: {val_loss:.4f}"
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    log_msg += " (Best)"
+                    log_msg += " (Best - Saved)"
+                    # Auto-save best model
+                    torch.save(self.model.state_dict(), "line_detector_unet_best.pth")
                 
                 self.log_training(log_msg)
                 self.root.update_idletasks()
