@@ -605,7 +605,7 @@ class RandomPatchViewer:
         self.btn_train.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
         
         # Graph (Right)
-        graph_frame = ttk.LabelFrame(top_container, text="Loss History (Blue: Train, Red: Val)", padding=10)
+        graph_frame = ttk.LabelFrame(top_container, text="Validation Loss", padding=10)
         graph_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.loss_canvas = tk.Canvas(graph_frame, bg="white", height=200)
@@ -656,7 +656,7 @@ class RandomPatchViewer:
         btn_save_model.pack(fill=tk.X, pady=5)
 
     def draw_loss_graph(self):
-        """Draw the training and validation loss graph."""
+        """Draw the validation loss graph."""
         if not hasattr(self, 'loss_canvas'):
             return
             
@@ -680,25 +680,21 @@ class RandomPatchViewer:
         canvas.create_line(padding_left, h - padding_bottom, w - padding_right, h - padding_bottom, fill="black", width=2)  # X axis
         canvas.create_line(padding_left, h - padding_bottom, padding_left, padding_top, fill="black", width=2)  # Y axis
         
-        train_loss = self.loss_history['train']
         val_loss = self.loss_history['val']
         
-        if not train_loss:
-            canvas.create_text(w/2, h/2, text="No training data yet", fill="gray")
+        if not val_loss:
+            canvas.create_text(w/2, h/2, text="No validation data yet", fill="gray")
             return
             
         # Find max loss for scaling
-        max_train = max([x[1] for x in train_loss]) if train_loss else 0
         max_val = max([x[1] for x in val_loss]) if val_loss else 0
-        max_loss = max(max_train, max_val)
+        max_loss = max_val
         
         if max_loss == 0: max_loss = 1.0
         max_loss = max_loss * 1.1  # Add some headroom
         
         # Determine the maximum epoch reached so far in the data
         max_epoch_reached = 0
-        if train_loss:
-            max_epoch_reached = max(max_epoch_reached, train_loss[-1][0])
         if val_loss:
             max_epoch_reached = max(max_epoch_reached, val_loss[-1][0])
             
@@ -736,20 +732,6 @@ class RandomPatchViewer:
                 label = f"{loss_val:.1f}"
             canvas.create_text(padding_left - 6, y, text=label, fill="black", font=("TkDefaultFont", 8), anchor="e")
         
-        # Draw train loss (Blue)
-        if train_loss:
-            points_train = []
-            for ep, loss in train_loss:
-                x, y = to_canvas(ep, loss)
-                points_train.append(x)
-                points_train.append(y)
-                # Only draw points if there aren't too many
-                if len(train_loss) < 50:
-                    canvas.create_oval(x-1, y-1, x+1, y+1, fill="blue", outline="blue")
-                
-            if len(points_train) >= 4:
-                canvas.create_line(points_train, fill="blue", width=1, smooth=False)
-            
         # Draw val loss (Red)
         if val_loss:
             points_val = []
@@ -765,15 +747,13 @@ class RandomPatchViewer:
         
         # Draw axis labels
         canvas.create_text((padding_left + w - padding_right) / 2, h - 8, text="Epoch", fill="black", font=("TkDefaultFont", 9))
-        canvas.create_text(10, (padding_top + h - padding_bottom) / 2, text="Loss", fill="black", font=("TkDefaultFont", 9), angle=90)
+        canvas.create_text(10, (padding_top + h - padding_bottom) / 2, text="Validation Loss", fill="black", font=("TkDefaultFont", 9), angle=90)
         
-        # Show current values (latest train loss and epoch)
-        if train_loss:
-            current_epoch = train_loss[-1][0]
-            current_loss = train_loss[-1][1]
-            status_text = f"Epoch: {current_epoch:.1f}  Train Loss: {current_loss:.4f}"
-            if val_loss:
-                status_text += f"  Val Loss: {val_loss[-1][1]:.4f}"
+        # Show current values (latest validation loss and epoch)
+        if val_loss:
+            current_epoch = val_loss[-1][0]
+            current_loss = val_loss[-1][1]
+            status_text = f"Epoch: {current_epoch:.1f}  Val Loss: {current_loss:.4f}"
             canvas.create_text(w - padding_right, padding_top - 5, text=status_text, 
                              fill="black", font=("TkDefaultFont", 9, "bold"), anchor="ne")
     
