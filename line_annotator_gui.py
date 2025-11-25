@@ -1811,16 +1811,22 @@ class RandomPatchViewer:
             train_dataset = LineDataset(train_samples)
             val_dataset = LineDataset(val_samples)
             
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+            # Use parallel workers and pin_memory for faster data loading
+            num_workers = 0 if self.device.type == 'cuda' else 0  # Windows compatibility
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                                      num_workers=num_workers, pin_memory=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                                    num_workers=num_workers, pin_memory=True)
             
             # Initialize model with pretrained MobileNetV2 backbone
             self.log_training("Loading MobileNetV2 backbone (pretrained on ImageNet)...")
             self.model = MobileUNet(pretrained=True).to(self.device)
-            optimizer = optim.Adam(self.model.parameters(), lr=lr)
+            optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
             criterion = nn.BCELoss()
             
             self.log_training("Using combined BCELoss (0.5) + DiceLoss (0.5)")
+            self.log_training("Using CosineAnnealingLR scheduler + weight_decay=1e-4")
             
             self.log_training("Starting training...")
             
@@ -1899,6 +1905,9 @@ class RandomPatchViewer:
                         val_loss += loss.item()
                 
                 val_loss /= len(val_loader)
+                
+                # Step the learning rate scheduler
+                scheduler.step()
                 
                 # Update UI
                 progress = 50 + (epoch / epochs) * 50
