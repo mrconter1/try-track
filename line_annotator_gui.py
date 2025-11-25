@@ -327,7 +327,6 @@ class RandomPatchViewer:
         self.root.bind("<m>", lambda e: self.on_toggle_mask_key())
         self.root.bind("<l>", lambda e: self.toggle_lines())
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
-        self.root.bind("<Control-s>", lambda e: self.save_annotations())
         self.root.bind("<Control-z>", lambda e: self.undo_last_action())
         self.root.bind("<r>", lambda e: self.on_regenerate_key())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -497,9 +496,6 @@ class RandomPatchViewer:
         
         self.btn_toggle_mask = ttk.Button(nav_frame, text="Show Mask (M)", command=self.toggle_mask)
         self.btn_toggle_mask.pack(fill=tk.X, pady=5)
-        
-        btn_save = ttk.Button(nav_frame, text="Save (Ctrl+S)", command=self.save_annotations)
-        btn_save.pack(fill=tk.X, pady=5)
 
     
     def _build_data_generation_tab(self):
@@ -991,7 +987,7 @@ class RandomPatchViewer:
             self._push_undo_state("Delete line")
             del self.lines[self.selected_line_idx]
             self.selected_line_idx = None
-            self._save_current_lines()  # Save after deletion
+            self.save_annotations(show_message=False)  # Auto-save to disk
             self.update_statistics()  # Update stats after deletion
             self.update_lines_list()
             self.draw_image()
@@ -1023,7 +1019,7 @@ class RandomPatchViewer:
         self.is_dragging = False
         self.editing_point = None
         
-        self._save_current_lines()
+        self.save_annotations(show_message=False)  # Auto-save to disk
         self.update_statistics()
         self.update_lines_list()
         self.draw_image()
@@ -1862,7 +1858,7 @@ class RandomPatchViewer:
             self.lines[line_idx][point_idx] = (img_x, img_y)
             self.selected_line_idx = line_idx  # Select the edited line
             self.editing_point = None
-            self._save_current_lines()  # Save after editing
+            self.save_annotations(show_message=False)  # Auto-save after editing
             self.update_lines_list()
         else:
             # No clamping - allow points outside image bounds
@@ -1878,7 +1874,7 @@ class RandomPatchViewer:
                 self.selected_line_idx = len(self.lines) - 1  # Select the newly created line
                 self.first_point = None
                 self.current_point = None
-                self._save_current_lines()  # Save after creating new line
+                self.save_annotations(show_message=False)  # Auto-save after creating new line
                 # Update the lines list
                 self.update_lines_list()
         
