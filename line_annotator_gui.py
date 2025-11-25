@@ -19,6 +19,13 @@ import torchvision.models as models
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Try to import Intel Extension for PyTorch (IPEX)
+try:
+    import intel_extension_for_pytorch as ipex
+    IPEX_AVAILABLE = True
+except ImportError:
+    IPEX_AVAILABLE = False
+
 @dataclass
 class Line:
     """Represents a line annotation with start and end points (crop-relative coords)."""
@@ -315,7 +322,13 @@ class RandomPatchViewer:
         
         # Training state
         self.model = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Device priority: CUDA > Intel XPU (IPEX) > CPU
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif IPEX_AVAILABLE and hasattr(torch, 'xpu') and torch.xpu.is_available():
+            self.device = torch.device('xpu')
+        else:
+            self.device = torch.device('cpu')
         self.is_training = False
         self.training_samples = []
         self.loss_history = {'train': [], 'val': []}
@@ -577,7 +590,7 @@ class RandomPatchViewer:
         
         # Number of samples
         ttk.Label(controls_frame, text="Training Samples:").grid(row=0, column=0, sticky="w", pady=5)
-        self.train_samples_var = tk.IntVar(value=25000)
+        self.train_samples_var = tk.IntVar(value=10000)
         samples_spinbox = ttk.Spinbox(controls_frame, from_=100, to=100000, increment=1000, 
                                        textvariable=self.train_samples_var, width=10)
         samples_spinbox.grid(row=0, column=1, sticky="w", pady=5, padx=(10, 0))
@@ -591,7 +604,7 @@ class RandomPatchViewer:
         
         # Batch size
         ttk.Label(controls_frame, text="Batch Size:").grid(row=2, column=0, sticky="w", pady=5)
-        self.batch_size_var = tk.IntVar(value=16)
+        self.batch_size_var = tk.IntVar(value=32)
         batch_spinbox = ttk.Spinbox(controls_frame, from_=4, to=64, increment=4, 
                                      textvariable=self.batch_size_var, width=10)
         batch_spinbox.grid(row=2, column=1, sticky="w", pady=5, padx=(10, 0))
