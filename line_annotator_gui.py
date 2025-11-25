@@ -1164,8 +1164,17 @@ class RandomPatchViewer:
         stretch_x = random.uniform(0.9, 1.1)
         stretch_y = random.uniform(0.9, 1.1)
         
+        # Perspective augmentation - random corner displacement (as fraction of size)
+        perspective_strength = 0.15  # Max displacement as fraction of patch size
+        perspective_corners = [
+            (random.uniform(-perspective_strength, perspective_strength),
+             random.uniform(-perspective_strength, perspective_strength))
+            for _ in range(4)
+        ]
+        
         # Buffer factor to ensure 128x128 is fully filled after transformation
-        buffer_factor = 1.8
+        # Increased to handle zoom + perspective + rotation
+        buffer_factor = 2.5
         initial_size = int(128 * buffer_factor)
         
         # Random location for the larger initial patch
@@ -1190,35 +1199,95 @@ class RandomPatchViewer:
             p2_patch = (int(p2_x - patch_x), int(p2_y - patch_y))
             cv2.line(mask_large, p1_patch, p2_patch, (255, 255, 255), thickness=3)
         
-        # Build transformation matrix
-        center_x, center_y = patch_w / 2, patch_h / 2
+        # Try to find a valid transformation (retry if source region goes out of bounds)
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            # Regenerate perspective for retries (keep other params)
+            if attempt > 0:
+                perspective_corners = [
+                    (random.uniform(-perspective_strength, perspective_strength),
+                     random.uniform(-perspective_strength, perspective_strength))
+                    for _ in range(4)
+                ]
+            
+            # Build transformation using homography (perspective) transform
+            center_x, center_y = patch_w / 2, patch_h / 2
+            
+            rad = np.deg2rad(rotation_angle)
+            cos_a = np.cos(rad)
+            sin_a = np.sin(rad)
+            
+            scale_x = zoom_factor * stretch_x
+            scale_y = zoom_factor * stretch_y
+            
+            # Define source corners (corners of the large patch)
+            src_corners = np.array([
+                [0, 0],
+                [patch_w, 0],
+                [patch_w, patch_h],
+                [0, patch_h]
+            ], dtype=np.float32)
+            
+            # Apply affine transform (rotation + scale) to get intermediate corners
+            # Transform around center
+            dst_corners = []
+            for i, (sx, sy) in enumerate(src_corners):
+                # Translate to center
+                x = sx - center_x
+                y = sy - center_y
+                # Rotate
+                xr = x * cos_a - y * sin_a
+                yr = x * sin_a + y * cos_a
+                # Scale
+                xs = xr * scale_x
+                ys = yr * scale_y
+                # Translate back
+                xf = xs + center_x
+                yf = ys + center_y
+                # Apply perspective displacement
+                px, py = perspective_corners[i]
+                xf += px * patch_w
+                yf += py * patch_h
+                dst_corners.append([xf, yf])
+            
+            dst_corners = np.array(dst_corners, dtype=np.float32)
+            
+            # Compute homography matrix from source to destination
+            H = cv2.getPerspectiveTransform(src_corners, dst_corners)
+            
+            # Check if the center 128x128 output region maps to valid source pixels
+            H_inverse = np.linalg.inv(H)
+            crop_x_offset = (patch_w - 128) // 2
+            crop_y_offset = (patch_h - 128) // 2
+            
+            # Check all 4 corners of the output region
+            output_corners = np.array([
+                [crop_x_offset, crop_y_offset],
+                [crop_x_offset + 128, crop_y_offset],
+                [crop_x_offset + 128, crop_y_offset + 128],
+                [crop_x_offset, crop_y_offset + 128]
+            ], dtype=np.float32).reshape(-1, 1, 2)
+            
+            source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+            
+            # Check if all source corners are within bounds (with small margin)
+            margin = 2
+            valid = True
+            for sx, sy in source_corners_check:
+                if sx < margin or sx > patch_w - margin or sy < margin or sy > patch_h - margin:
+                    valid = False
+                    break
+            
+            if valid:
+                break
         
-        rad = np.deg2rad(rotation_angle)
-        cos_a = np.cos(rad)
-        sin_a = np.sin(rad)
-        
-        scale_x = zoom_factor * stretch_x
-        scale_y = zoom_factor * stretch_y
-        
-        # Build transformation matrices
-        M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
-        M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
-        M_scale = np.array([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]], dtype=np.float32)
-        M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
-        
-        # Combine: translate to center → rotate → scale → translate back
-        M_combined = M_back @ M_scale @ M_rot @ M_center
-        M_2x3 = M_combined[:2, :]
-        
-        # Apply the SAME transformation to both image and mask
-        transformed_img = cv2.warpAffine(large_patch, M_2x3, (patch_w, patch_h), 
-                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-        transformed_mask = cv2.warpAffine(mask_large, M_2x3, (patch_w, patch_h), 
-                                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        # Apply the SAME perspective transformation to both image and mask
+        transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), 
+                                              borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        transformed_mask = cv2.warpPerspective(mask_large, H, (patch_w, patch_h), 
+                                               borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         
         # Crop center 128x128 from both
-        crop_x_offset = (patch_w - 128) // 2
-        crop_y_offset = (patch_h - 128) // 2
         final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         final_mask = transformed_mask[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         
@@ -1245,8 +1314,10 @@ class RandomPatchViewer:
                     'rotation': rotation_angle,
                     'zoom': zoom_factor,
                     'stretch_x': stretch_x,
-                    'stretch_y': stretch_y
+                    'stretch_y': stretch_y,
+                    'perspective': perspective_corners
                 },
+                'homography': H,  # Store the full homography matrix
                 'step5_final': final_image
             })
         
@@ -1402,50 +1473,43 @@ class RandomPatchViewer:
                 
                 if patch_offset and source_crop:
                     patch_x, patch_y, patch_w, patch_h = patch_offset
-                    step3_params = patch.get("step3_params", {})
                     
-                    rotation_angle = step3_params.get("rotation", 0)
-                    zoom_factor = step3_params.get("zoom", 1.0)
-                    stretch_x = step3_params.get("stretch_x", 1.0)
-                    stretch_y = step3_params.get("stretch_y", 1.0)
+                    # Get the homography matrix (or compute from params if not available)
+                    H = patch.get("homography")
                     
-                    center_x, center_y = patch_w / 2, patch_h / 2
-                    rad = np.deg2rad(rotation_angle)
-                    cos_a = np.cos(rad)
-                    sin_a = np.sin(rad)
-                    sx = zoom_factor * stretch_x
-                    sy = zoom_factor * stretch_y
-                    
-                    M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
-                    M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
-                    M_scale = np.array([[sx, 0, 0], [0, sy, 0], [0, 0, 1]], dtype=np.float32)
-                    M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
-                    
-                    M_forward = M_back @ M_scale @ M_rot @ M_center
-                    M_inverse = np.linalg.inv(M_forward)
-                    
-                    crop_x_offset = (patch_w - 128) // 2
-                    crop_y_offset = (patch_h - 128) // 2
-                    
-                    output_corners = np.array([
-                        [crop_x_offset, crop_y_offset, 1],
-                        [crop_x_offset + 128, crop_y_offset, 1],
-                        [crop_x_offset + 128, crop_y_offset + 128, 1],
-                        [crop_x_offset, crop_y_offset + 128, 1]
-                    ], dtype=np.float32)
-                    
-                    source_corners = (M_inverse @ output_corners.T).T[:, :2]
-                    source_corners[:, 0] += patch_x
-                    source_corners[:, 1] += patch_y
-                    
-                    _, _, crop_w, crop_h = source_crop
-                    scale_x_display = region_size / crop_w
-                    scale_y_display = region_size / crop_h
-                    
-                    display_corners = source_corners.copy()
-                    display_corners[:, 0] *= scale_x_display
-                    display_corners[:, 1] *= scale_y_display
-                    display_corners = display_corners.astype(np.int32)
+                    if H is not None:
+                        # Use inverse homography to map output corners back to source
+                        H_inverse = np.linalg.inv(H)
+                        
+                        crop_x_offset = (patch_w - 128) // 2
+                        crop_y_offset = (patch_h - 128) // 2
+                        
+                        # Output corners in homogeneous coordinates
+                        output_corners = np.array([
+                            [crop_x_offset, crop_y_offset],
+                            [crop_x_offset + 128, crop_y_offset],
+                            [crop_x_offset + 128, crop_y_offset + 128],
+                            [crop_x_offset, crop_y_offset + 128]
+                        ], dtype=np.float32).reshape(-1, 1, 2)
+                        
+                        # Apply inverse homography
+                        source_corners = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+                        
+                        # Translate to full crop coordinates
+                        source_corners[:, 0] += patch_x
+                        source_corners[:, 1] += patch_y
+                        
+                        _, _, crop_w, crop_h = source_crop
+                        scale_x_display = region_size / crop_w
+                        scale_y_display = region_size / crop_h
+                        
+                        display_corners = source_corners.copy()
+                        display_corners[:, 0] *= scale_x_display
+                        display_corners[:, 1] *= scale_y_display
+                        display_corners = display_corners.astype(np.int32)
+                    else:
+                        # Fallback if no homography available
+                        display_corners = None
                     
                     if self.show_gen_mask:
                         # Show source mask overlay on region
@@ -1456,11 +1520,13 @@ class RandomPatchViewer:
                             # Blend mask with image (white lines on image)
                             mask_gray = cv2.cvtColor(mask_resized, cv2.COLOR_RGB2GRAY) if len(mask_resized.shape) == 3 else mask_resized
                             left_img_display[mask_gray > 128] = [255, 255, 255]
-                        # Also draw the green polygon
-                        cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                        # Also draw the green polygon (now with perspective!)
+                        if display_corners is not None:
+                            cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
                     else:
-                        # Just draw green polygon
-                        cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                        # Just draw green polygon (now with perspective!)
+                        if display_corners is not None:
+                            cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
                 
                 # Place region image
                 grid_img[cell_y:cell_y+region_size, cell_x:cell_x+region_size] = left_img_display
