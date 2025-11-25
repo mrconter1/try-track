@@ -1238,7 +1238,7 @@ class RandomPatchViewer:
         self.train_log.config(state='disabled')
     
     def generate_training_samples(self, num_samples):
-        """Generate augmented training samples."""
+        """Generate augmented training samples (optimized)."""
         samples = []
         labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
         
@@ -1247,33 +1247,46 @@ class RandomPatchViewer:
         
         self.log_training(f"Generating {num_samples} training samples from {len(labeled_samples)} labeled regions...")
         
+        # Pre-load all frames into memory for speed
+        frame_cache = {}
+        self.log_training("Pre-loading frames...")
+        for sample in labeled_samples:
+            if sample.video_path not in frame_cache:
+                cap = cv2.VideoCapture(sample.video_path)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                if ret and frame is not None:
+                    frame_cache[sample.video_path] = (sample.frame_idx, frame)
+        
+        self.log_training(f"Cached frames, generating {num_samples} samples...")
+        
+        buffer_factor = 1.8
+        initial_size = int(128 * buffer_factor)
+        
         for i in range(num_samples):
-            if i % 100 == 0:
-                progress = (i / num_samples) * 50  # First 50% is generation
+            if i % 500 == 0:
+                progress = (i / num_samples) * 50
                 self.progress_var.set(progress)
                 self.root.update_idletasks()
             
             sample = random.choice(labeled_samples)
             
-            cap = cv2.VideoCapture(sample.video_path)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
-            ret, frame = cap.read()
-            cap.release()
-            
-            if not ret or frame is None:
+            # Get cached frame
+            if sample.video_path not in frame_cache:
                 continue
+            
+            _, frame = frame_cache[sample.video_path]
             
             x, y, w, h = sample.crop_rect
             crop = frame[y:y+h, x:x+w]
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             
-            # Apply same augmentation logic as in generate_training_patches
+            # Random augmentation parameters
             zoom_factor = random.uniform(0.95, 1.05)
             rotation_angle = random.uniform(-180, 180)
             stretch_x = random.uniform(0.9, 1.1)
             stretch_y = random.uniform(0.9, 1.1)
-            
-            buffer_factor = 1.8
-            initial_size = int(128 * buffer_factor)
             
             if w < initial_size or h < initial_size:
                 patch_x, patch_y = 0, 0
@@ -1283,54 +1296,52 @@ class RandomPatchViewer:
                 patch_y = random.randint(0, h - initial_size)
                 patch_w, patch_h = initial_size, initial_size
             
-            large_patch = crop[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-            large_patch_rgb = cv2.cvtColor(large_patch, cv2.COLOR_BGR2RGB)
+            large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
             
+            # Build transformation matrix
             center_x, center_y = patch_w / 2, patch_h / 2
-            
-            M_center = np.array([[1, 0, -center_x], [0, 1, -center_y], [0, 0, 1]], dtype=np.float32)
             
             rad = np.deg2rad(rotation_angle)
             cos_a = np.cos(rad)
             sin_a = np.sin(rad)
-            M_rot = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]], dtype=np.float32)
             
             scale_x = zoom_factor * stretch_x
             scale_y = zoom_factor * stretch_y
-            M_scale = np.array([[scale_x, 0, 0], [0, scale_y, 0], [0, 0, 1]], dtype=np.float32)
             
-            M_back = np.array([[1, 0, center_x], [0, 1, center_y], [0, 0, 1]], dtype=np.float32)
+            # Combined transform: translate → rotate → scale → translate back
+            M = np.array([
+                [scale_x * cos_a, -scale_x * sin_a, center_x - scale_x * cos_a * center_x + scale_x * sin_a * center_y],
+                [scale_y * sin_a, scale_y * cos_a, center_y - scale_y * sin_a * center_x - scale_y * cos_a * center_y]
+            ], dtype=np.float32)
             
-            M_combined = M_back @ M_scale @ M_rot @ M_center
-            M_2x3 = M_combined[:2, :]
-            
-            transformed = cv2.warpAffine(large_patch_rgb, M_2x3, (patch_w, patch_h), 
+            transformed = cv2.warpAffine(large_patch, M, (patch_w, patch_h), 
                                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
             
             crop_x = (patch_w - 128) // 2
             crop_y = (patch_h - 128) // 2
             patch_img_aug = transformed[crop_y:crop_y+128, crop_x:crop_x+128]
             
-            mask_large = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
+            # Create mask
+            mask_large = np.zeros((patch_h, patch_w), dtype=np.uint8)
             
             for line in sample.lines:
-                p1_x, p1_y = line.start
-                p2_x, p2_y = line.end
+                p1_x = line.start[0] - patch_x
+                p1_y = line.start[1] - patch_y
+                p2_x = line.end[0] - patch_x
+                p2_y = line.end[1] - patch_y
                 
-                p1_patch = np.array([p1_x - patch_x, p1_y - patch_y, 1], dtype=np.float32)
-                p2_patch = np.array([p2_x - patch_x, p2_y - patch_y, 1], dtype=np.float32)
+                # Apply transformation directly to line points
+                p1_t = np.array([M[0, 0] * p1_x + M[0, 1] * p1_y + M[0, 2], 
+                                 M[1, 0] * p1_x + M[1, 1] * p1_y + M[1, 2]], dtype=np.int32)
+                p2_t = np.array([M[0, 0] * p2_x + M[0, 1] * p2_y + M[0, 2],
+                                 M[1, 0] * p2_x + M[1, 1] * p2_y + M[1, 2]], dtype=np.int32)
                 
-                p1_transformed = M_combined @ p1_patch
-                p2_transformed = M_combined @ p2_patch
-                
-                p1_final = (int(p1_transformed[0]), int(p1_transformed[1]))
-                p2_final = (int(p2_transformed[0]), int(p2_transformed[1]))
-                
-                cv2.line(mask_large, p1_final, p2_final, (255, 255, 255), thickness=3)
+                cv2.line(mask_large, tuple(p1_t), tuple(p2_t), 255, thickness=3)
             
             mask = mask_large[crop_y:crop_y+128, crop_x:crop_x+128]
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
             
-            samples.append({'image': patch_img_aug, 'mask': mask})
+            samples.append({'image': patch_img_aug, 'mask': mask_rgb})
         
         self.log_training(f"Generated {len(samples)} samples")
         return samples
