@@ -1245,7 +1245,7 @@ class RandomPatchViewer:
                 # Scale
                 xs = xr * scale_x
                 ys = yr * scale_y
-                # Translate back
+            # Translate back
                 xf = xs + center_x
                 yf = ys + center_y
                 # Apply perspective displacement
@@ -1289,8 +1289,8 @@ class RandomPatchViewer:
         transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), 
                                               borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         transformed_mask = cv2.warpPerspective(mask_large, H, (patch_w, patch_h), 
-                                               borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-        
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            
         # Crop center 128x128 from both
         final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         final_mask = transformed_mask[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
@@ -1302,6 +1302,37 @@ class RandomPatchViewer:
         if flip_vertical:
             final_image = cv2.flip(final_image, 0)  # 0 = vertical flip
             final_mask = cv2.flip(final_mask, 0)
+        
+        # Apply traditional image augmentations (to image only, not mask)
+        final_image = final_image.astype(np.float32)
+        
+        # Brightness adjustment (±30%)
+        brightness = random.uniform(-0.3, 0.3)
+        final_image = final_image + brightness * 255
+        
+        # Contrast adjustment (0.7 to 1.3)
+        contrast = random.uniform(0.7, 1.3)
+        mean = np.mean(final_image)
+        final_image = (final_image - mean) * contrast + mean
+        
+        # Gamma correction (0.7 to 1.5)
+        gamma = random.uniform(0.7, 1.5)
+        final_image = np.clip(final_image, 0, 255)
+        final_image = 255.0 * np.power(final_image / 255.0, gamma)
+        
+        # Gaussian noise (σ = 0 to 25)
+        noise_sigma = random.uniform(0, 25)
+        if noise_sigma > 0:
+            noise = np.random.normal(0, noise_sigma, final_image.shape)
+            final_image = final_image + noise
+        
+        # Gaussian blur (σ = 0 to 1.5, apply with 50% probability)
+        if random.random() < 0.5:
+            blur_sigma = random.uniform(0.5, 1.5)
+            final_image = cv2.GaussianBlur(final_image.astype(np.float32), (0, 0), blur_sigma)
+        
+        # Clip and convert back to uint8
+        final_image = np.clip(final_image, 0, 255).astype(np.uint8)
         
         result = {
             'image': final_image,
@@ -1525,43 +1556,43 @@ class RandomPatchViewer:
                         # Fallback if no homography available
                         display_corners = None
                     
-                    if self.show_gen_mask:
-                        # Show source mask overlay on region
-                        source_mask = patch.get("source_mask")
-                        if source_mask is not None:
-                            # Resize mask to match region_size
-                            mask_resized = cv2.resize(source_mask, (region_size, region_size), interpolation=cv2.INTER_LINEAR)
-                            # Blend mask with image (white lines on image)
-                            mask_gray = cv2.cvtColor(mask_resized, cv2.COLOR_RGB2GRAY) if len(mask_resized.shape) == 3 else mask_resized
-                            left_img_display[mask_gray > 128] = [255, 255, 255]
-                        # Also draw the green polygon (now with perspective!)
-                        if display_corners is not None:
-                            cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
-                    else:
-                        # Just draw green polygon (now with perspective!)
-                        if display_corners is not None:
-                            cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
-                    
-                    # Draw flip indicators
-                    step3_params = patch.get("step3_params", {})
-                    flip_h = step3_params.get("flip_h", False)
-                    flip_v = step3_params.get("flip_v", False)
-                    
-                    if flip_h or flip_v:
-                        # Draw flip arrows/indicators at the center of the polygon
-                        if display_corners is not None:
-                            cx = int(np.mean(display_corners[:, 0]))
-                            cy = int(np.mean(display_corners[:, 1]))
-                            
-                            if flip_h:
-                                # Draw horizontal double arrow (↔)
-                                cv2.arrowedLine(left_img_display, (cx - 15, cy - 10), (cx + 15, cy - 10), (255, 255, 0), 2, tipLength=0.3)
-                                cv2.arrowedLine(left_img_display, (cx + 15, cy - 10), (cx - 15, cy - 10), (255, 255, 0), 2, tipLength=0.3)
-                            
-                            if flip_v:
-                                # Draw vertical double arrow (↕)
-                                cv2.arrowedLine(left_img_display, (cx, cy - 15 + (10 if flip_h else 0)), (cx, cy + 15 + (10 if flip_h else 0)), (255, 0, 255), 2, tipLength=0.3)
-                                cv2.arrowedLine(left_img_display, (cx, cy + 15 + (10 if flip_h else 0)), (cx, cy - 15 + (10 if flip_h else 0)), (255, 0, 255), 2, tipLength=0.3)
+                if self.show_gen_mask:
+                    # Show source mask overlay on region
+                    source_mask = patch.get("source_mask")
+                    if source_mask is not None:
+                        # Resize mask to match region_size
+                        mask_resized = cv2.resize(source_mask, (region_size, region_size), interpolation=cv2.INTER_LINEAR)
+                        # Blend mask with image (white lines on image)
+                        mask_gray = cv2.cvtColor(mask_resized, cv2.COLOR_RGB2GRAY) if len(mask_resized.shape) == 3 else mask_resized
+                        left_img_display[mask_gray > 128] = [255, 255, 255]
+                    # Also draw the green polygon (now with perspective!)
+                    if display_corners is not None:
+                        cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                else:
+                    # Just draw green polygon (now with perspective!)
+                    if display_corners is not None:
+                        cv2.polylines(left_img_display, [display_corners], isClosed=True, color=(0, 255, 0), thickness=2)
+                
+                # Draw flip indicators
+                step3_params = patch.get("step3_params", {})
+                flip_h = step3_params.get("flip_h", False)
+                flip_v = step3_params.get("flip_v", False)
+                
+                if flip_h or flip_v:
+                    # Draw flip arrows/indicators at the center of the polygon
+                    if display_corners is not None:
+                        cx = int(np.mean(display_corners[:, 0]))
+                        cy = int(np.mean(display_corners[:, 1]))
+                        
+                        if flip_h:
+                            # Draw horizontal double arrow (↔)
+                            cv2.arrowedLine(left_img_display, (cx - 15, cy - 10), (cx + 15, cy - 10), (255, 255, 0), 2, tipLength=0.3)
+                            cv2.arrowedLine(left_img_display, (cx + 15, cy - 10), (cx - 15, cy - 10), (255, 255, 0), 2, tipLength=0.3)
+                        
+                        if flip_v:
+                            # Draw vertical double arrow (↕)
+                            cv2.arrowedLine(left_img_display, (cx, cy - 15 + (10 if flip_h else 0)), (cx, cy + 15 + (10 if flip_h else 0)), (255, 0, 255), 2, tipLength=0.3)
+                            cv2.arrowedLine(left_img_display, (cx, cy + 15 + (10 if flip_h else 0)), (cx, cy - 15 + (10 if flip_h else 0)), (255, 0, 255), 2, tipLength=0.3)
                 
                 # Place region image
                 grid_img[cell_y:cell_y+region_size, cell_x:cell_x+region_size] = left_img_display
