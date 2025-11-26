@@ -373,6 +373,8 @@ class RandomPatchViewer:
         self.tile_photo_image = None
         self.tile_grid_photo_image = None
         self.tile_extracted_tiles = []  # List of (grid_pos, warped_tile)
+        self.tile_unwarp_photo_image = None
+        self.tile_unwarp_tile_size = 100  # Output tile size for unwarp
         
         # UI Setup
         self.root.title("LineAnnotatorGUI")
@@ -4045,7 +4047,7 @@ class RandomPatchViewer:
         main_frame = ttk.Frame(self.tile_detector_tab)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Left panel: Video canvas on top, Tile grid on bottom
+        # Left panel: Video canvas on top, Unwarp + Tile grid on bottom
         left_panel = ttk.Frame(main_frame)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
@@ -4056,9 +4058,20 @@ class RandomPatchViewer:
         self.tile_canvas = tk.Canvas(video_frame_container, bg="#222222", highlightthickness=0)
         self.tile_canvas.pack(fill=tk.BOTH, expand=True)
         
-        # Tile Grid Area - Bottom half
-        tile_grid_container = ttk.LabelFrame(left_panel, text="Extracted Tiles (Flattened)", padding=2)
-        tile_grid_container.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Bottom panel with two canvases side by side
+        bottom_panel = ttk.Frame(left_panel)
+        bottom_panel.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Unwrapped Frame Area - Bottom left
+        unwarp_container = ttk.LabelFrame(bottom_panel, text="Unwrapped Frame", padding=2)
+        unwarp_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 2))
+        
+        self.tile_unwarp_canvas = tk.Canvas(unwarp_container, bg="#1a1a2e", highlightthickness=0)
+        self.tile_unwarp_canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Tile Grid Area - Bottom right
+        tile_grid_container = ttk.LabelFrame(bottom_panel, text="Extracted Tiles", padding=2)
+        tile_grid_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(2, 0))
         
         self.tile_grid_canvas = tk.Canvas(tile_grid_container, bg="#333333", highlightthickness=0)
         self.tile_grid_canvas.pack(fill=tk.BOTH, expand=True)
@@ -4136,6 +4149,23 @@ class RandomPatchViewer:
                                              variable=self.tile_show_regions_var,
                                              command=self._display_tile_frame)
         show_regions_check.pack(fill=tk.X, pady=2)
+        
+        # Unwarp settings
+        unwarp_frame = ttk.LabelFrame(sidebar, text="Unwarp Settings", padding=10)
+        unwarp_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(unwarp_frame, text="Tile Size:").pack(anchor="w", pady=2)
+        self.tile_unwarp_size_var = tk.IntVar(value=100)
+        unwarp_size_slider = ttk.Scale(unwarp_frame, from_=50, to=200,
+                                       variable=self.tile_unwarp_size_var,
+                                       orient="horizontal",
+                                       command=self._on_unwarp_size_changed)
+        unwarp_size_slider.pack(fill=tk.X, pady=2)
+        self.lbl_unwarp_size = ttk.Label(unwarp_frame, text="100 px")
+        self.lbl_unwarp_size.pack(anchor="w", pady=2)
+        
+        self.lbl_unwarp_crossings = ttk.Label(unwarp_frame, text="Crossings: 0")
+        self.lbl_unwarp_crossings.pack(anchor="w", pady=2)
         
         # Detection info
         info_frame = ttk.LabelFrame(sidebar, text="Detection Info", padding=10)
@@ -4632,6 +4662,9 @@ class RandomPatchViewer:
         
         # Display tile grid
         self._display_tile_grid()
+        
+        # Display unwrapped frame
+        self._display_unwrapped_frame()
     
     def _draw_tile_image(self, img_arr):
         """Draw image on tile detector canvas."""
@@ -4662,6 +4695,188 @@ class RandomPatchViewer:
         
         self.tile_canvas.delete("all")
         self.tile_canvas.create_image(offset_x, offset_y, anchor=tk.NW, image=self.tile_photo_image)
+    
+    def _on_unwarp_size_changed(self, value):
+        """Handle unwarp tile size slider change."""
+        size = int(float(value))
+        self.tile_unwarp_tile_size = size
+        self.lbl_unwarp_size.config(text=f"{size} px")
+        # Redisplay unwrapped frame with new size
+        if self.tile_current_frame is not None and self.tile_current_lines:
+            self._display_unwrapped_frame()
+    
+    def _find_line_segment_crossings(self, lines, frame_shape):
+        """Find intersections between line segments, grouping into horizontal/vertical."""
+        if len(lines) < 2:
+            return [], []
+        
+        h, w = frame_shape[:2]
+        
+        # Group lines by angle into horizontal and vertical
+        horizontal = []
+        vertical = []
+        
+        for x1, y1, x2, y2 in lines:
+            dx, dy = x2 - x1, y2 - y1
+            angle_deg = abs(np.arctan2(dy, dx) * 180 / np.pi)
+            # Normalize to 0-90 range
+            if angle_deg > 90:
+                angle_deg = 180 - angle_deg
+            
+            # Lines closer to horizontal (angle < 45) vs vertical (angle >= 45)
+            if angle_deg < 45:
+                horizontal.append((x1, y1, x2, y2))
+            else:
+                vertical.append((x1, y1, x2, y2))
+        
+        # Sort horizontal lines top-to-bottom by midpoint y
+        horizontal.sort(key=lambda l: (l[1] + l[3]) / 2)
+        # Sort vertical lines left-to-right by midpoint x
+        vertical.sort(key=lambda l: (l[0] + l[2]) / 2)
+        
+        def line_intersection(l1, l2):
+            """Find intersection of two line segments (extended to infinite lines)."""
+            x1, y1, x2, y2 = l1
+            x3, y3, x4, y4 = l2
+            
+            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(denom) < 1e-6:
+                return None
+            
+            t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+            
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            
+            return (int(x), int(y))
+        
+        crossings = []
+        grid_crossings = []
+        
+        for i, h_line in enumerate(horizontal):
+            for j, v_line in enumerate(vertical):
+                pt = line_intersection(h_line, v_line)
+                if pt is not None:
+                    x, y = pt
+                    # Only keep points within frame bounds (with margin)
+                    margin = 50
+                    if -margin <= x < w + margin and -margin <= y < h + margin:
+                        crossings.append((x, y))
+                        grid_crossings.append(((x, y), (i, j)))
+        
+        return crossings, grid_crossings
+    
+    def _compute_unwarp_homography(self, grid_crossings, tile_size=100):
+        """Compute homography to unwarp perspective to top-down view."""
+        if len(grid_crossings) < 4:
+            return None, (0, 0)
+        
+        src_points = []
+        dst_points = []
+        
+        for (x, y), (i, j) in grid_crossings:
+            src_points.append([x, y])
+            dst_points.append([j * tile_size, i * tile_size])
+        
+        src_points = np.array(src_points, dtype=np.float32)
+        dst_points = np.array(dst_points, dtype=np.float32)
+        
+        try:
+            H, mask = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
+            if H is None:
+                return None, (0, 0)
+            
+            # Compute output size
+            max_i = max(i for (x, y), (i, j) in grid_crossings)
+            max_j = max(j for (x, y), (i, j) in grid_crossings)
+            output_width = (max_j + 1) * tile_size
+            output_height = (max_i + 1) * tile_size
+            
+            return H, (output_width, output_height)
+        except Exception:
+            return None, (0, 0)
+    
+    def _display_unwrapped_frame(self):
+        """Compute and display the unwrapped frame."""
+        if self.tile_current_frame is None or not self.tile_current_lines:
+            self.tile_unwarp_canvas.delete("all")
+            self.lbl_unwarp_crossings.config(text="Crossings: 0")
+            return
+        
+        # Find line crossings
+        crossings, grid_crossings = self._find_line_segment_crossings(
+            self.tile_current_lines, self.tile_current_frame.shape
+        )
+        
+        self.lbl_unwarp_crossings.config(text=f"Crossings: {len(crossings)}")
+        
+        if len(grid_crossings) < 4:
+            # Not enough crossings - show message
+            self.tile_unwarp_canvas.delete("all")
+            canvas_w = self.tile_unwarp_canvas.winfo_width()
+            canvas_h = self.tile_unwarp_canvas.winfo_height()
+            if canvas_w > 10 and canvas_h > 10:
+                self.tile_unwarp_canvas.create_text(
+                    canvas_w // 2, canvas_h // 2,
+                    text="Need 4+ crossings",
+                    fill="#888888", font=("Arial", 12)
+                )
+            return
+        
+        # Compute homography
+        tile_size = self.tile_unwarp_size_var.get()
+        H, (out_w, out_h) = self._compute_unwarp_homography(grid_crossings, tile_size)
+        
+        if H is None or out_w == 0 or out_h == 0:
+            self.tile_unwarp_canvas.delete("all")
+            return
+        
+        # Unwarp the frame
+        frame_bgr = cv2.cvtColor(self.tile_current_frame, cv2.COLOR_RGB2BGR)
+        unwarped = cv2.warpPerspective(frame_bgr, H, (out_w, out_h))
+        unwarped_rgb = cv2.cvtColor(unwarped, cv2.COLOR_BGR2RGB)
+        
+        # Draw grid lines on unwarped image
+        for i in range(out_h // tile_size + 1):
+            y = i * tile_size
+            cv2.line(unwarped_rgb, (0, y), (out_w, y), (100, 100, 255), 1)
+        for j in range(out_w // tile_size + 1):
+            x = j * tile_size
+            cv2.line(unwarped_rgb, (x, 0), (x, out_h), (100, 100, 255), 1)
+        
+        # Display on canvas
+        self._draw_unwarp_image(unwarped_rgb)
+    
+    def _draw_unwarp_image(self, img_arr):
+        """Draw unwrapped image on the unwarp canvas."""
+        img_h, img_w = img_arr.shape[:2]
+        
+        canvas_w = self.tile_unwarp_canvas.winfo_width()
+        canvas_h = self.tile_unwarp_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, lambda: self._draw_unwarp_image(img_arr))
+            return
+        
+        # Scale to fit canvas
+        scale = min(canvas_w / img_w, canvas_h / img_h) * 0.95
+        new_w = max(1, int(img_w * scale))
+        new_h = max(1, int(img_h * scale))
+        
+        # Resize
+        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Convert to PhotoImage
+        img_pil = Image.fromarray(resized)
+        self.tile_unwarp_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        # Center on canvas
+        offset_x = (canvas_w - new_w) // 2
+        offset_y = (canvas_h - new_h) // 2
+        
+        self.tile_unwarp_canvas.delete("all")
+        self.tile_unwarp_canvas.create_image(offset_x, offset_y, anchor=tk.NW, 
+                                              image=self.tile_unwarp_photo_image)
     
     # ==================== End Tile Detector Tab Methods ====================
     
