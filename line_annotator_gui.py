@@ -3130,14 +3130,260 @@ def find_videos(input_paths):
     
     return sorted(list(set(video_files)))
 
+def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line_detector_unet"):
+    """
+    CLI training mode - no GUI, verbose console output.
+    """
+    import time
+    
+    print("=" * 60)
+    print("LINE DETECTOR - CLI TRAINING MODE")
+    print("=" * 60)
+    
+    # Load annotation database
+    db_path = "line_annotations.json"
+    if os.path.exists(db_path):
+        db = AnnotationDatabase.load(db_path)
+        print(f"[INFO] Loaded annotation database: {len(db.samples)} samples")
+    else:
+        print(f"[ERROR] No annotation database found at '{db_path}'")
+        print("[ERROR] Please run the GUI first to create annotations.")
+        return False
+    
+    # Use all samples
+    all_samples = db.samples
+    print(f"[INFO] Using {len(all_samples)} samples")
+    
+    if not all_samples:
+        print("[ERROR] No samples available for training!")
+        return False
+    
+    # Pre-load frames
+    print(f"\n[STEP 1/4] Pre-loading frames...")
+    frame_cache = {}
+    for i, sample in enumerate(all_samples):
+        cache_key = (sample.video_path, sample.frame_idx)
+        if cache_key not in frame_cache:
+            cap = cv2.VideoCapture(sample.video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                frame_cache[cache_key] = frame
+        if (i + 1) % 50 == 0 or i == len(all_samples) - 1:
+            print(f"  Loaded {i+1}/{len(all_samples)} samples ({len(frame_cache)} unique frames)")
+    
+    print(f"[INFO] Cached {len(frame_cache)} unique frames")
+    
+    # Generate training samples
+    print(f"\n[STEP 2/4] Generating {num_samples} augmented training samples...")
+    samples = []
+    patch_size = 128
+    
+    start_time = time.time()
+    for i in range(num_samples):
+        sample = random.choice(all_samples)
+        cache_key = (sample.video_path, sample.frame_idx)
+        
+        if cache_key not in frame_cache:
+            continue
+        
+        frame = frame_cache[cache_key]
+        x, y, w, h = sample.crop_rect
+        region = frame[y:y+h, x:x+w]
+        
+        # Apply augmentation (simplified version of _generate_single_patch)
+        region_h, region_w = region.shape[:2]
+        
+        # Random zoom
+        zoom = random.uniform(0.7, 1.3)
+        new_size = max(patch_size, int(min(region_w, region_h) * zoom))
+        
+        # Random crop position
+        if region_w > patch_size:
+            crop_x = random.randint(0, region_w - patch_size)
+        else:
+            crop_x = 0
+        if region_h > patch_size:
+            crop_y = random.randint(0, region_h - patch_size)
+        else:
+            crop_y = 0
+        
+        patch = region[crop_y:crop_y+patch_size, crop_x:crop_x+patch_size]
+        
+        if patch.shape[0] != patch_size or patch.shape[1] != patch_size:
+            patch = cv2.resize(patch, (patch_size, patch_size))
+        
+        # Create mask
+        mask = np.zeros((patch_size, patch_size), dtype=np.uint8)
+        
+        for line in sample.lines:
+            p1 = (line['start'][0] - crop_x, line['start'][1] - crop_y)
+            p2 = (line['end'][0] - crop_x, line['end'][1] - crop_y)
+            cv2.line(mask, p1, p2, 255, thickness=1)
+        
+        # Random augmentations
+        if random.random() < 0.5:
+            patch = cv2.flip(patch, 1)
+            mask = cv2.flip(mask, 1)
+        if random.random() < 0.5:
+            patch = cv2.flip(patch, 0)
+            mask = cv2.flip(mask, 0)
+        
+        # Brightness/contrast
+        alpha = random.uniform(0.8, 1.2)
+        beta = random.randint(-20, 20)
+        patch = np.clip(alpha * patch + beta, 0, 255).astype(np.uint8)
+        
+        # Convert to RGB
+        patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+        mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+        
+        samples.append({'image': patch_rgb, 'mask': mask_rgb})
+        
+        if (i + 1) % 1000 == 0:
+            elapsed = time.time() - start_time
+            rate = (i + 1) / elapsed
+            remaining = (num_samples - i - 1) / rate
+            print(f"  Generated {i+1}/{num_samples} samples ({rate:.1f} samples/sec, ~{remaining:.1f}s remaining)")
+    
+    print(f"[INFO] Generated {len(samples)} training samples in {time.time() - start_time:.1f}s")
+    
+    # Split train/val
+    random.shuffle(samples)
+    split_idx = int(len(samples) * 0.8)
+    train_samples = samples[:split_idx]
+    val_samples = samples[split_idx:]
+    print(f"[INFO] Train: {len(train_samples)}, Validation: {len(val_samples)}")
+    
+    # Create datasets and loaders
+    print(f"\n[STEP 3/4] Initializing model and data loaders...")
+    train_dataset = LineDataset(train_samples)
+    val_dataset = LineDataset(val_samples)
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                             num_workers=0, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                           num_workers=0, pin_memory=True)
+    
+    print(f"[INFO] Batch size: {batch_size}")
+    print(f"[INFO] Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    
+    # Initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Device: {device}")
+    
+    model = MobileUNet(pretrained=True).to(device)
+    print("[INFO] Loaded MobileNetV2 backbone (pretrained on ImageNet)")
+    
+    # Loss and optimizer
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    
+    print(f"[INFO] Loss: BCE + Dice (combined)")
+    print(f"[INFO] Optimizer: Adam (lr={lr}, weight_decay=1e-4)")
+    print(f"[INFO] Scheduler: CosineAnnealingLR (T_max={epochs})")
+    print(f"[INFO] Output model: {model_name}.pth, {model_name}_best.pth")
+    
+    # Dice loss helper
+    def dice_loss(pred, target, smooth=1e-8):
+        intersection = (pred * target).sum()
+        return 1 - (2 * intersection + smooth) / (pred.sum() + target.sum() + smooth)
+    
+    # Training loop
+    print(f"\n[STEP 4/4] Training for {epochs} epochs...")
+    print("-" * 60)
+    
+    best_val_loss = float('inf')
+    
+    for epoch in range(epochs):
+        epoch_start = time.time()
+        
+        # Training
+        model.train()
+        train_loss = 0.0
+        for batch_idx, (images, masks) in enumerate(train_loader):
+            images, masks = images.to(device), masks.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            
+            bce = criterion(outputs, masks)
+            dice = dice_loss(outputs, masks)
+            loss = 0.5 * bce + 0.5 * dice
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            
+            train_loss += loss.item()
+            
+            if (batch_idx + 1) % 50 == 0:
+                print(f"  Epoch {epoch+1} | Batch {batch_idx+1}/{len(train_loader)} | Loss: {loss.item():.4f}")
+        
+        train_loss /= len(train_loader)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images, masks = images.to(device), masks.to(device)
+                outputs = model(images)
+                bce = criterion(outputs, masks)
+                dice = dice_loss(outputs, masks)
+                loss = 0.5 * bce + 0.5 * dice
+                val_loss += loss.item()
+        
+        val_loss /= len(val_loader)
+        
+        # Step scheduler
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        
+        epoch_time = time.time() - epoch_start
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), f"{model_name}_best.pth")
+            print(f"Epoch {epoch+1:3d}/{epochs} | Train: {train_loss:.4f} | Val: {val_loss:.4f} | LR: {current_lr:.6f} | Time: {epoch_time:.1f}s | *** BEST - SAVED ***")
+        else:
+            print(f"Epoch {epoch+1:3d}/{epochs} | Train: {train_loss:.4f} | Val: {val_loss:.4f} | LR: {current_lr:.6f} | Time: {epoch_time:.1f}s")
+    
+    # Save final model
+    torch.save(model.state_dict(), f"{model_name}.pth")
+    
+    print("-" * 60)
+    print(f"[DONE] Training complete!")
+    print(f"[INFO] Best validation loss: {best_val_loss:.4f}")
+    print(f"[INFO] Models saved: {model_name}.pth, {model_name}_best.pth")
+    
+    return True
+
+
 def main():
-    parser = argparse.ArgumentParser(description="View random 400x400 patches from videos.")
+    parser = argparse.ArgumentParser(description="Line annotation and training tool.")
     parser.add_argument("videos", nargs="*", help="Video files or directories")
+    parser.add_argument("--video-folder", type=str, help="Path to video folder (alternative to positional argument)")
     parser.add_argument("--test-graph", action="store_true", help="Show training graph with mock data for testing")
     parser.add_argument("--train-samples", type=int, default=25000, help="Number of training samples (default: 25000)")
+    
+    # CLI training mode arguments
+    parser.add_argument("--train", action="store_true", help="Run training in CLI mode (no GUI)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for training (default: 32)")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate (default: 0.001)")
+    parser.add_argument("--model-name", type=str, default="line_detector_unet", help="Output model name (default: line_detector_unet)")
+    
     args = parser.parse_args()
     
+    # Handle video folder argument
     video_inputs = args.videos
+    if args.video_folder:
+        video_inputs = [args.video_folder]
+    
     if not video_inputs:
         # Default to 'videos' directory if it exists
         if os.path.exists("videos"):
@@ -3154,6 +3400,19 @@ def main():
         
     print(f"Found {len(video_paths)} videos.")
     
+    # CLI training mode
+    if args.train:
+        success = train_cli(
+            video_paths=video_paths,
+            num_samples=args.train_samples,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            lr=args.lr,
+            model_name=args.model_name
+        )
+        return
+    
+    # GUI mode
     root = tk.Tk()
     root.state('zoomed')  # Fullscreen on Windows
     
