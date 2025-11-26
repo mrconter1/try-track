@@ -372,6 +372,7 @@ class RandomPatchViewer:
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
         self.root.bind("<Control-z>", lambda e: self.undo_last_action())
         self.root.bind("<r>", lambda e: self.on_r_key())
+        self.root.bind("<g>", lambda e: self.on_g_key())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.canvas.bind("<Button-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
@@ -892,7 +893,7 @@ class RandomPatchViewer:
         self.btn_toggle_inference.pack(fill=tk.X, pady=5)
         
         # Toggle to show/hide detected lines
-        self.show_inference_lines_var = tk.BooleanVar(value=True)
+        self.show_inference_lines_var = tk.BooleanVar(value=False)
         show_lines_check = ttk.Checkbutton(view_frame, text="Show detected lines", 
                                            variable=self.show_inference_lines_var,
                                            command=self.display_inference_sample)
@@ -1800,6 +1801,12 @@ class RandomPatchViewer:
             self.resample_current_patch()
         elif current_tab == 1:  # Data Generation tab (index 1)
             self.generate_training_patches()
+    
+    def on_g_key(self):
+        """Handle 'g' key press - generate new samples in inference tab."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 3:  # Inference tab
+            self.generate_inference_samples()
     
     def delete_current_sample(self):
         """Delete the current sample from history and database."""
