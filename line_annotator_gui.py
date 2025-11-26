@@ -1105,8 +1105,8 @@ class RandomPatchViewer:
             # Normal view - show image
             display_arr = img_arr
         
-        # Scale image to ~33% of screen height while maintaining aspect ratio
-        target_height = int(canvas_h * 0.33)
+        # Scale image to ~90% of screen height while maintaining aspect ratio
+        target_height = int(canvas_h * 0.90)
         scale = target_height / img_h
         
         # Use Nearest Neighbor for sharp upscaling, Linear for downscaling
