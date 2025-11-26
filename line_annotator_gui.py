@@ -904,6 +904,44 @@ class RandomPatchViewer:
                                            command=self.display_inference_sample)
         show_lines_check.pack(fill=tk.X, pady=5)
         
+        # Line Detection Settings
+        line_frame = ttk.LabelFrame(sidebar, text="Line Detection", padding=10)
+        line_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Mode dropdown
+        ttk.Label(line_frame, text="Mode:").pack(anchor="w")
+        self.line_detect_mode_var = tk.StringVar(value="Skeleton + Contour")
+        line_mode_combo = ttk.Combobox(line_frame, textvariable=self.line_detect_mode_var,
+                                        values=["Skeleton + Contour", "HoughLinesP", "LSD", "Simple Contour"],
+                                        state="readonly", width=18)
+        line_mode_combo.pack(fill=tk.X, pady=2)
+        line_mode_combo.bind("<<ComboboxSelected>>", self._on_line_param_changed)
+        
+        # Parameters frame (dynamic based on mode)
+        self.line_params_frame = ttk.Frame(line_frame)
+        self.line_params_frame.pack(fill=tk.X, pady=5)
+        
+        # Common parameters
+        self.line_min_length_var = tk.IntVar(value=20)
+        self.line_merge_dist_var = tk.IntVar(value=15)
+        self.line_merge_angle_var = tk.IntVar(value=10)
+        self.line_max_lines_var = tk.IntVar(value=15)
+        
+        # HoughLinesP specific
+        self.hough_threshold_var = tk.IntVar(value=50)
+        self.hough_max_gap_var = tk.IntVar(value=10)
+        
+        # Auto-update state
+        self._line_update_pending = None
+        self._last_line_params = None
+        
+        # Build initial params UI
+        self._update_line_detect_params()
+        
+        # Re-detect button
+        btn_redetect = ttk.Button(line_frame, text="Re-detect Lines", command=self.redetect_lines)
+        btn_redetect.pack(fill=tk.X, pady=5)
+        
         # Info
         info_frame = ttk.LabelFrame(sidebar, text="Grid Info", padding=10)
         info_frame.pack(fill=tk.X, pady=(0, 10))
@@ -2323,6 +2361,89 @@ class RandomPatchViewer:
         
         return merged
     
+    def _merge_lines(self, lines, distance_threshold, angle_threshold):
+        """
+        Merge lines that are close and aligned.
+        
+        Args:
+            lines: List of lines as [(x1, y1, x2, y2), ...]
+            distance_threshold: Max distance between endpoints to merge
+            angle_threshold: Max angle difference (radians) to merge
+            
+        Returns:
+            Merged list of lines
+        """
+        if len(lines) <= 1:
+            return lines
+        
+        def get_angle(line):
+            x1, y1, x2, y2 = line
+            return np.arctan2(y2 - y1, x2 - x1)
+        
+        def lines_similar(l1, l2):
+            # Check angle difference
+            a1, a2 = get_angle(l1), get_angle(l2)
+            angle_diff = abs(a1 - a2)
+            angle_diff = min(angle_diff, np.pi - angle_diff)  # Handle opposite directions
+            if angle_diff > angle_threshold:
+                return False
+            
+            # Check distance between endpoints
+            x1a, y1a, x2a, y2a = l1
+            x1b, y1b, x2b, y2b = l2
+            
+            # Find minimum distance between any pair of endpoints
+            distances = [
+                np.sqrt((x1a - x1b)**2 + (y1a - y1b)**2),
+                np.sqrt((x1a - x2b)**2 + (y1a - y2b)**2),
+                np.sqrt((x2a - x1b)**2 + (y2a - y1b)**2),
+                np.sqrt((x2a - x2b)**2 + (y2a - y2b)**2),
+            ]
+            return min(distances) < distance_threshold
+        
+        merged = []
+        used = set()
+        
+        for i, line in enumerate(lines):
+            if i in used:
+                continue
+            
+            # Find all lines that can be merged with this one
+            group = [line]
+            used.add(i)
+            
+            for j, other in enumerate(lines):
+                if j in used:
+                    continue
+                if any(lines_similar(g, other) for g in group):
+                    group.append(other)
+                    used.add(j)
+            
+            # Merge group into single line
+            if len(group) > 1:
+                all_x = []
+                all_y = []
+                for x1, y1, x2, y2 in group:
+                    all_x.extend([x1, x2])
+                    all_y.extend([y1, y2])
+                
+                # Use extreme points
+                min_x_idx = np.argmin(all_x)
+                max_x_idx = np.argmax(all_x)
+                
+                if all_x[max_x_idx] - all_x[min_x_idx] > all_y[np.argmax(all_y)] - all_y[np.argmin(all_y)]:
+                    # More horizontal - use x extremes
+                    merged.append((all_x[min_x_idx], all_y[min_x_idx], all_x[max_x_idx], all_y[max_x_idx]))
+                else:
+                    # More vertical - use y extremes
+                    min_y_idx = np.argmin(all_y)
+                    max_y_idx = np.argmax(all_y)
+                    merged.append((all_x[min_y_idx], all_y[min_y_idx], all_x[max_y_idx], all_y[max_y_idx]))
+            else:
+                merged.append(line)
+        
+        return merged
+    
     def _detect_lines_lsd(self, mask):
         """
         Detect lines from a binary mask using Line Segment Detector (LSD).
@@ -2429,6 +2550,292 @@ class RandomPatchViewer:
         
         return result
     
+    def _update_line_detect_params(self, event=None):
+        """Update the line detection parameters UI based on selected mode."""
+        # Clear existing widgets
+        for widget in self.line_params_frame.winfo_children():
+            widget.destroy()
+        
+        mode = self.line_detect_mode_var.get()
+        
+        def make_slider(parent, label, var, from_, to, row):
+            """Create a labeled slider with value display."""
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=1)
+            
+            # Value label
+            val_label = ttk.Label(parent, text=str(var.get()), width=4)
+            val_label.grid(row=row, column=2, sticky="e", pady=1)
+            
+            # Slider
+            def on_slide(val):
+                int_val = int(float(val))
+                var.set(int_val)
+                val_label.config(text=str(int_val))
+                self._on_line_param_changed()
+            
+            slider = ttk.Scale(parent, from_=from_, to=to, variable=var, 
+                              orient="horizontal", command=on_slide)
+            slider.grid(row=row, column=1, sticky="ew", pady=1, padx=5)
+            return slider
+        
+        row = 0
+        
+        # Min line length
+        make_slider(self.line_params_frame, "Min length:", self.line_min_length_var, 5, 100, row)
+        row += 1
+        
+        # Max lines
+        make_slider(self.line_params_frame, "Max lines:", self.line_max_lines_var, 1, 30, row)
+        row += 1
+        
+        if mode in ["Skeleton + Contour", "Simple Contour", "LSD"]:
+            # Merge distance
+            make_slider(self.line_params_frame, "Merge dist:", self.line_merge_dist_var, 0, 50, row)
+            row += 1
+            
+            # Merge angle
+            make_slider(self.line_params_frame, "Merge angle°:", self.line_merge_angle_var, 0, 45, row)
+            row += 1
+        
+        if mode == "HoughLinesP":
+            # Hough threshold
+            make_slider(self.line_params_frame, "Threshold:", self.hough_threshold_var, 10, 200, row)
+            row += 1
+            
+            # Max gap
+            make_slider(self.line_params_frame, "Max gap:", self.hough_max_gap_var, 1, 50, row)
+            row += 1
+        
+        # Configure column weights
+        self.line_params_frame.columnconfigure(0, weight=0)
+        self.line_params_frame.columnconfigure(1, weight=1)
+        self.line_params_frame.columnconfigure(2, weight=0)
+    
+    def _on_line_param_changed(self, event=None):
+        """Called when line detection parameters change. Debounces updates."""
+        # Cancel any pending update
+        if self._line_update_pending:
+            self.root.after_cancel(self._line_update_pending)
+        
+        # Schedule new update after 250ms
+        self._line_update_pending = self.root.after(250, self._do_line_update)
+    
+    def _do_line_update(self):
+        """Actually perform the line update after debounce."""
+        self._line_update_pending = None
+        
+        # Check if we have samples and lines are visible
+        if not self.inference_samples:
+            return
+        if not self.show_inference_lines_var.get():
+            return
+        
+        # Get current params
+        current_params = (
+            self.line_detect_mode_var.get(),
+            self.line_min_length_var.get(),
+            self.line_max_lines_var.get(),
+            self.line_merge_dist_var.get(),
+            self.line_merge_angle_var.get(),
+            self.hough_threshold_var.get(),
+            self.hough_max_gap_var.get()
+        )
+        
+        # Only update if params actually changed
+        if current_params == self._last_line_params:
+            return
+        
+        self._last_line_params = current_params
+        self.redetect_lines()
+    
+    def redetect_lines(self):
+        """Re-run line detection on existing inference samples with current parameters."""
+        if not self.inference_samples:
+            return
+        
+        mode = self.line_detect_mode_var.get()
+        self.lbl_inference_idx.config(text=f"Re-detecting lines ({mode})...")
+        self.root.update()
+        
+        for sample in self.inference_samples:
+            mask = sample['prediction']
+            sample['detected_lines'] = self._detect_lines_with_mode(mask, mode)
+        
+        self.display_inference_sample()
+    
+    def _detect_lines_with_mode(self, mask, mode):
+        """Detect lines using the specified mode and current parameters."""
+        min_length = self.line_min_length_var.get()
+        max_lines = self.line_max_lines_var.get()
+        merge_dist = self.line_merge_dist_var.get()
+        merge_angle = self.line_merge_angle_var.get()
+        
+        if mode == "Skeleton + Contour":
+            return self._detect_lines_skeleton(mask, min_length, max_lines, merge_dist, merge_angle)
+        elif mode == "HoughLinesP":
+            threshold = self.hough_threshold_var.get()
+            max_gap = self.hough_max_gap_var.get()
+            return self._detect_lines_hough(mask, min_length, max_lines, threshold, max_gap)
+        elif mode == "LSD":
+            return self._detect_lines_lsd_mode(mask, min_length, max_lines, merge_dist, merge_angle)
+        elif mode == "Simple Contour":
+            return self._detect_lines_contour(mask, min_length, max_lines, merge_dist, merge_angle)
+        else:
+            return []
+    
+    def _detect_lines_skeleton(self, mask, min_length, max_lines, merge_dist, merge_angle):
+        """Detect lines using skeletonization + contour fitting."""
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Skeletonize
+        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        skel = np.zeros(binary.shape, np.uint8)
+        temp_binary = binary.copy()
+        while True:
+            eroded = cv2.erode(temp_binary, kernel)
+            temp = cv2.dilate(eroded, kernel)
+            temp = cv2.subtract(temp_binary, temp)
+            skel = cv2.bitwise_or(skel, temp)
+            temp_binary = eroded.copy()
+            if cv2.countNonZero(temp_binary) == 0:
+                break
+        
+        # Find contours and fit lines
+        contours, _ = cv2.findContours(skel, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        
+        lines = []
+        for contour in contours:
+            if len(contour) < 2:
+                continue
+            pts = contour.reshape(-1, 2)
+            if len(pts) < 2:
+                continue
+            
+            # Get endpoints
+            p1 = tuple(pts[0])
+            p2 = tuple(pts[-1])
+            length = np.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
+            
+            if length >= min_length:
+                lines.append((p1[0], p1[1], p2[0], p2[1]))
+        
+        # Merge similar lines
+        if merge_dist > 0 or merge_angle > 0:
+            lines = self._merge_lines(lines, merge_dist, np.radians(merge_angle))
+        
+        # Sort by length and limit
+        lines = sorted(lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
+        return lines[:max_lines]
+    
+    def _detect_lines_hough(self, mask, min_length, max_lines, threshold, max_gap):
+        """Detect lines using HoughLinesP."""
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Apply Canny edge detection
+        edges = cv2.Canny(binary, 50, 150)
+        
+        # Detect lines
+        hough_lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=threshold,
+                                       minLineLength=min_length, maxLineGap=max_gap)
+        
+        if hough_lines is None:
+            return []
+        
+        lines = []
+        for line in hough_lines:
+            x1, y1, x2, y2 = line[0]
+            lines.append((x1, y1, x2, y2))
+        
+        # Sort by length and limit
+        lines = sorted(lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
+        return lines[:max_lines]
+    
+    def _detect_lines_lsd_mode(self, mask, min_length, max_lines, merge_dist, merge_angle):
+        """Detect lines using OpenCV's LSD."""
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Create LSD detector
+        lsd = cv2.createLineSegmentDetector(0)
+        detected, _, _, _ = lsd.detect(binary)
+        
+        if detected is None:
+            return []
+        
+        lines = []
+        for line in detected:
+            x1, y1, x2, y2 = line[0]
+            length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+            if length >= min_length:
+                lines.append((int(x1), int(y1), int(x2), int(y2)))
+        
+        # Merge similar lines
+        if merge_dist > 0 or merge_angle > 0:
+            lines = self._merge_lines(lines, merge_dist, np.radians(merge_angle))
+        
+        # Sort by length and limit
+        lines = sorted(lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
+        return lines[:max_lines]
+    
+    def _detect_lines_contour(self, mask, min_length, max_lines, merge_dist, merge_angle):
+        """Detect lines using simple contour fitting."""
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Dilate to connect broken parts
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary = cv2.dilate(binary, kernel, iterations=2)
+        
+        contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        
+        lines = []
+        for contour in contours:
+            if len(contour) < 5:
+                continue
+            
+            # Fit line to contour
+            [vx, vy, x0, y0] = cv2.fitLine(contour, cv2.DIST_L2, 0, 0.01, 0.01)
+            
+            # Get extent
+            pts = contour.reshape(-1, 2)
+            projections = (pts[:, 0] - x0) * vx + (pts[:, 1] - y0) * vy
+            min_proj, max_proj = projections.min(), projections.max()
+            
+            x1 = int(x0 + min_proj * vx)
+            y1 = int(y0 + min_proj * vy)
+            x2 = int(x0 + max_proj * vx)
+            y2 = int(y0 + max_proj * vy)
+            
+            length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+            if length >= min_length:
+                lines.append((x1, y1, x2, y2))
+        
+        # Merge similar lines
+        if merge_dist > 0 or merge_angle > 0:
+            lines = self._merge_lines(lines, merge_dist, np.radians(merge_angle))
+        
+        # Sort by length and limit
+        lines = sorted(lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
+        return lines[:max_lines]
+
     def _update_inference_controls(self, event=None):
         """Update UI based on selected inference mode."""
         mode = self.inference_mode_var.get()
@@ -2580,7 +2987,8 @@ class RandomPatchViewer:
                         pred_mask = (pred_np[:ph, :pw] * 255).astype(np.uint8)
                         pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
                         
-                        detected_lines = self._detect_lines_lsd(pred_mask_rgb)
+                        line_mode = self.line_detect_mode_var.get()
+                        detected_lines = self._detect_lines_with_mode(pred_mask_rgb, line_mode)
                         
                         samples.append({
                             'frame': item['patch_rgb'],
@@ -2676,7 +3084,8 @@ class RandomPatchViewer:
                         pred_mask = (pred_avg * 255).astype(np.uint8)
                         pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
                     
-                    detected_lines = self._detect_lines_lsd(pred_mask_rgb)
+                    line_mode = self.line_detect_mode_var.get()
+                    detected_lines = self._detect_lines_with_mode(pred_mask_rgb, line_mode)
                     
                     samples.append({
                         'frame': frame_rgb,
@@ -2704,8 +3113,11 @@ class RandomPatchViewer:
             self.root.after(0, finish_inference)
             
         except Exception as e:
-            print(f"Inference error: {e}")
-            self.root.after(0, lambda: self.lbl_inference_idx.config(text=f"Error: {e}"))
+            error_msg = str(e)
+            print(f"Inference error: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda msg=error_msg: self.lbl_inference_idx.config(text=f"Error: {msg}"))
             self.inference_running = False
     
     def display_inference_sample(self):
