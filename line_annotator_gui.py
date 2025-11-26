@@ -375,6 +375,8 @@ class RandomPatchViewer:
         self.tile_extracted_tiles = []  # List of (grid_pos, warped_tile)
         self.tile_unwarp_photo_image = None
         self.tile_unwarp_tile_size = 100  # Output tile size for unwarp
+        self.tile_current_homography = None  # Current homography matrix
+        self.tile_grid_positions = {}  # Maps region index to (row, col)
         
         # UI Setup
         self.root.title("LineAnnotatorGUI")
@@ -4550,6 +4552,21 @@ class RandomPatchViewer:
         
         return tiles
     
+    def _extract_tiles_with_grid_positions(self, frame, regions, grid_positions, tile_size=80):
+        """Extract flattened tiles using pre-computed homography-based grid positions."""
+        if not regions or frame is None:
+            return []
+        
+        tiles = []
+        for idx, region in enumerate(regions):
+            if idx in grid_positions:
+                row, col = grid_positions[idx]
+                warped = self._extract_tile_from_quad(frame, region, tile_size)
+                if warped is not None:
+                    tiles.append(((row, col), warped))
+        
+        return tiles
+    
     def _display_tile_grid(self):
         """Display extracted tiles in a grid."""
         if not self.tile_extracted_tiles:
@@ -4611,6 +4628,95 @@ class RandomPatchViewer:
         self.tile_grid_canvas.delete("all")
         self.tile_grid_canvas.create_image(offset_x, offset_y, anchor="nw", image=self.tile_grid_photo_image)
     
+    def _assign_grid_positions_from_homography(self, regions, H, tile_size):
+        """Assign (row, col) to each region using the homography transform."""
+        if H is None or not regions:
+            return {}
+        
+        grid_positions = {}
+        for idx, region in enumerate(regions):
+            # Calculate centroid
+            n = len(region)
+            if n == 0:
+                continue
+            cx = sum(p[0] for p in region) / n
+            cy = sum(p[1] for p in region) / n
+            
+            # Transform centroid using homography
+            pt = np.array([[[cx, cy]]], dtype=np.float32)
+            transformed = cv2.perspectiveTransform(pt, H)
+            tx, ty = transformed[0, 0]
+            
+            # Convert to grid position
+            col = int(tx / tile_size)
+            row = int(ty / tile_size)
+            
+            # Only keep valid positions (non-negative)
+            if row >= 0 and col >= 0:
+                grid_positions[idx] = (row, col)
+        
+        return grid_positions
+    
+    def _draw_regions_with_grid_labels(self, img, lines, regions, grid_positions):
+        """Draw regions with (row, col) labels from homography-based positions."""
+        result = img.copy()
+        img_h, img_w = result.shape[:2]
+        
+        colors = [
+            (255, 100, 100), (100, 255, 100), (100, 100, 255), (255, 255, 100),
+            (255, 100, 255), (100, 255, 255), (200, 150, 100), (150, 100, 200),
+        ]
+        
+        for idx, corners in enumerate(regions):
+            pts = np.array(corners, dtype=np.int32)
+            
+            # Draw filled polygon with transparency
+            overlay = result.copy()
+            color = colors[idx % len(colors)]
+            cv2.fillPoly(overlay, [pts], color)
+            cv2.addWeighted(overlay, 0.3, result, 0.7, 0, result)
+            
+            # Draw border
+            cv2.polylines(result, [pts], isClosed=True, color=color, thickness=2)
+            
+            # Calculate centroid for label
+            n = len(corners)
+            cx = int(sum(c[0] for c in corners) / n) if n > 0 else 0
+            cy = int(sum(c[1] for c in corners) / n) if n > 0 else 0
+            
+            # Get grid position label
+            if idx in grid_positions:
+                row, col = grid_positions[idx]
+                label = f"{row},{col}"
+            else:
+                label = "?"
+            
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = max(0.4, min(img_w, img_h) / 500)
+            thickness = max(1, int(font_scale * 2))
+            
+            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+            
+            # Background rectangle
+            padding = 3
+            cv2.rectangle(result, 
+                         (cx - text_w//2 - padding, cy - text_h//2 - padding),
+                         (cx + text_w//2 + padding, cy + text_h//2 + padding),
+                         (0, 0, 0), -1)
+            
+            # Text
+            cv2.putText(result, label, 
+                       (cx - text_w//2, cy + text_h//2),
+                       font, font_scale, (255, 255, 255), thickness)
+        
+        # Draw intersection points
+        intersections = self._find_line_intersections(lines, img_w, img_h)
+        for x, y, _, _ in intersections:
+            cv2.circle(result, (int(x), int(y)), 5, (255, 255, 0), -1)
+            cv2.circle(result, (int(x), int(y)), 5, (0, 0, 0), 1)
+        
+        return result
+    
     def _display_tile_frame(self):
         """Display the current frame with overlays."""
         if self.tile_current_frame is None:
@@ -4636,23 +4742,44 @@ class RandomPatchViewer:
                 endpoint_size=endpoint_size
             )
         
-        # Draw regions if enabled and extract tiles
+        # Find regions and compute homography-based grid positions
         num_regions = 0
         regions = []
+        self.tile_grid_positions = {}
+        self.tile_current_homography = None
+        
         if self.tile_current_lines:
-            # Find enclosed regions (areas with no lines inside)
+            # Find enclosed regions
             regions = self._find_enclosed_regions(self.tile_current_lines, img_w, img_h)
             num_regions = len(regions)
             
+            # Compute homography from line crossings
+            crossings, grid_crossings = self._find_line_segment_crossings(
+                self.tile_current_lines, self.tile_current_frame.shape
+            )
+            
+            if len(grid_crossings) >= 4:
+                tile_size = self.tile_unwarp_size_var.get()
+                H, _ = self._compute_unwarp_homography(grid_crossings, tile_size)
+                self.tile_current_homography = H
+                
+                if H is not None:
+                    self.tile_grid_positions = self._assign_grid_positions_from_homography(
+                        regions, H, tile_size
+                    )
+            
+            # Draw regions with grid labels
             if self.tile_show_regions_var.get() and regions:
-                img_display = self._draw_regions_on_image(img_display, self.tile_current_lines, regions)
+                img_display = self._draw_regions_with_grid_labels(
+                    img_display, self.tile_current_lines, regions, self.tile_grid_positions
+                )
         
         self.lbl_tile_regions.config(text=f"Regions: {num_regions}")
         
-        # Extract flattened tiles from regions (pass lines for better grid assignment)
+        # Extract flattened tiles using homography-based positions
         if regions and self.tile_current_frame is not None:
-            self.tile_extracted_tiles = self._extract_tiles_from_regions(
-                self.tile_current_frame, regions, self.tile_current_lines
+            self.tile_extracted_tiles = self._extract_tiles_with_grid_positions(
+                self.tile_current_frame, regions, self.tile_grid_positions
             )
         else:
             self.tile_extracted_tiles = []
