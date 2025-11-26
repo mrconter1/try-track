@@ -3377,12 +3377,13 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
             if use_amp:
                 with torch.amp.autocast('cuda'):
                     outputs = model(images)
-                    # Cast to float32 for loss computation (BCELoss not safe with float16)
-                    outputs_f32 = outputs.float()
-                    masks_f32 = masks.float()
-                    bce = criterion(outputs_f32, masks_f32)
-                    dice = dice_loss(outputs_f32, masks_f32)
-                    loss = 0.5 * bce + 0.5 * dice
+                
+                # Compute loss OUTSIDE autocast (BCELoss not safe with autocast)
+                outputs_f32 = outputs.float()
+                masks_f32 = masks.float()
+                bce = criterion(outputs_f32, masks_f32)
+                dice = dice_loss(outputs_f32, masks_f32)
+                loss = 0.5 * bce + 0.5 * dice
                 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -3416,11 +3417,12 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
                 if use_amp:
                     with torch.amp.autocast('cuda'):
                         outputs = model(images)
-                        outputs_f32 = outputs.float()
-                        masks_f32 = masks.float()
-                        bce = criterion(outputs_f32, masks_f32)
-                        dice = dice_loss(outputs_f32, masks_f32)
-                        loss = 0.5 * bce + 0.5 * dice
+                    # Compute loss outside autocast
+                    outputs_f32 = outputs.float()
+                    masks_f32 = masks.float()
+                    bce = criterion(outputs_f32, masks_f32)
+                    dice = dice_loss(outputs_f32, masks_f32)
+                    loss = 0.5 * bce + 0.5 * dice
                 else:
                     outputs = model(images)
                     bce = criterion(outputs, masks)
