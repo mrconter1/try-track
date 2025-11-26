@@ -910,9 +910,9 @@ class RandomPatchViewer:
         
         # Mode dropdown
         ttk.Label(line_frame, text="Mode:").pack(anchor="w")
-        self.line_detect_mode_var = tk.StringVar(value="Skeleton + Contour")
+        self.line_detect_mode_var = tk.StringVar(value="Extended Lines")
         line_mode_combo = ttk.Combobox(line_frame, textvariable=self.line_detect_mode_var,
-                                        values=["Skeleton + Contour", "HoughLinesP", "LSD", "Simple Contour"],
+                                        values=["Extended Lines", "Skeleton + Contour", "HoughLinesP", "LSD", "Simple Contour"],
                                         state="readonly", width=18)
         line_mode_combo.pack(fill=tk.X, pady=2)
         line_mode_combo.bind("<<ComboboxSelected>>", self._on_line_param_changed)
@@ -925,6 +925,10 @@ class RandomPatchViewer:
         self.line_min_length_var = tk.IntVar(value=20)
         self.line_merge_dist_var = tk.IntVar(value=15)
         self.line_merge_angle_var = tk.IntVar(value=10)
+        
+        # Extended Lines parameters
+        self.line_cluster_angle_var = tk.IntVar(value=15)  # Angle tolerance for clustering
+        self.line_min_pixels_var = tk.IntVar(value=50)     # Minimum pixels to form a line
         self.line_max_lines_var = tk.IntVar(value=15)
         
         # HoughLinesP specific
@@ -2606,6 +2610,15 @@ class RandomPatchViewer:
             make_slider(self.line_params_frame, "Max gap:", self.hough_max_gap_var, 1, 50, row)
             row += 1
         
+        if mode == "Extended Lines":
+            # Cluster angle tolerance
+            make_slider(self.line_params_frame, "Cluster angle°:", self.line_cluster_angle_var, 5, 45, row)
+            row += 1
+            
+            # Minimum pixels per line
+            make_slider(self.line_params_frame, "Min pixels:", self.line_min_pixels_var, 10, 200, row)
+            row += 1
+        
         # Configure column weights
         self.line_params_frame.columnconfigure(0, weight=0)
         self.line_params_frame.columnconfigure(1, weight=1)
@@ -2638,7 +2651,9 @@ class RandomPatchViewer:
             self.line_merge_dist_var.get(),
             self.line_merge_angle_var.get(),
             self.hough_threshold_var.get(),
-            self.hough_max_gap_var.get()
+            self.hough_max_gap_var.get(),
+            self.line_cluster_angle_var.get(),
+            self.line_min_pixels_var.get()
         )
         
         # Only update if params actually changed
@@ -2680,6 +2695,10 @@ class RandomPatchViewer:
             return self._detect_lines_lsd_mode(mask, min_length, max_lines, merge_dist, merge_angle)
         elif mode == "Simple Contour":
             return self._detect_lines_contour(mask, min_length, max_lines, merge_dist, merge_angle)
+        elif mode == "Extended Lines":
+            cluster_angle = self.line_cluster_angle_var.get()
+            min_pixels = self.line_min_pixels_var.get()
+            return self._detect_lines_extended(mask, min_pixels, max_lines, cluster_angle)
         else:
             return []
     
@@ -2835,6 +2854,138 @@ class RandomPatchViewer:
         # Sort by length and limit
         lines = sorted(lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
         return lines[:max_lines]
+    
+    def _detect_lines_extended(self, mask, min_pixels, max_lines, cluster_angle_deg):
+        """
+        Detect lines and extend them to image boundaries.
+        Uses RANSAC-style clustering to find dominant line directions,
+        then fits and extends lines to span the entire image.
+        """
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        h, w = mask_gray.shape
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Get all white pixel coordinates
+        points = np.column_stack(np.where(binary > 0))  # (row, col) = (y, x)
+        if len(points) < min_pixels:
+            return []
+        
+        # Convert to (x, y) format
+        points_xy = points[:, ::-1].astype(np.float32)  # Now (x, y)
+        
+        lines = []
+        remaining_points = points_xy.copy()
+        cluster_angle_rad = np.radians(cluster_angle_deg)
+        
+        # Iteratively find dominant lines using RANSAC-like approach
+        for _ in range(max_lines):
+            if len(remaining_points) < min_pixels:
+                break
+            
+            best_inliers = []
+            best_line = None
+            
+            # RANSAC iterations
+            n_iterations = min(100, len(remaining_points) * 2)
+            for _ in range(n_iterations):
+                # Random sample of 2 points
+                if len(remaining_points) < 2:
+                    break
+                indices = np.random.choice(len(remaining_points), 2, replace=False)
+                p1, p2 = remaining_points[indices]
+                
+                # Compute line direction
+                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+                length = np.sqrt(dx**2 + dy**2)
+                if length < 1:
+                    continue
+                
+                # Normalize direction
+                dx, dy = dx / length, dy / length
+                
+                # Find inliers: points close to and aligned with this line
+                # Distance from point to line: |cross product| / length
+                diff = remaining_points - p1
+                cross = np.abs(diff[:, 0] * dy - diff[:, 1] * dx)
+                
+                # Also check angle similarity (for thick masks)
+                dist_threshold = 10  # pixels
+                inlier_mask = cross < dist_threshold
+                
+                inliers = remaining_points[inlier_mask]
+                
+                if len(inliers) > len(best_inliers):
+                    best_inliers = inliers
+                    # Fit line to all inliers using PCA
+                    if len(inliers) >= 2:
+                        mean = inliers.mean(axis=0)
+                        centered = inliers - mean
+                        cov = np.cov(centered.T)
+                        if cov.shape == (2, 2):
+                            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                            direction = eigenvectors[:, 1]  # Principal direction
+                            best_line = (mean, direction)
+            
+            if best_line is None or len(best_inliers) < min_pixels:
+                break
+            
+            mean, direction = best_line
+            dx, dy = direction[0], direction[1]
+            
+            # Extend line to image boundaries
+            # Line equation: point = mean + t * direction
+            # Find t where line intersects image edges
+            t_values = []
+            
+            # Left edge (x = 0)
+            if abs(dx) > 1e-6:
+                t = -mean[0] / dx
+                y_at_t = mean[1] + t * dy
+                if 0 <= y_at_t <= h:
+                    t_values.append(t)
+            
+            # Right edge (x = w-1)
+            if abs(dx) > 1e-6:
+                t = (w - 1 - mean[0]) / dx
+                y_at_t = mean[1] + t * dy
+                if 0 <= y_at_t <= h:
+                    t_values.append(t)
+            
+            # Top edge (y = 0)
+            if abs(dy) > 1e-6:
+                t = -mean[1] / dy
+                x_at_t = mean[0] + t * dx
+                if 0 <= x_at_t <= w:
+                    t_values.append(t)
+            
+            # Bottom edge (y = h-1)
+            if abs(dy) > 1e-6:
+                t = (h - 1 - mean[1]) / dy
+                x_at_t = mean[0] + t * dx
+                if 0 <= x_at_t <= w:
+                    t_values.append(t)
+            
+            if len(t_values) >= 2:
+                t_min, t_max = min(t_values), max(t_values)
+                x1 = int(np.clip(mean[0] + t_min * dx, 0, w - 1))
+                y1 = int(np.clip(mean[1] + t_min * dy, 0, h - 1))
+                x2 = int(np.clip(mean[0] + t_max * dx, 0, w - 1))
+                y2 = int(np.clip(mean[1] + t_max * dy, 0, h - 1))
+                
+                lines.append((x1, y1, x2, y2))
+            
+            # Remove inliers from remaining points
+            if len(best_inliers) > 0:
+                # Create mask for points to keep
+                inlier_set = set(map(tuple, best_inliers.astype(int)))
+                keep_mask = np.array([tuple(p.astype(int)) not in inlier_set for p in remaining_points])
+                remaining_points = remaining_points[keep_mask]
+        
+        return lines
 
     def _update_inference_controls(self, event=None):
         """Update UI based on selected inference mode."""
