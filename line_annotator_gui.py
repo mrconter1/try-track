@@ -847,7 +847,7 @@ class RandomPatchViewer:
         
         # Mode selection (Region vs Full Frame)
         ttk.Label(sample_frame, text="Inference Mode:").pack(anchor="w", pady=2)
-        self.inference_mode_var = tk.StringVar(value="Random Regions")
+        self.inference_mode_var = tk.StringVar(value="Full Frame")
         mode_combo = ttk.Combobox(sample_frame, textvariable=self.inference_mode_var, 
                                   values=["Random Regions", "Full Frame"], state="readonly")
         mode_combo.pack(fill=tk.X, pady=5)
@@ -857,7 +857,7 @@ class RandomPatchViewer:
         self.lbl_num_samples = ttk.Label(sample_frame, text="Number of frames:")
         self.lbl_num_samples.pack(anchor="w", pady=2)
         
-        self.inference_samples_var = tk.IntVar(value=25)
+        self.inference_samples_var = tk.IntVar(value=6)
         self.samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=100, increment=1, 
                                        textvariable=self.inference_samples_var, width=10)
         self.samples_spinbox.pack(anchor="w", pady=5)
@@ -898,7 +898,7 @@ class RandomPatchViewer:
         self.btn_toggle_inference.pack(fill=tk.X, pady=5)
         
         # Toggle to show/hide detected lines
-        self.show_inference_lines_var = tk.BooleanVar(value=False)
+        self.show_inference_lines_var = tk.BooleanVar(value=True)
         show_lines_check = ttk.Checkbutton(view_frame, text="Show detected lines", 
                                            variable=self.show_inference_lines_var,
                                            command=self.display_inference_sample)
@@ -910,7 +910,7 @@ class RandomPatchViewer:
         
         # Mode dropdown
         ttk.Label(line_frame, text="Mode:").pack(anchor="w")
-        self.line_detect_mode_var = tk.StringVar(value="HoughLinesP")
+        self.line_detect_mode_var = tk.StringVar(value="HoughLinesP + Cluster")
         line_mode_combo = ttk.Combobox(line_frame, textvariable=self.line_detect_mode_var,
                                         values=["Extended Lines", "Skeleton + Contour", "HoughLinesP", "HoughLinesP + Cluster", "LSD", "Simple Contour"],
                                         state="readonly", width=18)
