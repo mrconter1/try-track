@@ -2481,187 +2481,232 @@ class RandomPatchViewer:
             messagebox.showwarning("No Model", "Please load a model first.")
             return
         
-        mode = self.inference_mode_var.get()
-        num_samples = self.inference_samples_var.get()
-        self.inference_samples = []
-        self.inference_selected_indices = set()  # Clear selection
+        if hasattr(self, 'inference_running') and self.inference_running:
+            return  # Already running
         
-        self.model.eval()
+        self.inference_running = True
+        self.lbl_inference_idx.config(text="Generating predictions...")
         
-        # Pre-compute normalization tensors
-        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
-        
-        print(f"Generating {num_samples} samples in {mode} mode...")
-        
-        if mode == "Random Regions":
-            # Use configured patch size (e.g. 400x400) instead of 128x128
-            patch_size = self.patch_size
+        # Run in background thread
+        thread = threading.Thread(target=self._generate_inference_thread, daemon=True)
+        thread.start()
+    
+    def _generate_inference_thread(self):
+        """Background thread for generating inference samples."""
+        try:
+            mode = self.inference_mode_var.get()
+            num_samples = self.inference_samples_var.get()
+            samples = []
             
-            for i in range(num_samples):
-                # Get random video and frame
-                video_path, frame_idx = self.get_random_frame_location()
-                if not video_path: continue
-                
-                cap = cv2.VideoCapture(video_path)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                cap.release()
-                
-                if not ret or frame is None: continue
-                
-                h, w = frame.shape[:2]
-                if h < patch_size or w < patch_size: continue
-                
-                x = random.randint(0, w - patch_size)
-                y = random.randint(0, h - patch_size)
-                
-                patch = frame[y:y+patch_size, x:x+patch_size]
-                patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
-                
-                # For inference, we need to process this large patch
-                # We can use the same sliding window or direct inference approach
-                # Let's use direct inference on the patch (padded)
-                
-                # Pad to multiple of 32
-                ph, pw = patch_rgb.shape[:2]
-                pad_h = (32 - ph % 32) % 32
-                pad_w = (32 - pw % 32) % 32
-                
-                if pad_h > 0 or pad_w > 0:
-                    patch_padded = np.pad(patch_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
-                else:
-                    patch_padded = patch_rgb
-                
-                with torch.no_grad():
-                    input_tensor = torch.from_numpy(patch_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
-                    input_tensor = (input_tensor.to(self.device) - mean) / std
-                    prediction = self.model(input_tensor)
-                    pred_full = prediction.squeeze().cpu().numpy()
-                
-                # Crop back to original size
-                pred_mask = (pred_full[:ph, :pw] * 255).astype(np.uint8)
-                pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
-                
-                detected_lines = self._detect_lines_lsd(pred_mask_rgb)
-                
-                self.inference_samples.append({
-                    'frame': patch_rgb,
-                    'prediction': pred_mask_rgb,
-                    'detected_lines': detected_lines,
-                    'source_video': os.path.basename(video_path),
-                    'source_frame': frame_idx,
-                    'location': (x, y),  # Store location for adding to labeling
-                    'size': (patch_size, patch_size),
-                    'type': 'patch'
-                })
-                
-        else:  # Full Frame mode
-            use_full_frame = self.full_frame_mode_var.get()
+            self.model.eval()
             
-            for i in range(num_samples):
-                # Get random video and frame
-                video_path, frame_idx = self.get_random_frame_location()
-                if not video_path: continue
+            # Pre-compute normalization tensors
+            mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
+            
+            if mode == "Random Regions":
+                patch_size = self.patch_size
                 
-                cap = cv2.VideoCapture(video_path)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                cap.release()
-                
-                if not ret or frame is None: continue
-                
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w = frame_rgb.shape[:2]
-                if h < 128 or w < 128: continue
-                
-                if use_full_frame:
-                    # === FULL FRAME DIRECT INFERENCE ===
-                    # Pad to nearest multiple of 32
-                    pad_h = (32 - h % 32) % 32
-                    pad_w = (32 - w % 32) % 32
+                # First, collect all patches (fast)
+                patches_data = []
+                for i in range(num_samples):
+                    video_path, frame_idx = self.get_random_frame_location()
+                    if not video_path: continue
                     
-                    if pad_h > 0 or pad_w > 0:
-                        frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                    cap = cv2.VideoCapture(video_path)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    cap.release()
+                    
+                    if not ret or frame is None: continue
+                    
+                    h, w = frame.shape[:2]
+                    if h < patch_size or w < patch_size: continue
+                    
+                    x = random.randint(0, w - patch_size)
+                    y = random.randint(0, h - patch_size)
+                    
+                    patch = frame[y:y+patch_size, x:x+patch_size]
+                    patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+                    
+                    patches_data.append({
+                        'patch_rgb': patch_rgb,
+                        'video_path': video_path,
+                        'frame_idx': frame_idx,
+                        'x': x, 'y': y
+                    })
+                    
+                    # Update progress
+                    self.root.after(0, lambda i=i: self.lbl_inference_idx.config(
+                        text=f"Loading patches: {i+1}/{num_samples}"))
+                
+                # Now batch inference
+                batch_size = 4  # Process 4 at a time
+                for batch_start in range(0, len(patches_data), batch_size):
+                    batch_end = min(batch_start + batch_size, len(patches_data))
+                    batch = patches_data[batch_start:batch_end]
+                    
+                    # Prepare batch tensors
+                    batch_tensors = []
+                    batch_info = []
+                    
+                    for item in batch:
+                        patch_rgb = item['patch_rgb']
+                        ph, pw = patch_rgb.shape[:2]
+                        pad_h = (32 - ph % 32) % 32
+                        pad_w = (32 - pw % 32) % 32
+                        
+                        if pad_h > 0 or pad_w > 0:
+                            patch_padded = np.pad(patch_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                        else:
+                            patch_padded = patch_rgb
+                        
+                        input_tensor = torch.from_numpy(patch_padded.astype(np.float32) / 255.0).permute(2, 0, 1)
+                        batch_tensors.append(input_tensor)
+                        batch_info.append({'item': item, 'ph': ph, 'pw': pw})
+                    
+                    # Stack and run batch inference
+                    with torch.no_grad():
+                        batch_input = torch.stack(batch_tensors).to(self.device)
+                        batch_input = (batch_input - mean) / std
+                        predictions = self.model(batch_input)
+                    
+                    # Process results
+                    for idx, (pred, info) in enumerate(zip(predictions, batch_info)):
+                        item = info['item']
+                        ph, pw = info['ph'], info['pw']
+                        
+                        pred_np = pred.squeeze().cpu().numpy()
+                        pred_mask = (pred_np[:ph, :pw] * 255).astype(np.uint8)
+                        pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+                        
+                        detected_lines = self._detect_lines_lsd(pred_mask_rgb)
+                        
+                        samples.append({
+                            'frame': item['patch_rgb'],
+                            'prediction': pred_mask_rgb,
+                            'detected_lines': detected_lines,
+                            'source_video': os.path.basename(item['video_path']),
+                            'source_frame': item['frame_idx'],
+                            'location': (item['x'], item['y']),
+                            'size': (patch_size, patch_size),
+                            'type': 'patch'
+                        })
+                    
+                    # Update progress
+                    progress = min(batch_end, len(patches_data))
+                    self.root.after(0, lambda p=progress, t=len(patches_data): self.lbl_inference_idx.config(
+                        text=f"Inference: {p}/{t}"))
+            
+            else:  # Full Frame mode
+                use_full_frame = self.full_frame_mode_var.get()
+                
+                for i in range(num_samples):
+                    self.root.after(0, lambda i=i: self.lbl_inference_idx.config(
+                        text=f"Processing frame {i+1}/{num_samples}..."))
+                    
+                    video_path, frame_idx = self.get_random_frame_location()
+                    if not video_path: continue
+                    
+                    cap = cv2.VideoCapture(video_path)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    cap.release()
+                    
+                    if not ret or frame is None: continue
+                    
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    h, w = frame_rgb.shape[:2]
+                    if h < 128 or w < 128: continue
+                    
+                    if use_full_frame:
+                        pad_h = (32 - h % 32) % 32
+                        pad_w = (32 - w % 32) % 32
+                        
+                        if pad_h > 0 or pad_w > 0:
+                            frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                        else:
+                            frame_padded = frame_rgb
+                        
+                        with torch.no_grad():
+                            input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                            input_tensor = (input_tensor.to(self.device) - mean) / std
+                            prediction = self.model(input_tensor)
+                            pred_full = prediction.squeeze().cpu().numpy()
+                        
+                        pred_mask = (pred_full[:h, :w] * 255).astype(np.uint8)
+                        pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
                     else:
-                        frame_padded = frame_rgb
+                        stride = self.inference_stride_var.get()
+                        batch_size = 32
+                        pred_sum = np.zeros((h, w), dtype=np.float32)
+                        pred_count = np.zeros((h, w), dtype=np.float32)
+                        patch_size = 128
+                        
+                        y_positions = list(range(0, h - patch_size + 1, stride))
+                        if y_positions[-1] + patch_size < h: y_positions.append(h - patch_size)
+                        x_positions = list(range(0, w - patch_size + 1, stride))
+                        if x_positions[-1] + patch_size < w: x_positions.append(w - patch_size)
+                        
+                        all_positions = [(y, x) for y in y_positions for x in x_positions]
+                        
+                        with torch.no_grad():
+                            for batch_start in range(0, len(all_positions), batch_size):
+                                batch_end = min(batch_start + batch_size, len(all_positions))
+                                batch_positions = all_positions[batch_start:batch_end]
+                                
+                                batch_patches = []
+                                for y, x in batch_positions:
+                                    patch = frame_rgb[y:y+patch_size, x:x+patch_size]
+                                    patch_tensor = torch.from_numpy(patch.astype(np.float32) / 255.0).permute(2, 0, 1)
+                                    batch_patches.append(patch_tensor)
+                                
+                                batch_tensor = torch.stack(batch_patches).to(self.device)
+                                batch_tensor = (batch_tensor - mean) / std
+                                
+                                predictions = self.model(batch_tensor)
+                                pred_patches = predictions.squeeze(1).cpu().numpy()
+                                
+                                for idx, (y, x) in enumerate(batch_positions):
+                                    pred_sum[y:y+patch_size, x:x+patch_size] += pred_patches[idx]
+                                    pred_count[y:y+patch_size, x:x+patch_size] += 1
+                        
+                        pred_count[pred_count == 0] = 1
+                        pred_avg = pred_sum / pred_count
+                        pred_mask = (pred_avg * 255).astype(np.uint8)
+                        pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
                     
-                    print(f"  Frame {i+1}: {w}x{h} (padded to {frame_padded.shape[1]}x{frame_padded.shape[0]})")
+                    detected_lines = self._detect_lines_lsd(pred_mask_rgb)
                     
-                    with torch.no_grad():
-                        input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
-                        input_tensor = (input_tensor.to(self.device) - mean) / std
-                        prediction = self.model(input_tensor)
-                        pred_full = prediction.squeeze().cpu().numpy()
-                    
-                    # Crop back to original size
-                    pred_mask = (pred_full[:h, :w] * 255).astype(np.uint8)
-                    pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
-                    
+                    samples.append({
+                        'frame': frame_rgb,
+                        'prediction': pred_mask_rgb,
+                        'detected_lines': detected_lines,
+                        'source_video': os.path.basename(video_path),
+                        'source_frame': frame_idx,
+                        'size': (w, h),
+                        'type': 'full'
+                    })
+            
+            # Finish up - update UI on main thread
+            self.inference_samples = samples
+            self.inference_selected_indices = set()
+            
+            def finish_inference():
+                self.inference_running = False
+                if self.inference_samples:
+                    self.inference_idx = 0
+                    self.show_inference_prediction = False
+                    self.display_inference_sample()
                 else:
-                    # === SLIDING WINDOW INFERENCE ===
-                    stride = self.inference_stride_var.get()
-                    batch_size = 32
-                    
-                    pred_sum = np.zeros((h, w), dtype=np.float32)
-                    pred_count = np.zeros((h, w), dtype=np.float32)
-                    patch_size = 128
-                    
-                    # Calculate grid positions
-                    y_positions = list(range(0, h - patch_size + 1, stride))
-                    if y_positions[-1] + patch_size < h: y_positions.append(h - patch_size)
-                    x_positions = list(range(0, w - patch_size + 1, stride))
-                    if x_positions[-1] + patch_size < w: x_positions.append(w - patch_size)
-                    
-                    all_positions = [(y, x) for y in y_positions for x in x_positions]
-                    print(f"  Frame {i+1}: {w}x{h}, {len(all_positions)} patches...")
-                    
-                    with torch.no_grad():
-                        for batch_start in range(0, len(all_positions), batch_size):
-                            batch_end = min(batch_start + batch_size, len(all_positions))
-                            batch_positions = all_positions[batch_start:batch_end]
-                            
-                            batch_patches = []
-                            for y, x in batch_positions:
-                                patch = frame_rgb[y:y+patch_size, x:x+patch_size]
-                                patch_tensor = torch.from_numpy(patch.astype(np.float32) / 255.0).permute(2, 0, 1)
-                                batch_patches.append(patch_tensor)
-                            
-                            batch_tensor = torch.stack(batch_patches).to(self.device)
-                            batch_tensor = (batch_tensor - mean) / std
-                            
-                            predictions = self.model(batch_tensor)
-                            pred_patches = predictions.squeeze(1).cpu().numpy()
-                            
-                            for idx, (y, x) in enumerate(batch_positions):
-                                pred_sum[y:y+patch_size, x:x+patch_size] += pred_patches[idx]
-                                pred_count[y:y+patch_size, x:x+patch_size] += 1
-                    
-                    pred_count[pred_count == 0] = 1
-                    pred_avg = pred_sum / pred_count
-                    pred_mask = (pred_avg * 255).astype(np.uint8)
-                    pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
-                
-                detected_lines = self._detect_lines_lsd(pred_mask_rgb)
-                
-                self.inference_samples.append({
-                    'frame': frame_rgb,
-                    'prediction': pred_mask_rgb,
-                    'detected_lines': detected_lines,
-                    'source_video': os.path.basename(video_path),
-                    'source_frame': frame_idx,
-                    'size': (w, h),
-                    'type': 'full'
-                })
-        
-        print(f"Generated {len(self.inference_samples)} predictions")
-        
-        if self.inference_samples:
-            self.inference_idx = 0
-            self.show_inference_prediction = False
-            self.display_inference_sample()
-        else:
-            messagebox.showwarning("No Samples", "Failed to generate predictions.")
+                    self.lbl_inference_idx.config(text="No samples generated")
+            
+            self.root.after(0, finish_inference)
+            
+        except Exception as e:
+            print(f"Inference error: {e}")
+            self.root.after(0, lambda: self.lbl_inference_idx.config(text=f"Error: {e}"))
+            self.inference_running = False
     
     def display_inference_sample(self):
         """Display predictions in appropriate layout."""
