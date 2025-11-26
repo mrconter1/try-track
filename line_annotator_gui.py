@@ -857,7 +857,7 @@ class RandomPatchViewer:
         self.lbl_num_samples = ttk.Label(sample_frame, text="Number of frames:")
         self.lbl_num_samples.pack(anchor="w", pady=2)
         
-        self.inference_samples_var = tk.IntVar(value=3)
+        self.inference_samples_var = tk.IntVar(value=25)
         self.samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=100, increment=1, 
                                        textvariable=self.inference_samples_var, width=10)
         self.samples_spinbox.pack(anchor="w", pady=5)
@@ -2446,8 +2446,8 @@ class RandomPatchViewer:
         else:  # Random Regions
             self.lbl_num_samples.config(text="Number of patches:")
             self.samples_spinbox.config(to=100)
-            if self.inference_samples_var.get() < 16:
-                self.inference_samples_var.set(16)
+            if self.inference_samples_var.get() < 25:
+                self.inference_samples_var.set(25)
             
             # Hide full frame options
             self.direct_inference_frame.pack_forget()
@@ -2681,9 +2681,11 @@ class RandomPatchViewer:
         
         # Layout configuration based on mode
         if mode == "Random Regions":
-            num_cols = 4
-            num_rows = 4
-            max_items = 16
+            # Calculate grid size to fit all samples (prefer square-ish grid)
+            import math
+            num_cols = max(1, int(math.ceil(math.sqrt(num_samples))))
+            num_rows = max(1, int(math.ceil(num_samples / num_cols)))
+            max_items = num_samples
         else:
             num_cols = min(3, num_samples)
             num_rows = (num_samples + num_cols - 1) // num_cols

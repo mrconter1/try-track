@@ -16231,6 +16231,28 @@
           ]
         }
       ]
+    },
+    {
+      "video_path": "videos/20251117_151218.mp4",
+      "frame_idx": 344,
+      "crop_rect": [
+        10,
+        407,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_144726.mp4",
+      "frame_idx": 532,
+      "crop_rect": [
+        108,
+        450,
+        400,
+        400
+      ],
+      "lines": []
     }
   ]
 }
