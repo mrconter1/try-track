@@ -362,6 +362,16 @@ class RandomPatchViewer:
         self.show_inference_prediction = False
         self.inference_stride = 64  # Stride for sliding window (64 = 50% overlap)
         
+        # Tile Detector state (initialized here, UI built later)
+        self.tile_cap = None
+        self.tile_total_frames = 0
+        self.tile_fps = 30
+        self.tile_current_frame = None
+        self.tile_current_prediction = None
+        self.tile_current_lines = []
+        self.tile_slider_debounce = None
+        self.tile_photo_image = None
+        
         # UI Setup
         self.root.title("LineAnnotatorGUI")
         self._build_ui()
@@ -467,10 +477,15 @@ class RandomPatchViewer:
         self.inference_tab = ttk.Frame(self.tab_control)
         self.tab_control.add(self.inference_tab, text="Inference")
         
+        # Tile Detector Tab
+        self.tile_detector_tab = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.tile_detector_tab, text="Tile Detector")
+        
         self._build_labelling_tab()
         self._build_data_generation_tab()
         self._build_training_tab()
         self._build_inference_tab()
+        self._build_tile_detector_tab()
         
         # Bind tab change event
         self.tab_control.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -1964,6 +1979,11 @@ class RandomPatchViewer:
         if current_tab == 3:  # Inference tab
             if self.model is None:
                 self.load_model_for_inference()
+        
+        # Auto-load model when switching to Tile Detector tab
+        if current_tab == 4:  # Tile Detector tab
+            if self.model is None:
+                self._load_tile_detector_model()
 
     # Training Methods
     
@@ -4119,6 +4139,310 @@ class RandomPatchViewer:
         """Toggle between images and predictions view."""
         self.show_inference_prediction = not self.show_inference_prediction
         self.display_inference_sample()
+    
+    # ==================== Tile Detector Tab Methods ====================
+    
+    def _build_tile_detector_tab(self):
+        """Build the UI for the tile detector tab."""
+        # Main frame with canvas and sidebar
+        main_frame = ttk.Frame(self.tile_detector_tab)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Canvas Area (Left)
+        self.tile_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
+        self.tile_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Sidebar (Right)
+        sidebar = ttk.Frame(main_frame, width=300, padding=10)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        
+        # Model status
+        model_frame = ttk.LabelFrame(sidebar, text="Model", padding=10)
+        model_frame.pack(fill=tk.X, pady=(10, 10))
+        
+        self.lbl_tile_model = ttk.Label(model_frame, text="Model: Loading...")
+        self.lbl_tile_model.pack(anchor="w", pady=5)
+        
+        # Video selection
+        video_frame = ttk.LabelFrame(sidebar, text="Video Selection", padding=10)
+        video_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(video_frame, text="Video:").pack(anchor="w", pady=2)
+        
+        # Get video basenames for dropdown
+        video_names = [os.path.basename(vp) for vp in self.video_paths]
+        self.tile_video_var = tk.StringVar(value=video_names[0] if video_names else "")
+        self.tile_video_combo = ttk.Combobox(video_frame, textvariable=self.tile_video_var,
+                                              values=video_names, state="readonly", width=25)
+        self.tile_video_combo.pack(fill=tk.X, pady=5)
+        self.tile_video_combo.bind("<<ComboboxSelected>>", self._on_tile_video_changed)
+        
+        # Time slider
+        time_frame = ttk.LabelFrame(sidebar, text="Frame Selection", padding=10)
+        time_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.tile_frame_var = tk.IntVar(value=0)
+        self.tile_frame_slider = ttk.Scale(time_frame, from_=0, to=100, 
+                                           variable=self.tile_frame_var,
+                                           orient="horizontal",
+                                           command=self._on_tile_slider_changed)
+        self.tile_frame_slider.pack(fill=tk.X, pady=5)
+        
+        self.lbl_tile_frame = ttk.Label(time_frame, text="Frame: 0 / 0")
+        self.lbl_tile_frame.pack(anchor="w", pady=2)
+        
+        # Time display
+        self.lbl_tile_time = ttk.Label(time_frame, text="Time: 0:00.0")
+        self.lbl_tile_time.pack(anchor="w", pady=2)
+        
+        # View options
+        view_frame = ttk.LabelFrame(sidebar, text="View Options", padding=10)
+        view_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.tile_show_prediction_var = tk.BooleanVar(value=False)
+        show_pred_check = ttk.Checkbutton(view_frame, text="Show prediction mask",
+                                          variable=self.tile_show_prediction_var,
+                                          command=self._display_tile_frame)
+        show_pred_check.pack(fill=tk.X, pady=2)
+        
+        self.tile_show_lines_var = tk.BooleanVar(value=True)
+        show_lines_check = ttk.Checkbutton(view_frame, text="Show detected lines",
+                                           variable=self.tile_show_lines_var,
+                                           command=self._display_tile_frame)
+        show_lines_check.pack(fill=tk.X, pady=2)
+        
+        self.tile_show_regions_var = tk.BooleanVar(value=True)
+        show_regions_check = ttk.Checkbutton(view_frame, text="Show numbered regions",
+                                             variable=self.tile_show_regions_var,
+                                             command=self._display_tile_frame)
+        show_regions_check.pack(fill=tk.X, pady=2)
+        
+        # Detection info
+        info_frame = ttk.LabelFrame(sidebar, text="Detection Info", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.lbl_tile_lines = ttk.Label(info_frame, text="Lines: 0")
+        self.lbl_tile_lines.pack(anchor="w", pady=2)
+        
+        self.lbl_tile_regions = ttk.Label(info_frame, text="Regions: 0")
+        self.lbl_tile_regions.pack(anchor="w", pady=2)
+    
+    def _load_tile_detector_model(self):
+        """Load the model for tile detection (silent, no dialog)."""
+        try:
+            if self.model is None:
+                self.model = MobileUNet(pretrained=False).to(self.device)
+            
+            model_path = "line_detector_unet_best.pth"
+            if os.path.exists(model_path):
+                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                self.model.eval()
+                self.lbl_tile_model.config(text="Model: Loaded ✓", foreground="green")
+            else:
+                self.lbl_tile_model.config(text="Model: Not found", foreground="red")
+        except Exception as e:
+            self.lbl_tile_model.config(text=f"Model: Error - {str(e)[:20]}", foreground="red")
+        
+        # Initialize video after model loads
+        if self.tile_video_var.get():
+            self._on_tile_video_changed()
+    
+    def _on_tile_video_changed(self, event=None):
+        """Handle video selection change."""
+        video_name = self.tile_video_var.get()
+        if not video_name:
+            return
+        
+        # Find full path
+        video_path = None
+        for vp in self.video_paths:
+            if os.path.basename(vp) == video_name:
+                video_path = vp
+                break
+        
+        if not video_path:
+            return
+        
+        # Close previous capture
+        if self.tile_cap is not None:
+            self.tile_cap.release()
+        
+        # Open new video
+        self.tile_cap = cv2.VideoCapture(video_path)
+        self.tile_total_frames = int(self.tile_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.tile_fps = self.tile_cap.get(cv2.CAP_PROP_FPS) or 30
+        
+        # Update slider range
+        self.tile_frame_slider.config(to=max(1, self.tile_total_frames - 1))
+        self.tile_frame_var.set(0)
+        
+        # Load first frame
+        self._load_and_predict_frame(0)
+    
+    def _on_tile_slider_changed(self, value):
+        """Handle slider change with debouncing."""
+        # Cancel previous pending update
+        if self.tile_slider_debounce is not None:
+            self.root.after_cancel(self.tile_slider_debounce)
+        
+        # Schedule new update after 150ms
+        self.tile_slider_debounce = self.root.after(150, self._do_tile_slider_update)
+    
+    def _do_tile_slider_update(self):
+        """Actually load and predict the frame after debounce."""
+        self.tile_slider_debounce = None
+        frame_idx = int(self.tile_frame_var.get())
+        self._load_and_predict_frame(frame_idx)
+    
+    def _load_and_predict_frame(self, frame_idx):
+        """Load a frame and run prediction on it."""
+        if self.tile_cap is None or self.model is None:
+            return
+        
+        # Seek to frame
+        self.tile_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = self.tile_cap.read()
+        
+        if not ret or frame is None:
+            return
+        
+        # Convert to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.tile_current_frame = frame_rgb
+        
+        # Update frame label
+        self.lbl_tile_frame.config(text=f"Frame: {frame_idx} / {self.tile_total_frames}")
+        
+        # Update time label
+        time_sec = frame_idx / self.tile_fps
+        minutes = int(time_sec // 60)
+        seconds = time_sec % 60
+        self.lbl_tile_time.config(text=f"Time: {minutes}:{seconds:05.2f}")
+        
+        # Run prediction
+        self._predict_current_frame()
+        
+        # Display
+        self._display_tile_frame()
+    
+    def _predict_current_frame(self):
+        """Run line detection on current frame."""
+        if self.tile_current_frame is None or self.model is None:
+            return
+        
+        frame = self.tile_current_frame
+        h, w = frame.shape[:2]
+        
+        # Prepare for model (pad to multiple of 32)
+        pad_h = (32 - h % 32) % 32
+        pad_w = (32 - w % 32) % 32
+        
+        if pad_h > 0 or pad_w > 0:
+            frame_padded = np.pad(frame, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+        else:
+            frame_padded = frame
+        
+        # Run inference
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
+        
+        with torch.no_grad():
+            input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+            input_tensor = (input_tensor.to(self.device) - mean) / std
+            prediction = self.model(input_tensor)
+            pred_np = prediction.squeeze().cpu().numpy()
+        
+        # Crop to original size
+        pred_mask = (pred_np[:h, :w] * 255).astype(np.uint8)
+        self.tile_current_prediction = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+        
+        # Detect lines using HoughLinesP + Cluster
+        self.tile_current_lines = self._detect_lines_hough_clustered(
+            self.tile_current_prediction,
+            min_length=self.line_min_length_var.get(),
+            max_lines=self.line_max_lines_var.get(),
+            threshold=self.hough_threshold_var.get(),
+            max_gap=self.hough_max_gap_var.get(),
+            cluster_angle_deg=self.line_cluster_angle_var.get(),
+            cluster_dist=self.line_merge_dist_var.get()
+        )
+        
+        # Update info
+        self.lbl_tile_lines.config(text=f"Lines: {len(self.tile_current_lines)}")
+    
+    def _display_tile_frame(self):
+        """Display the current frame with overlays."""
+        if self.tile_current_frame is None:
+            return
+        
+        # Choose base image
+        if self.tile_show_prediction_var.get() and self.tile_current_prediction is not None:
+            img_display = self.tile_current_prediction.copy()
+        else:
+            img_display = self.tile_current_frame.copy()
+        
+        img_h, img_w = img_display.shape[:2]
+        
+        # Draw lines if enabled
+        if self.tile_show_lines_var.get() and self.tile_current_lines:
+            thickness = max(1, min(img_w, img_h) // 300)
+            endpoint_size = max(2, thickness + 1)
+            img_display = self._draw_lines_on_image(
+                img_display,
+                self.tile_current_lines,
+                color=(0, 255, 255),
+                thickness=thickness,
+                endpoint_size=endpoint_size
+            )
+        
+        # Draw regions if enabled
+        num_regions = 0
+        if self.tile_show_regions_var.get() and self.tile_current_lines:
+            # Find and draw regions
+            intersections = self._find_line_intersections(self.tile_current_lines, img_w, img_h)
+            regions = self._find_quadrilateral_regions(self.tile_current_lines, intersections, img_w, img_h)
+            num_regions = len(regions)
+            
+            if regions:
+                img_display = self._draw_regions_on_image(img_display, self.tile_current_lines, regions)
+        
+        self.lbl_tile_regions.config(text=f"Regions: {num_regions}")
+        
+        # Display on canvas
+        self._draw_tile_image(img_display)
+    
+    def _draw_tile_image(self, img_arr):
+        """Draw image on tile detector canvas."""
+        img_h, img_w = img_arr.shape[:2]
+        
+        canvas_w = self.tile_canvas.winfo_width()
+        canvas_h = self.tile_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, lambda: self._draw_tile_image(img_arr))
+            return
+        
+        # Scale to fit canvas
+        scale = min(canvas_w / img_w, canvas_h / img_h) * 0.95
+        new_w = int(img_w * scale)
+        new_h = int(img_h * scale)
+        
+        # Resize
+        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Convert to PhotoImage
+        img_pil = Image.fromarray(resized)
+        self.tile_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        # Center on canvas
+        offset_x = (canvas_w - new_w) // 2
+        offset_y = (canvas_h - new_h) // 2
+        
+        self.tile_canvas.delete("all")
+        self.tile_canvas.create_image(offset_x, offset_y, anchor=tk.NW, image=self.tile_photo_image)
+    
+    # ==================== End Tile Detector Tab Methods ====================
     
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to image coordinates."""
