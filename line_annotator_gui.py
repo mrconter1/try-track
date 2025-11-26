@@ -352,6 +352,7 @@ class RandomPatchViewer:
         
         # Inference state
         self.inference_samples = []  # List of {frame, prediction, source_info}
+        self.inference_selected_indices = set()  # Set of selected indices
         self.inference_idx = 0
         self.show_inference_prediction = False
         self.inference_stride = 64  # Stride for sliding window (64 = 50% overlap)
@@ -806,6 +807,15 @@ class RandomPatchViewer:
         # Canvas Area (Left)
         self.inference_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
         self.inference_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Bindings for selection
+        self.inference_canvas.bind("<Button-1>", self.on_inference_click)
+        self.inference_canvas.bind("<Button-3>", self.on_inference_right_click)
+        
+        # Context Menu
+        self.inference_context_menu = tk.Menu(self.root, tearoff=0)
+        self.inference_context_menu.add_command(label="Add selected to Labeling Queue", 
+                                                command=self.add_selected_to_labeling)
         
         # Sidebar (Right)
         sidebar = ttk.Frame(main_frame, width=300, padding=10)
@@ -1793,6 +1803,15 @@ class RandomPatchViewer:
         if not self.current_patch_info or len(self.history) == 0:
             return
         
+        # Confirmation dialog
+        result = messagebox.askyesno(
+            "Delete Sample", 
+            "Are you sure you want to delete this sample?\n\nThis will remove the sample and all its line annotations.",
+            icon='warning'
+        )
+        if not result:
+            return
+        
         # Remove from database if it exists there
         info = self.current_patch_info
         for i, sample in enumerate(self.db.samples):
@@ -2439,6 +2458,7 @@ class RandomPatchViewer:
         mode = self.inference_mode_var.get()
         num_samples = self.inference_samples_var.get()
         self.inference_samples = []
+        self.inference_selected_indices = set()  # Clear selection
         
         self.model.eval()
         
@@ -2505,6 +2525,7 @@ class RandomPatchViewer:
                     'detected_lines': detected_lines,
                     'source_video': os.path.basename(video_path),
                     'source_frame': frame_idx,
+                    'location': (x, y),  # Store location for adding to labeling
                     'size': (patch_size, patch_size),
                     'type': 'patch'
                 })
@@ -2657,6 +2678,15 @@ class RandomPatchViewer:
         cell_w = available_w // num_cols
         cell_h = available_h // num_rows
         
+        # Store grid geometry for click detection
+        self.inference_grid_geometry = {
+            'num_cols': num_cols,
+            'cell_w': cell_w,
+            'cell_h': cell_h,
+            'padding': padding,
+            'max_items': max_items
+        }
+        
         grid_img = np.full((canvas_h, canvas_w, 3), 32, dtype=np.uint8)
         
         for idx, sample in enumerate(self.inference_samples):
@@ -2664,6 +2694,18 @@ class RandomPatchViewer:
             
             row = idx // num_cols
             col = idx % num_cols
+            
+            # Position
+            x_start = padding + col * (cell_w + padding)
+            y_start = padding + row * (cell_h + padding)
+            
+            # Draw selection highlight border if selected
+            if idx in self.inference_selected_indices:
+                # Draw thick green border
+                cv2.rectangle(grid_img, 
+                             (x_start - 4, y_start - 4), 
+                             (x_start + cell_w + 4, y_start + cell_h + 4), 
+                             (0, 255, 0), 4)  # Green border, 4px thick
             
             # Choose frame or prediction
             if self.show_inference_prediction:
@@ -2694,13 +2736,170 @@ class RandomPatchViewer:
             
             resized = cv2.resize(img_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             
-            # Position
-            x_start = padding + col * (cell_w + padding) + (cell_w - new_w) // 2
-            y_start = padding + row * (cell_h + padding) + (cell_h - new_h) // 2
+            # Centered within cell
+            img_x = x_start + (cell_w - new_w) // 2
+            img_y = y_start + (cell_h - new_h) // 2
             
-            grid_img[y_start:y_start+new_h, x_start:x_start+new_w] = resized
+            grid_img[img_y:img_y+new_h, img_x:img_x+new_w] = resized
         
         self._draw_inference_image(grid_img)
+    
+    def on_inference_click(self, event):
+        """Handle click on inference grid to select/deselect items."""
+        if not hasattr(self, 'inference_grid_geometry') or not self.inference_samples:
+            return
+        if not hasattr(self, 'inference_display_offset') or not hasattr(self, 'inference_display_scale'):
+            return
+            
+        geom = self.inference_grid_geometry
+        
+        # Get display transform
+        offset_x, offset_y = self.inference_display_offset
+        scale = self.inference_display_scale
+        
+        # Convert canvas click to original image coordinates
+        # First subtract display offset, then divide by scale
+        x_in_scaled = event.x - offset_x
+        y_in_scaled = event.y - offset_y
+        
+        # Check if click is within the displayed image
+        if hasattr(self, 'inference_photo_image'):
+            img_w = self.inference_photo_image.width()
+            img_h = self.inference_photo_image.height()
+            if x_in_scaled < 0 or x_in_scaled >= img_w or y_in_scaled < 0 or y_in_scaled >= img_h:
+                return  # Click outside image
+        
+        # Convert to original (unscaled) image coordinates
+        x_orig = x_in_scaled / scale
+        y_orig = y_in_scaled / scale
+        
+        # Now convert to grid cell
+        padding = geom['padding']
+        cell_w = geom['cell_w']
+        cell_h = geom['cell_h']
+        num_cols = geom['num_cols']
+        
+        # Calculate which cell (accounting for padding between cells)
+        # Each cell occupies: padding + cell_w, and starts at padding + col*(cell_w + padding)
+        col = int((x_orig - padding) / (cell_w + padding))
+        row = int((y_orig - padding) / (cell_h + padding))
+        
+        # Verify click is actually within a cell (not in padding)
+        cell_x_start = padding + col * (cell_w + padding)
+        cell_y_start = padding + row * (cell_h + padding)
+        
+        if x_orig < cell_x_start or x_orig >= cell_x_start + cell_w:
+            return  # Click in horizontal padding
+        if y_orig < cell_y_start or y_orig >= cell_y_start + cell_h:
+            return  # Click in vertical padding
+        
+        if 0 <= col < num_cols and row >= 0:
+            idx = int(row * num_cols + col)
+            
+            if 0 <= idx < len(self.inference_samples) and idx < geom['max_items']:
+                # Toggle selection
+                if idx in self.inference_selected_indices:
+                    self.inference_selected_indices.remove(idx)
+                else:
+                    self.inference_selected_indices.add(idx)
+                
+                self.display_inference_sample()
+    
+    def on_inference_right_click(self, event):
+        """Handle right click on inference grid - shows context menu if items are selected."""
+        if not self.inference_samples:
+            return
+        
+        # Only show context menu if we have selections (don't auto-select on right click)
+        if self.inference_selected_indices:
+            self.inference_context_menu.post(event.x_root, event.y_root)
+    
+    def add_selected_to_labeling(self):
+        """Add selected inference samples to the labeling database."""
+        if not self.inference_selected_indices:
+            messagebox.showinfo("No Selection", "No samples selected. Left-click samples to select them first.")
+            return
+        
+        num_selected = len(self.inference_selected_indices)
+        
+        # Confirmation dialog
+        result = messagebox.askyesno(
+            "Add to Labeling Queue",
+            f"Add {num_selected} selected sample(s) to labeling queue?\n\nSelected indices: {sorted(self.inference_selected_indices)}",
+            icon='question'
+        )
+        if not result:
+            return
+            
+        count = 0
+        for idx in self.inference_selected_indices:
+            if idx < len(self.inference_samples):
+                sample_data = self.inference_samples[idx]
+                
+                # Create a new sample object
+                # Note: We need crop_rect (x, y, w, h)
+                # For Random Regions mode, we have this implicitly via location and size
+                # For Full Frame, we use the whole frame (0, 0, w, h)
+                
+                video_path = None
+                # Find full path from basename
+                for vp in self.video_paths:
+                    if os.path.basename(vp) == sample_data['source_video']:
+                        video_path = vp
+                        break
+                
+                if not video_path:
+                    continue
+                
+                frame_idx = sample_data['source_frame']
+                w, h = sample_data['size']
+                
+                # Use stored location or default to 0,0
+                if 'location' in sample_data:
+                    x, y = sample_data['location']
+                    crop_rect = (x, y, w, h)
+                else:
+                    # Full frame (no location stored usually means 0,0)
+                    crop_rect = (0, 0, w, h)
+                
+                # Add to database
+                self.db.find_sample(video_path, frame_idx, crop_rect)
+                
+                # Also add to history so it shows up immediately in labelling tab
+                # Use the frame data we already have
+                frame_rgb = sample_data['frame']  # Already RGB
+                
+                history_entry = {
+                    "video_path": video_path,
+                    "frame_idx": frame_idx,
+                    "crop_rect": crop_rect,
+                    "image": frame_rgb
+                }
+                self.history.append(history_entry)
+                
+                count += 1
+        
+        # Save database
+        self.db.save("line_annotations.json")
+        
+        # Update statistics in labelling tab
+        self.update_statistics()
+        
+        # Clear selection
+        self.inference_selected_indices.clear()
+        self.display_inference_sample()
+        
+        # Notify user
+        messagebox.showinfo("Success", f"Added {count} of {num_selected} selected samples to labeling queue.\n\nGo to Labelling tab to see them (they're at the end).")
+        
+        # Reload history to include new samples immediately
+        # We can append them to history directly to avoid restart
+        # But _load_history_from_db is better to be consistent
+        # For now, just saving is enough, user can reload or we can append manually
+        # Let's append to history so they show up
+        
+        # Actually, best to just reload history from DB
+        # But that's heavy. Let's just let user know.
     
     def _draw_inference_image(self, img_arr):
         """Draw inference image on canvas."""
@@ -2733,6 +2932,10 @@ class RandomPatchViewer:
         
         offset_x = (canvas_w - new_w) // 2
         offset_y = (canvas_h - new_h) // 2
+        
+        # Store display transform for click detection
+        self.inference_display_offset = (offset_x, offset_y)
+        self.inference_display_scale = scale
         
         self.inference_canvas.delete("all")
         self.inference_canvas.create_image(offset_x, offset_y, anchor=tk.NW, image=self.inference_photo_image)

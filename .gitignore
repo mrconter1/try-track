@@ -2,7 +2,6 @@
 *.jpg
 *.pyc
 *.png
-*.json
 profile.pstats
 *.pth
 cross_detector_best.pth
