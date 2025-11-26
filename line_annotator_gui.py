@@ -912,7 +912,7 @@ class RandomPatchViewer:
         ttk.Label(line_frame, text="Mode:").pack(anchor="w")
         self.line_detect_mode_var = tk.StringVar(value="HoughLinesP")
         line_mode_combo = ttk.Combobox(line_frame, textvariable=self.line_detect_mode_var,
-                                        values=["Extended Lines", "Skeleton + Contour", "HoughLinesP", "LSD", "Simple Contour"],
+                                        values=["Extended Lines", "Skeleton + Contour", "HoughLinesP", "HoughLinesP + Cluster", "LSD", "Simple Contour"],
                                         state="readonly", width=18)
         line_mode_combo.pack(fill=tk.X, pady=2)
         line_mode_combo.bind("<<ComboboxSelected>>", self._on_line_param_changed)
@@ -2610,6 +2610,23 @@ class RandomPatchViewer:
             make_slider(self.line_params_frame, "Max gap:", self.hough_max_gap_var, 1, 50, row)
             row += 1
         
+        if mode == "HoughLinesP + Cluster":
+            # Hough threshold
+            make_slider(self.line_params_frame, "Threshold:", self.hough_threshold_var, 10, 200, row)
+            row += 1
+            
+            # Max gap
+            make_slider(self.line_params_frame, "Max gap:", self.hough_max_gap_var, 1, 50, row)
+            row += 1
+            
+            # Cluster angle tolerance
+            make_slider(self.line_params_frame, "Cluster angle°:", self.line_cluster_angle_var, 5, 45, row)
+            row += 1
+            
+            # Cluster distance tolerance
+            make_slider(self.line_params_frame, "Cluster dist:", self.line_merge_dist_var, 5, 100, row)
+            row += 1
+        
         if mode == "Extended Lines":
             # Cluster angle tolerance
             make_slider(self.line_params_frame, "Cluster angle°:", self.line_cluster_angle_var, 5, 45, row)
@@ -2691,6 +2708,12 @@ class RandomPatchViewer:
             threshold = self.hough_threshold_var.get()
             max_gap = self.hough_max_gap_var.get()
             return self._detect_lines_hough(mask, min_length, max_lines, threshold, max_gap)
+        elif mode == "HoughLinesP + Cluster":
+            threshold = self.hough_threshold_var.get()
+            max_gap = self.hough_max_gap_var.get()
+            cluster_angle = self.line_cluster_angle_var.get()
+            cluster_dist = self.line_merge_dist_var.get()
+            return self._detect_lines_hough_clustered(mask, min_length, max_lines, threshold, max_gap, cluster_angle, cluster_dist)
         elif mode == "LSD":
             return self._detect_lines_lsd_mode(mask, min_length, max_lines, merge_dist, merge_angle)
         elif mode == "Simple Contour":
@@ -2778,6 +2801,186 @@ class RandomPatchViewer:
         # Sort by length and limit
         lines = sorted(lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
         return lines[:max_lines]
+    
+    def _detect_lines_hough_clustered(self, mask, min_length, max_lines, threshold, max_gap, cluster_angle_deg, cluster_dist):
+        """
+        Detect lines using HoughLinesP, then cluster collinear lines and extend to frame boundaries.
+        
+        Lines are considered collinear if they have similar angles and their infinite line
+        representations are close together.
+        """
+        if len(mask.shape) == 3:
+            mask_gray = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+        else:
+            mask_gray = mask
+        
+        h, w = mask_gray.shape
+        _, binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
+        
+        # Apply Canny edge detection
+        edges = cv2.Canny(binary, 50, 150)
+        
+        # Detect lines with HoughLinesP
+        hough_lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=threshold,
+                                       minLineLength=min_length, maxLineGap=max_gap)
+        
+        if hough_lines is None:
+            return []
+        
+        # Convert to list of (x1, y1, x2, y2)
+        raw_lines = [tuple(line[0]) for line in hough_lines]
+        
+        if len(raw_lines) == 0:
+            return []
+        
+        cluster_angle_rad = np.radians(cluster_angle_deg)
+        
+        def get_line_params(line):
+            """Get angle and perpendicular distance from origin for a line."""
+            x1, y1, x2, y2 = line
+            dx, dy = x2 - x1, y2 - y1
+            length = np.sqrt(dx**2 + dy**2)
+            if length < 1e-6:
+                return 0, 0, (x1, y1)
+            
+            # Normalize angle to [0, pi)
+            angle = np.arctan2(dy, dx)
+            if angle < 0:
+                angle += np.pi
+            if angle >= np.pi:
+                angle -= np.pi
+            
+            # Perpendicular distance from origin to the infinite line
+            # Using formula: |ax + by + c| / sqrt(a^2 + b^2)
+            # Line equation: dy*x - dx*y + (dx*y1 - dy*x1) = 0
+            midx, midy = (x1 + x2) / 2, (y1 + y2) / 2
+            perp_dist = abs(dy * 0 - dx * 0 + (dx * y1 - dy * x1)) / length
+            
+            return angle, perp_dist, (midx, midy)
+        
+        def lines_collinear(l1, l2, angle_thresh, dist_thresh):
+            """Check if two lines are approximately collinear."""
+            angle1, dist1, mid1 = get_line_params(l1)
+            angle2, dist2, mid2 = get_line_params(l2)
+            
+            # Check angle similarity (handle wrap-around at 0/pi)
+            angle_diff = abs(angle1 - angle2)
+            angle_diff = min(angle_diff, np.pi - angle_diff)
+            if angle_diff > angle_thresh:
+                return False
+            
+            # For collinear lines, also check that points from one line
+            # are close to the infinite extension of the other
+            x1, y1, x2, y2 = l1
+            x3, y3, x4, y4 = l2
+            
+            # Direction vector of line 1
+            dx1, dy1 = x2 - x1, y2 - y1
+            len1 = np.sqrt(dx1**2 + dy1**2)
+            if len1 < 1e-6:
+                return False
+            dx1, dy1 = dx1 / len1, dy1 / len1
+            
+            # Distance from midpoint of line 2 to infinite line 1
+            mid2x, mid2y = (x3 + x4) / 2, (y3 + y4) / 2
+            # Point to line distance
+            dist = abs((mid2x - x1) * dy1 - (mid2y - y1) * dx1)
+            
+            return dist < dist_thresh
+        
+        # Cluster collinear lines
+        used = set()
+        clusters = []
+        
+        for i, line in enumerate(raw_lines):
+            if i in used:
+                continue
+            
+            cluster = [line]
+            used.add(i)
+            
+            for j, other in enumerate(raw_lines):
+                if j in used:
+                    continue
+                if lines_collinear(line, other, cluster_angle_rad, cluster_dist):
+                    cluster.append(other)
+                    used.add(j)
+            
+            clusters.append(cluster)
+        
+        # For each cluster, fit a line and extend to frame boundaries
+        result_lines = []
+        
+        for cluster in clusters:
+            # Collect all endpoints from the cluster
+            all_points = []
+            for x1, y1, x2, y2 in cluster:
+                all_points.append([x1, y1])
+                all_points.append([x2, y2])
+            
+            all_points = np.array(all_points, dtype=np.float32)
+            
+            # Fit a line through all points using PCA
+            mean = all_points.mean(axis=0)
+            centered = all_points - mean
+            cov = np.cov(centered.T)
+            
+            if cov.shape != (2, 2):
+                continue
+            
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+            direction = eigenvectors[:, 1]  # Principal direction
+            dx, dy = direction[0], direction[1]
+            
+            # Extend line to image boundaries
+            t_values = []
+            
+            # Left edge (x = 0)
+            if abs(dx) > 1e-6:
+                t = -mean[0] / dx
+                y_at_t = mean[1] + t * dy
+                if 0 <= y_at_t <= h:
+                    t_values.append(t)
+            
+            # Right edge (x = w-1)
+            if abs(dx) > 1e-6:
+                t = (w - 1 - mean[0]) / dx
+                y_at_t = mean[1] + t * dy
+                if 0 <= y_at_t <= h:
+                    t_values.append(t)
+            
+            # Top edge (y = 0)
+            if abs(dy) > 1e-6:
+                t = -mean[1] / dy
+                x_at_t = mean[0] + t * dx
+                if 0 <= x_at_t <= w:
+                    t_values.append(t)
+            
+            # Bottom edge (y = h-1)
+            if abs(dy) > 1e-6:
+                t = (h - 1 - mean[1]) / dy
+                x_at_t = mean[0] + t * dx
+                if 0 <= x_at_t <= w:
+                    t_values.append(t)
+            
+            if len(t_values) < 2:
+                continue
+            
+            # Get the two extreme intersection points
+            t_min, t_max = min(t_values), max(t_values)
+            x1 = int(np.clip(mean[0] + t_min * dx, 0, w - 1))
+            y1 = int(np.clip(mean[1] + t_min * dy, 0, h - 1))
+            x2 = int(np.clip(mean[0] + t_max * dx, 0, w - 1))
+            y2 = int(np.clip(mean[1] + t_max * dy, 0, h - 1))
+            
+            # Check if line is long enough
+            length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            if length >= min_length:
+                result_lines.append((x1, y1, x2, y2))
+        
+        # Sort by length and limit
+        result_lines = sorted(result_lines, key=lambda l: (l[2]-l[0])**2 + (l[3]-l[1])**2, reverse=True)
+        return result_lines[:max_lines]
     
     def _detect_lines_lsd_mode(self, mask, min_length, max_lines, merge_dist, merge_angle):
         """Detect lines using OpenCV's LSD."""
