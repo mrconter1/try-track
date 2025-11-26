@@ -2616,195 +2616,72 @@ class RandomPatchViewer:
         
         return intersections
     
-    def _find_quadrilateral_regions(self, lines, intersections, img_w, img_h):
+    def _find_enclosed_regions(self, lines, img_w, img_h):
         """
-        Find square-like quadrilateral regions formed by line intersections.
+        Find enclosed regions by flood-filling from the edges.
         
-        A quadrilateral is formed when 4 intersections are connected by 4 lines,
-        with each intersection being the meeting point of exactly 2 of those lines.
-        
-        Filters for:
-        - Square-like shapes (aspect ratio close to 1)
-        - Areas close to the median (removes outliers)
+        Any area that is completely surrounded by lines (no path to the edge)
+        is considered an enclosed tile region.
         
         Args:
-            lines: List of lines
-            intersections: List of (x, y, line_i, line_j) tuples
+            lines: List of lines as [(x1, y1, x2, y2), ...]
             img_w, img_h: Image dimensions
             
         Returns:
-            List of quadrilaterals, each as [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+            List of regions, each as a list of contour points
         """
-        if len(intersections) < 4:
+        if not lines:
             return []
         
-        # Build a mapping: line_index -> list of intersections on that line
-        line_to_intersections = {}
-        for idx, (x, y, li, lj) in enumerate(intersections):
-            if li not in line_to_intersections:
-                line_to_intersections[li] = []
-            if lj not in line_to_intersections:
-                line_to_intersections[lj] = []
-            line_to_intersections[li].append(idx)
-            line_to_intersections[lj].append(idx)
+        # Create a mask and draw all lines on it
+        line_mask = np.zeros((img_h, img_w), dtype=np.uint8)
         
-        # Find all candidate quadrilaterals
-        candidates = []  # List of (corners_sorted, area, aspect_ratio)
-        checked = set()
+        # Draw lines with some thickness to ensure they connect
+        line_thickness = 2
+        for x1, y1, x2, y2 in lines:
+            cv2.line(line_mask, (int(x1), int(y1)), (int(x2), int(y2)), 255, line_thickness)
         
-        # For each pair of intersecting lines (starting corner)
-        for start_idx, (x0, y0, l0, l1) in enumerate(intersections):
-            # Try to form a quad starting from this corner
-            # We need to find 3 more corners that form a closed loop
-            
-            # From corner 0, we can go along line l0 or l1
-            for first_line in [l0, l1]:
-                other_first = l1 if first_line == l0 else l0
+        # Flood fill from all edges to mark the "outside" region
+        # We use a slightly larger canvas to handle edge cases
+        padded = np.zeros((img_h + 2, img_w + 2), dtype=np.uint8)
+        padded[1:-1, 1:-1] = line_mask
+        
+        # Create a mask for flood fill (needs to be 2 pixels larger in each dimension)
+        flood_mask = np.zeros((img_h + 4, img_w + 4), dtype=np.uint8)
+        
+        # Flood fill from corner (0,0) of padded image - this marks all "outside" areas
+        cv2.floodFill(padded, flood_mask, (0, 0), 128)
+        
+        # Now, any pixels that are still 0 (black) are enclosed regions
+        # (they weren't reached by the flood fill and aren't lines)
+        enclosed_mask = padded[1:-1, 1:-1].copy()
+        
+        # Enclosed regions are where the value is 0 (not filled, not lines)
+        enclosed_binary = (enclosed_mask == 0).astype(np.uint8) * 255
+        
+        # Find contours of enclosed regions
+        contours, _ = cv2.findContours(enclosed_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by area (remove tiny noise)
+        min_area = 100  # Minimum area in pixels
+        regions = []
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area >= min_area:
+                # Simplify contour to reduce points
+                epsilon = 0.02 * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, True)
                 
-                # Find other intersections on first_line
-                for idx1 in line_to_intersections.get(first_line, []):
-                    if idx1 == start_idx:
-                        continue
-                    x1, y1, l1a, l1b = intersections[idx1]
-                    
-                    # The second line at corner 1 (not first_line)
-                    second_line = l1b if l1a == first_line else l1a
-                    
-                    # Find intersections on second_line
-                    for idx2 in line_to_intersections.get(second_line, []):
-                        if idx2 in [start_idx, idx1]:
-                            continue
-                        x2, y2, l2a, l2b = intersections[idx2]
-                        
-                        # The third line at corner 2
-                        third_line = l2b if l2a == second_line else l2a
-                        
-                        # Find intersections on third_line
-                        for idx3 in line_to_intersections.get(third_line, []):
-                            if idx3 in [start_idx, idx1, idx2]:
-                                continue
-                            x3, y3, l3a, l3b = intersections[idx3]
-                            
-                            # The fourth line should be other_first to close the loop
-                            fourth_line = l3b if l3a == third_line else l3a
-                            
-                            if fourth_line == other_first:
-                                # Check if this intersection is connected back to start
-                                # via other_first line
-                                if start_idx in line_to_intersections.get(other_first, []):
-                                    # Found a quadrilateral!
-                                    quad_key = tuple(sorted([start_idx, idx1, idx2, idx3]))
-                                    if quad_key not in checked:
-                                        checked.add(quad_key)
-                                        
-                                        # Order corners in a consistent way (clockwise/counterclockwise)
-                                        corners = [(x0, y0), (x1, y1), (x2, y2), (x3, y3)]
-                                        
-                                        # Compute centroid
-                                        cx = sum(c[0] for c in corners) / 4
-                                        cy = sum(c[1] for c in corners) / 4
-                                        
-                                        # Sort by angle from centroid
-                                        corners_sorted = sorted(corners, 
-                                            key=lambda c: math.atan2(c[1] - cy, c[0] - cx))
-                                        
-                                        # Calculate area using shoelace formula
-                                        n = len(corners_sorted)
-                                        area = 0
-                                        for i in range(n):
-                                            j = (i + 1) % n
-                                            area += corners_sorted[i][0] * corners_sorted[j][1]
-                                            area -= corners_sorted[j][0] * corners_sorted[i][1]
-                                        area = abs(area) / 2
-                                        
-                                        if area < 100:  # Skip tiny quads
-                                            continue
-                                        
-                                        # Calculate aspect ratio using side lengths
-                                        # Measure all 4 side lengths
-                                        side_lengths = []
-                                        for i in range(4):
-                                            j = (i + 1) % 4
-                                            dx = corners_sorted[j][0] - corners_sorted[i][0]
-                                            dy = corners_sorted[j][1] - corners_sorted[i][1]
-                                            side_lengths.append(math.sqrt(dx*dx + dy*dy))
-                                        
-                                        # For a square, opposite sides should be equal
-                                        # and all sides should be similar
-                                        # Compare pairs of opposite sides
-                                        side_a = (side_lengths[0] + side_lengths[2]) / 2  # avg of opposite
-                                        side_b = (side_lengths[1] + side_lengths[3]) / 2  # avg of opposite
-                                        
-                                        if min(side_a, side_b) < 10:  # Avoid division by zero
-                                            continue
-                                        
-                                        aspect_ratio = max(side_a, side_b) / min(side_a, side_b)
-                                        
-                                        # Only keep square-ish shapes (aspect ratio < 1.5)
-                                        if aspect_ratio < 1.5:
-                                            candidates.append((corners_sorted, area, aspect_ratio))
+                # Convert to list of (x, y) tuples
+                points = [(int(p[0][0]), int(p[0][1])) for p in approx]
+                regions.append(points)
         
-        if not candidates:
-            return []
-        
-        # Step 1: Remove overlapping quads (keep the one with better aspect ratio)
-        def polygon_iou(poly1, poly2):
-            """Calculate intersection over union of two polygons."""
-            # Convert to numpy arrays for cv2
-            pts1 = np.array(poly1, dtype=np.float32).reshape(-1, 2)
-            pts2 = np.array(poly2, dtype=np.float32).reshape(-1, 2)
-            
-            # Use cv2.intersectConvexConvex for convex polygons
-            try:
-                ret, intersection = cv2.intersectConvexConvex(pts1, pts2)
-                if ret == 0 or intersection is None or len(intersection) < 3:
-                    return 0.0
-                
-                inter_area = cv2.contourArea(intersection)
-                area1 = cv2.contourArea(pts1)
-                area2 = cv2.contourArea(pts2)
-                
-                union_area = area1 + area2 - inter_area
-                if union_area < 1e-6:
-                    return 0.0
-                
-                return inter_area / union_area
-            except:
-                return 0.0
-        
-        # Sort by area (smaller first - prefer smaller quads when overlapping)
-        candidates_sorted = sorted(candidates, key=lambda c: c[1])
-        
-        non_overlapping = []
-        for corners, area, aspect in candidates_sorted:
-            is_overlapping = False
-            for existing_corners, _, _ in non_overlapping:
-                iou = polygon_iou(corners, existing_corners)
-                if iou > 0.3:  # More than 30% overlap
-                    is_overlapping = True
-                    break
-            
-            if not is_overlapping:
-                non_overlapping.append((corners, area, aspect))
-        
-        if not non_overlapping:
-            return []
-        
-        # Step 2: Filter by area - remove outliers (keep those close to median)
-        areas = [c[1] for c in non_overlapping]
-        median_area = sorted(areas)[len(areas) // 2]
-        
-        # Keep quads with area between 0.75x and 1.25x the median
-        filtered = []
-        for corners, area, aspect in non_overlapping:
-            if 0.75 * median_area <= area <= 1.25 * median_area:
-                filtered.append(corners)
-        
-        return filtered
+        return regions
     
     def _draw_regions_on_image(self, img, lines, regions=None):
         """
-        Draw lines and numbered quadrilateral regions on an image.
+        Draw lines and numbered enclosed regions on an image.
         
         Args:
             img: Image to draw on
@@ -2817,10 +2694,9 @@ class RandomPatchViewer:
         result = img.copy()
         img_h, img_w = result.shape[:2]
         
-        # Find intersections and regions if not provided
+        # Find enclosed regions if not provided
         if regions is None:
-            intersections = self._find_line_intersections(lines, img_w, img_h)
-            regions = self._find_quadrilateral_regions(lines, intersections, img_w, img_h)
+            regions = self._find_enclosed_regions(lines, img_w, img_h)
         
         # Draw regions with semi-transparent fill and number
         for idx, corners in enumerate(regions):
@@ -2847,9 +2723,10 @@ class RandomPatchViewer:
             # Draw border
             cv2.polylines(result, [pts], isClosed=True, color=color, thickness=2)
             
-            # Calculate centroid for label
-            cx = int(sum(c[0] for c in corners) / 4)
-            cy = int(sum(c[1] for c in corners) / 4)
+            # Calculate centroid for label (works for any polygon)
+            n = len(corners)
+            cx = int(sum(c[0] for c in corners) / n) if n > 0 else 0
+            cy = int(sum(c[1] for c in corners) / n) if n > 0 else 0
             
             # Draw number label with background
             label = str(idx + 1)
@@ -4425,9 +4302,8 @@ class RandomPatchViewer:
         # Draw regions if enabled
         num_regions = 0
         if self.tile_show_regions_var.get() and self.tile_current_lines:
-            # Find and draw regions
-            intersections = self._find_line_intersections(self.tile_current_lines, img_w, img_h)
-            regions = self._find_quadrilateral_regions(self.tile_current_lines, intersections, img_w, img_h)
+            # Find enclosed regions (areas with no lines inside)
+            regions = self._find_enclosed_regions(self.tile_current_lines, img_w, img_h)
             num_regions = len(regions)
             
             if regions:
