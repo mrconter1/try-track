@@ -371,6 +371,8 @@ class RandomPatchViewer:
         self.tile_current_lines = []
         self.tile_slider_debounce = None
         self.tile_photo_image = None
+        self.tile_grid_photo_image = None
+        self.tile_extracted_tiles = []  # List of (grid_pos, warped_tile)
         
         # UI Setup
         self.root.title("LineAnnotatorGUI")
@@ -4043,9 +4045,23 @@ class RandomPatchViewer:
         main_frame = ttk.Frame(self.tile_detector_tab)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Canvas Area (Left)
-        self.tile_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
-        self.tile_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Left panel: Video canvas on top, Tile grid on bottom
+        left_panel = ttk.Frame(main_frame)
+        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Canvas Area (Video frame) - Top half
+        video_frame_container = ttk.LabelFrame(left_panel, text="Video Frame", padding=2)
+        video_frame_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.tile_canvas = tk.Canvas(video_frame_container, bg="#222222", highlightthickness=0)
+        self.tile_canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Tile Grid Area - Bottom half
+        tile_grid_container = ttk.LabelFrame(left_panel, text="Extracted Tiles (Flattened)", padding=2)
+        tile_grid_container.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.tile_grid_canvas = tk.Canvas(tile_grid_container, bg="#333333", highlightthickness=0)
+        self.tile_grid_canvas.pack(fill=tk.BOTH, expand=True)
         
         # Sidebar (Right)
         sidebar = ttk.Frame(main_frame, width=300, padding=10)
@@ -4292,6 +4308,279 @@ class RandomPatchViewer:
         # Update info
         self.lbl_tile_lines.config(text=f"Lines: {len(self.tile_current_lines)}")
     
+    def _order_quad_points(self, points):
+        """Order quadrilateral points as: top-left, top-right, bottom-right, bottom-left."""
+        pts = np.array(points, dtype=np.float32)
+        
+        # Sort by y-coordinate
+        sorted_by_y = pts[np.argsort(pts[:, 1])]
+        
+        # Top two points (smallest y)
+        top = sorted_by_y[:2]
+        bottom = sorted_by_y[2:]
+        
+        # Sort by x to get left/right
+        top = top[np.argsort(top[:, 0])]
+        bottom = bottom[np.argsort(bottom[:, 0])]
+        
+        return np.array([top[0], top[1], bottom[1], bottom[0]], dtype=np.float32)
+    
+    def _extract_tile_from_quad(self, frame, quad, tile_size=80):
+        """Extract and warp a tile from a quadrilateral region."""
+        try:
+            src_pts = self._order_quad_points(quad)
+            dst_pts = np.array([
+                [0, 0],
+                [tile_size - 1, 0],
+                [tile_size - 1, tile_size - 1],
+                [0, tile_size - 1]
+            ], dtype=np.float32)
+            
+            M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+            warped = cv2.warpPerspective(frame, M, (tile_size, tile_size))
+            
+            return warped
+        except Exception:
+            return None
+    
+    def _assign_grid_positions_from_lines(self, regions, lines):
+        """Assign grid (row, col) positions using detected lines to define rows/columns."""
+        if not regions or not lines:
+            return {}
+        
+        # Calculate centroids for each region
+        region_data = []
+        for region in regions:
+            cx = sum(p[0] for p in region) / len(region)
+            cy = sum(p[1] for p in region) / len(region)
+            region_data.append({'cx': cx, 'cy': cy, 'region': region})
+        
+        if not region_data:
+            return {}
+        
+        # Compute angle for each line and cluster into two perpendicular groups
+        line_angles = []
+        for x1, y1, x2, y2 in lines:
+            dx, dy = x2 - x1, y2 - y1
+            angle = np.arctan2(dy, dx)
+            # Normalize to [0, pi)
+            while angle < 0:
+                angle += np.pi
+            while angle >= np.pi:
+                angle -= np.pi
+            line_angles.append(angle)
+        
+        if not line_angles:
+            return {}
+        
+        # Find the two dominant directions (should be ~90° apart)
+        # Sort angles and find clusters
+        sorted_angles = sorted(line_angles)
+        
+        # Use median as first direction
+        median_angle = sorted_angles[len(sorted_angles) // 2]
+        
+        # Cluster lines into two groups based on angle
+        angle_threshold = np.pi / 6  # 30 degrees tolerance
+        group1_lines = []  # Lines close to median_angle
+        group2_lines = []  # Lines perpendicular to median_angle
+        
+        for i, (x1, y1, x2, y2) in enumerate(lines):
+            angle = line_angles[i]
+            
+            # Check if close to median_angle
+            diff1 = abs(angle - median_angle)
+            diff1 = min(diff1, np.pi - diff1)
+            
+            # Check if close to perpendicular (median_angle + pi/2)
+            perp_angle = median_angle + np.pi / 2
+            if perp_angle >= np.pi:
+                perp_angle -= np.pi
+            diff2 = abs(angle - perp_angle)
+            diff2 = min(diff2, np.pi - diff2)
+            
+            if diff1 < angle_threshold:
+                group1_lines.append((x1, y1, x2, y2, angle))
+            elif diff2 < angle_threshold:
+                group2_lines.append((x1, y1, x2, y2, angle))
+        
+        # For each group, compute perpendicular distance from origin to sort lines
+        def get_line_position(line_data, ref_angle):
+            """Get position of line along perpendicular direction."""
+            x1, y1, x2, y2, angle = line_data
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            # Project midpoint onto perpendicular direction
+            perp_x = np.cos(ref_angle + np.pi / 2)
+            perp_y = np.sin(ref_angle + np.pi / 2)
+            return mx * perp_x + my * perp_y
+        
+        # Sort lines by their perpendicular position
+        if group1_lines:
+            ref_angle1 = median_angle
+            group1_lines.sort(key=lambda l: get_line_position(l, ref_angle1))
+            group1_positions = [get_line_position(l, ref_angle1) for l in group1_lines]
+        else:
+            group1_positions = []
+        
+        if group2_lines:
+            ref_angle2 = median_angle + np.pi / 2
+            if ref_angle2 >= np.pi:
+                ref_angle2 -= np.pi
+            group2_lines.sort(key=lambda l: get_line_position(l, ref_angle2))
+            group2_positions = [get_line_position(l, ref_angle2) for l in group2_lines]
+        else:
+            group2_positions = []
+        
+        # Function to find which slot a point falls into given sorted line positions
+        def find_slot(positions, value):
+            """Find which slot (between lines) a value falls into."""
+            if not positions:
+                return 0
+            for i, pos in enumerate(positions):
+                if value < pos:
+                    return i
+            return len(positions)
+        
+        # Assign row/col to each region based on which lines it's between
+        grid_map = {}
+        for r in region_data:
+            cx, cy = r['cx'], r['cy']
+            
+            # Project centroid onto both perpendicular directions
+            if group1_lines:
+                proj1 = cx * np.cos(ref_angle1 + np.pi / 2) + cy * np.sin(ref_angle1 + np.pi / 2)
+                idx1 = find_slot(group1_positions, proj1)
+            else:
+                idx1 = 0
+            
+            if group2_lines:
+                proj2 = cx * np.cos(ref_angle2 + np.pi / 2) + cy * np.sin(ref_angle2 + np.pi / 2)
+                idx2 = find_slot(group2_positions, proj2)
+            else:
+                idx2 = 0
+            
+            # Determine which group is "rows" and which is "columns"
+            # Use the angle to decide: more horizontal = columns, more vertical = rows
+            if abs(np.cos(median_angle)) > abs(np.sin(median_angle)):
+                # Group1 is more horizontal -> group1 defines rows
+                row, col = idx1, idx2
+            else:
+                # Group1 is more vertical -> group1 defines columns
+                row, col = idx2, idx1
+            
+            grid_pos = (row, col)
+            
+            # Handle collisions
+            if grid_pos not in grid_map:
+                grid_map[grid_pos] = r
+        
+        return {pos: data['region'] for pos, data in grid_map.items()}
+    
+    def _assign_grid_positions(self, regions, lines=None):
+        """Assign grid positions - uses lines if available, otherwise falls back to centroid method."""
+        if lines and len(lines) >= 4:
+            return self._assign_grid_positions_from_lines(regions, lines)
+        
+        # Fallback: simple centroid-based assignment
+        if not regions:
+            return {}
+        
+        region_data = []
+        for region in regions:
+            cx = sum(p[0] for p in region) / len(region)
+            cy = sum(p[1] for p in region) / len(region)
+            region_data.append({'cx': cx, 'cy': cy, 'region': region})
+        
+        # Simple grid assignment based on sorted positions
+        xs = sorted(set(round(r['cx'] / 50) * 50 for r in region_data))
+        ys = sorted(set(round(r['cy'] / 50) * 50 for r in region_data))
+        
+        grid_map = {}
+        for r in region_data:
+            col = min(range(len(xs)), key=lambda i: abs(xs[i] - r['cx'])) if xs else 0
+            row = min(range(len(ys)), key=lambda i: abs(ys[i] - r['cy'])) if ys else 0
+            grid_pos = (row, col)
+            if grid_pos not in grid_map:
+                grid_map[grid_pos] = r
+        
+        return {pos: data['region'] for pos, data in grid_map.items()}
+    
+    def _extract_tiles_from_regions(self, frame, regions, lines=None, tile_size=80):
+        """Extract flattened tiles from all detected regions."""
+        if not regions or frame is None:
+            return []
+        
+        grid_map = self._assign_grid_positions(regions, lines)
+        tiles = []
+        
+        for (row, col), region in grid_map.items():
+            warped = self._extract_tile_from_quad(frame, region, tile_size)
+            if warped is not None:
+                tiles.append(((row, col), warped))
+        
+        return tiles
+    
+    def _display_tile_grid(self):
+        """Display extracted tiles in a grid."""
+        if not self.tile_extracted_tiles:
+            self.tile_grid_canvas.delete("all")
+            return
+        
+        canvas_w = self.tile_grid_canvas.winfo_width()
+        canvas_h = self.tile_grid_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            return
+        
+        # Find grid bounds
+        rows = [pos[0] for pos, _ in self.tile_extracted_tiles]
+        cols = [pos[1] for pos, _ in self.tile_extracted_tiles]
+        
+        if not rows or not cols:
+            return
+        
+        min_row, max_row = min(rows), max(rows)
+        min_col, max_col = min(cols), max(cols)
+        
+        grid_rows = max_row - min_row + 1
+        grid_cols = max_col - min_col + 1
+        
+        # Calculate tile display size to fit canvas
+        tile_size = min(
+            (canvas_w - 20) // max(grid_cols, 1),
+            (canvas_h - 20) // max(grid_rows, 1),
+            100  # Max tile size
+        )
+        tile_size = max(tile_size, 20)  # Min tile size
+        
+        # Create composite image
+        grid_w = grid_cols * tile_size
+        grid_h = grid_rows * tile_size
+        grid_img = np.full((grid_h, grid_w, 3), 50, dtype=np.uint8)
+        
+        for (row, col), tile in self.tile_extracted_tiles:
+            # Calculate position in grid
+            y = (row - min_row) * tile_size
+            x = (col - min_col) * tile_size
+            
+            # Resize tile
+            resized = cv2.resize(tile, (tile_size, tile_size))
+            grid_img[y:y+tile_size, x:x+tile_size] = resized
+            
+            # Draw border
+            cv2.rectangle(grid_img, (x, y), (x+tile_size-1, y+tile_size-1), (100, 100, 100), 1)
+        
+        # Center in canvas
+        offset_x = (canvas_w - grid_w) // 2
+        offset_y = (canvas_h - grid_h) // 2
+        
+        # Convert to PhotoImage and display
+        img_pil = Image.fromarray(grid_img)
+        self.tile_grid_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        self.tile_grid_canvas.delete("all")
+        self.tile_grid_canvas.create_image(offset_x, offset_y, anchor="nw", image=self.tile_grid_photo_image)
+    
     def _display_tile_frame(self):
         """Display the current frame with overlays."""
         if self.tile_current_frame is None:
@@ -4317,20 +4606,32 @@ class RandomPatchViewer:
                 endpoint_size=endpoint_size
             )
         
-        # Draw regions if enabled
+        # Draw regions if enabled and extract tiles
         num_regions = 0
-        if self.tile_show_regions_var.get() and self.tile_current_lines:
+        regions = []
+        if self.tile_current_lines:
             # Find enclosed regions (areas with no lines inside)
             regions = self._find_enclosed_regions(self.tile_current_lines, img_w, img_h)
             num_regions = len(regions)
             
-            if regions:
+            if self.tile_show_regions_var.get() and regions:
                 img_display = self._draw_regions_on_image(img_display, self.tile_current_lines, regions)
         
         self.lbl_tile_regions.config(text=f"Regions: {num_regions}")
         
+        # Extract flattened tiles from regions (pass lines for better grid assignment)
+        if regions and self.tile_current_frame is not None:
+            self.tile_extracted_tiles = self._extract_tiles_from_regions(
+                self.tile_current_frame, regions, self.tile_current_lines
+            )
+        else:
+            self.tile_extracted_tiles = []
+        
         # Display on canvas
         self._draw_tile_image(img_display)
+        
+        # Display tile grid
+        self._display_tile_grid()
     
     def _draw_tile_image(self, img_arr):
         """Draw image on tile detector canvas."""
