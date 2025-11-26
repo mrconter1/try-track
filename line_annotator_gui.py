@@ -3320,7 +3320,7 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
     # Mixed precision training for faster GPU performance
     use_amp = device.type == 'cuda'
     if use_amp:
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
         print(f"[INFO] Mixed Precision (AMP): ENABLED ✓", flush=True)
     else:
         scaler = None
@@ -3375,10 +3375,13 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
             
             # Mixed precision forward pass
             if use_amp:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = model(images)
-                    bce = criterion(outputs, masks)
-                    dice = dice_loss(outputs, masks)
+                    # Cast to float32 for loss computation (BCELoss not safe with float16)
+                    outputs_f32 = outputs.float()
+                    masks_f32 = masks.float()
+                    bce = criterion(outputs_f32, masks_f32)
+                    dice = dice_loss(outputs_f32, masks_f32)
                     loss = 0.5 * bce + 0.5 * dice
                 
                 scaler.scale(loss).backward()
@@ -3411,10 +3414,12 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
                 images, masks = images.to(device), masks.to(device)
                 
                 if use_amp:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         outputs = model(images)
-                        bce = criterion(outputs, masks)
-                        dice = dice_loss(outputs, masks)
+                        outputs_f32 = outputs.float()
+                        masks_f32 = masks.float()
+                        bce = criterion(outputs_f32, masks_f32)
+                        dice = dice_loss(outputs_f32, masks_f32)
                         loss = 0.5 * bce + 0.5 * dice
                 else:
                     outputs = model(images)
