@@ -3307,17 +3307,29 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
     train_dataset = LineDataset(train_samples)
     val_dataset = LineDataset(val_samples)
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                             num_workers=0, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                           num_workers=0, pin_memory=True)
-    
-    print(f"[INFO] Batch size: {batch_size}")
-    print(f"[INFO] Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
-    
-    # Initialize model
+    # Initialize device first
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
+    
+    # Check GPU info
+    if device.type == 'cuda':
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"[INFO] GPU: {gpu_name} ({gpu_mem:.1f} GB)")
+        if batch_size < 128:
+            print(f"[TIP] Your GPU can handle batch_size 256-512 for faster training!")
+    
+    # Use more workers on Linux/Colab for faster data loading
+    num_workers = 4 if device.type == 'cuda' else 0
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                             num_workers=num_workers, pin_memory=True, persistent_workers=num_workers>0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                           num_workers=num_workers, pin_memory=True, persistent_workers=num_workers>0)
+    
+    print(f"[INFO] Batch size: {batch_size}")
+    print(f"[INFO] Num workers: {num_workers}")
+    print(f"[INFO] Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
     
     model = MobileUNet(pretrained=True).to(device)
     print("[INFO] Loaded MobileNetV2 backbone (pretrained on ImageNet)")
@@ -3331,6 +3343,12 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
     print(f"[INFO] Optimizer: Adam (lr={lr}, weight_decay=1e-4)")
     print(f"[INFO] Scheduler: CosineAnnealingLR (T_max={epochs})")
     print(f"[INFO] Output model: {model_name}.pth, {model_name}_best.pth")
+    
+    # Mixed precision training for faster GPU performance
+    use_amp = device.type == 'cuda'
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    if use_amp:
+        print(f"[INFO] Mixed Precision (AMP): Enabled - faster training!")
     
     # Dice loss helper
     def dice_loss(pred, target, smooth=1e-8):
@@ -3353,15 +3371,29 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
             images, masks = images.to(device), masks.to(device)
             
             optimizer.zero_grad()
-            outputs = model(images)
             
-            bce = criterion(outputs, masks)
-            dice = dice_loss(outputs, masks)
-            loss = 0.5 * bce + 0.5 * dice
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            # Mixed precision forward pass
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    outputs = model(images)
+                    bce = criterion(outputs, masks)
+                    dice = dice_loss(outputs, masks)
+                    loss = 0.5 * bce + 0.5 * dice
+                
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(images)
+                bce = criterion(outputs, masks)
+                dice = dice_loss(outputs, masks)
+                loss = 0.5 * bce + 0.5 * dice
+                
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
             
             train_loss += loss.item()
             
@@ -3376,10 +3408,19 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
         with torch.no_grad():
             for images, masks in val_loader:
                 images, masks = images.to(device), masks.to(device)
-                outputs = model(images)
-                bce = criterion(outputs, masks)
-                dice = dice_loss(outputs, masks)
-                loss = 0.5 * bce + 0.5 * dice
+                
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        outputs = model(images)
+                        bce = criterion(outputs, masks)
+                        dice = dice_loss(outputs, masks)
+                        loss = 0.5 * bce + 0.5 * dice
+                else:
+                    outputs = model(images)
+                    bce = criterion(outputs, masks)
+                    dice = dice_loss(outputs, masks)
+                    loss = 0.5 * bce + 0.5 * dice
+                    
                 val_loss += loss.item()
         
         val_loss /= len(val_loader)
