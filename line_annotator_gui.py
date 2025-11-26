@@ -3303,21 +3303,28 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
     print(f"[INFO] Train: {len(train_samples)}, Validation: {len(val_samples)}")
     
     # Create datasets and loaders
-    print(f"\n[STEP 3/4] Initializing model and data loaders...")
+    print(f"\n[STEP 3/4] Initializing model and data loaders...", flush=True)
     train_dataset = LineDataset(train_samples)
     val_dataset = LineDataset(val_samples)
     
-    # Initialize device first
+    # Initialize device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Device: {device}")
+    print(f"[INFO] Device: {device}", flush=True)
     
-    # Check GPU info
+    # Check GPU info and print details
     if device.type == 'cuda':
         gpu_name = torch.cuda.get_device_name(0)
         gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        print(f"[INFO] GPU: {gpu_name} ({gpu_mem:.1f} GB)")
-        if batch_size < 128:
-            print(f"[TIP] Your GPU can handle batch_size 256-512 for faster training!")
+        print(f"[INFO] GPU: {gpu_name} ({gpu_mem:.1f} GB)", flush=True)
+    
+    # Mixed precision training for faster GPU performance
+    use_amp = device.type == 'cuda'
+    if use_amp:
+        scaler = torch.cuda.amp.GradScaler()
+        print(f"[INFO] Mixed Precision (AMP): ENABLED ✓", flush=True)
+    else:
+        scaler = None
+        print(f"[INFO] Mixed Precision (AMP): Disabled (CPU mode)", flush=True)
     
     # Use more workers on Linux/Colab for faster data loading
     num_workers = 4 if device.type == 'cuda' else 0
@@ -3327,28 +3334,22 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
                            num_workers=num_workers, pin_memory=True, persistent_workers=num_workers>0)
     
-    print(f"[INFO] Batch size: {batch_size}")
-    print(f"[INFO] Num workers: {num_workers}")
-    print(f"[INFO] Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    print(f"[INFO] Batch size: {batch_size}", flush=True)
+    print(f"[INFO] Num workers: {num_workers}", flush=True)
+    print(f"[INFO] Train batches: {len(train_loader)}, Val batches: {len(val_loader)}", flush=True)
     
     model = MobileUNet(pretrained=True).to(device)
-    print("[INFO] Loaded MobileNetV2 backbone (pretrained on ImageNet)")
+    print("[INFO] Loaded MobileNetV2 backbone (pretrained on ImageNet)", flush=True)
     
     # Loss and optimizer
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     
-    print(f"[INFO] Loss: BCE + Dice (combined)")
-    print(f"[INFO] Optimizer: Adam (lr={lr}, weight_decay=1e-4)")
-    print(f"[INFO] Scheduler: CosineAnnealingLR (T_max={epochs})")
-    print(f"[INFO] Output model: {model_name}.pth, {model_name}_best.pth")
-    
-    # Mixed precision training for faster GPU performance
-    use_amp = device.type == 'cuda'
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
-    if use_amp:
-        print(f"[INFO] Mixed Precision (AMP): Enabled - faster training!")
+    print(f"[INFO] Loss: BCE + Dice (combined)", flush=True)
+    print(f"[INFO] Optimizer: Adam (lr={lr}, weight_decay=1e-4)", flush=True)
+    print(f"[INFO] Scheduler: CosineAnnealingLR (T_max={epochs})", flush=True)
+    print(f"[INFO] Output model: {model_name}.pth, {model_name}_best.pth", flush=True)
     
     # Dice loss helper
     def dice_loss(pred, target, smooth=1e-8):
