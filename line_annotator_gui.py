@@ -384,10 +384,10 @@ class RandomPatchViewer:
         
         # Bindings
         self.root.bind("<Configure>", self.on_resize)
-        self.root.bind("<a>", lambda e: self.prev_patch())
-        self.root.bind("<d>", lambda e: self.next_patch())
-        self.root.bind("<Left>", lambda e: self.prev_patch())
-        self.root.bind("<Right>", lambda e: self.next_patch())
+        self.root.bind("<a>", lambda e: self._on_a_key())
+        self.root.bind("<d>", lambda e: self._on_d_key())
+        self.root.bind("<Left>", lambda e: self._on_a_key())
+        self.root.bind("<Right>", lambda e: self._on_d_key())
         self.root.bind("<m>", lambda e: self.on_toggle_mask_key())
         self.root.bind("<l>", lambda e: self.toggle_lines())
         self.root.bind("<Delete>", lambda e: self.delete_selected_line())
@@ -1990,6 +1990,34 @@ class RandomPatchViewer:
         if current_tab == 4:  # Tile Detector tab
             if self.model is None:
                 self._load_tile_detector_model()
+    
+    def _on_a_key(self):
+        """Handle 'a' key - step backward (context-dependent)."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 4:  # Tile Detector tab
+            self._tile_step_frame(-1)
+        else:
+            self.prev_patch()
+    
+    def _on_d_key(self):
+        """Handle 'd' key - step forward (context-dependent)."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 4:  # Tile Detector tab
+            self._tile_step_frame(1)
+        else:
+            self.next_patch()
+    
+    def _tile_step_frame(self, delta):
+        """Step the tile detector frame by delta frames."""
+        if self.tile_cap is None:
+            return
+        
+        current = self.tile_frame_var.get()
+        new_frame = max(0, min(self.tile_total_frames - 1, current + delta))
+        
+        if new_frame != current:
+            self.tile_frame_var.set(new_frame)
+            self._load_and_predict_frame(new_frame)
 
     # Training Methods
     
