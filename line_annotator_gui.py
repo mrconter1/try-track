@@ -3218,8 +3218,8 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
         mask = np.zeros((patch_size, patch_size), dtype=np.uint8)
         
         for line in sample.lines:
-            p1 = (line['start'][0] - crop_x, line['start'][1] - crop_y)
-            p2 = (line['end'][0] - crop_x, line['end'][1] - crop_y)
+            p1 = (int(line.start[0] - crop_x), int(line.start[1] - crop_y))
+            p2 = (int(line.end[0] - crop_x), int(line.end[1] - crop_y))
             cv2.line(mask, p1, p2, 255, thickness=1)
         
         # Random augmentations
