@@ -65,10 +65,15 @@ class AnnotationDatabase:
     
     def to_dict(self):
         """Convert to dictionary for JSON serialization."""
+        def to_relative_path(path):
+            """Convert absolute path to relative path (videos/filename.mp4)."""
+            basename = path.replace('\\', '/').split('/')[-1]
+            return f"videos/{basename}"
+        
         return {
             "samples": [
                 {
-                    "video_path": sample.video_path,
+                    "video_path": to_relative_path(sample.video_path),
                     "frame_idx": sample.frame_idx,
                     "crop_rect": list(sample.crop_rect),
                     "lines": [
@@ -3159,10 +3164,17 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
         return False
     
     # Build a mapping from video basenames to full paths
+    # Handle both Windows and Unix path separators
+    def get_basename(path):
+        # Split on both \ and / to handle cross-platform paths
+        return path.replace('\\', '/').split('/')[-1]
+    
     video_path_map = {}
     for vp in video_paths:
-        basename = os.path.basename(vp)
+        basename = get_basename(vp)
         video_path_map[basename] = vp
+    
+    print(f"[INFO] Found {len(video_path_map)} videos in folder")
     
     # Pre-load frames
     print(f"\n[STEP 1/4] Pre-loading frames...")
@@ -3173,7 +3185,7 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
         # Resolve video path - try original first, then by basename
         video_path = sample.video_path
         if not os.path.exists(video_path):
-            basename = os.path.basename(video_path)
+            basename = get_basename(video_path)
             if basename in video_path_map:
                 video_path = video_path_map[basename]
             else:
