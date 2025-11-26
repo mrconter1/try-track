@@ -910,7 +910,7 @@ class RandomPatchViewer:
         
         # Mode dropdown
         ttk.Label(line_frame, text="Mode:").pack(anchor="w")
-        self.line_detect_mode_var = tk.StringVar(value="Extended Lines")
+        self.line_detect_mode_var = tk.StringVar(value="HoughLinesP")
         line_mode_combo = ttk.Combobox(line_frame, textvariable=self.line_detect_mode_var,
                                         values=["Extended Lines", "Skeleton + Contour", "HoughLinesP", "LSD", "Simple Contour"],
                                         state="readonly", width=18)
@@ -929,7 +929,7 @@ class RandomPatchViewer:
         # Extended Lines parameters
         self.line_cluster_angle_var = tk.IntVar(value=15)  # Angle tolerance for clustering
         self.line_min_pixels_var = tk.IntVar(value=50)     # Minimum pixels to form a line
-        self.line_max_lines_var = tk.IntVar(value=15)
+        self.line_max_lines_var = tk.IntVar(value=28)
         
         # HoughLinesP specific
         self.hough_threshold_var = tk.IntVar(value=50)
