@@ -3135,7 +3135,7 @@ def find_videos(input_paths):
     
     return sorted(list(set(video_files)))
 
-def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line_detector_unet"):
+def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line_detector_unet", use_amp=True):
     """
     CLI training mode - no GUI, verbose console output.
     """
@@ -3318,13 +3318,16 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
         print(f"[INFO] GPU: {gpu_name} ({gpu_mem:.1f} GB)", flush=True)
     
     # Mixed precision training for faster GPU performance
-    use_amp = device.type == 'cuda'
+    use_amp = use_amp and device.type == 'cuda'
     if use_amp:
         scaler = torch.amp.GradScaler('cuda')
         print(f"[INFO] Mixed Precision (AMP): ENABLED ✓", flush=True)
     else:
         scaler = None
-        print(f"[INFO] Mixed Precision (AMP): Disabled (CPU mode)", flush=True)
+        if device.type == 'cuda':
+            print(f"[INFO] Mixed Precision (AMP): DISABLED (--no-amp flag)", flush=True)
+        else:
+            print(f"[INFO] Mixed Precision (AMP): Disabled (CPU mode)", flush=True)
     
     # Use more workers on Linux/Colab for faster data loading
     num_workers = 4 if device.type == 'cuda' else 0
@@ -3471,6 +3474,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate (default: 0.001)")
     parser.add_argument("--model-name", type=str, default="line_detector_unet", help="Output model name (default: line_detector_unet)")
+    parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision training (AMP)")
     
     args = parser.parse_args()
     
@@ -3503,7 +3507,8 @@ def main():
             batch_size=args.batch_size,
             epochs=args.epochs,
             lr=args.lr,
-            model_name=args.model_name
+            model_name=args.model_name,
+            use_amp=not args.no_amp
         )
         return
     
