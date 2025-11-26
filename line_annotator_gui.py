@@ -2662,19 +2662,37 @@ class RandomPatchViewer:
         # Find contours of enclosed regions
         contours, _ = cv2.findContours(enclosed_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Filter contours by area (remove tiny noise)
+        # Filter contours: only quadrilaterals with reasonable area
         min_area = 100  # Minimum area in pixels
-        regions = []
+        candidates = []  # List of (points, area)
         
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area >= min_area:
-                # Simplify contour to reduce points
-                epsilon = 0.02 * cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, epsilon, True)
-                
-                # Convert to list of (x, y) tuples
-                points = [(int(p[0][0]), int(p[0][1])) for p in approx]
+            if area < min_area:
+                continue
+            
+            # Simplify contour to reduce points
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            
+            # Only keep quadrilaterals (4 corners)
+            if len(approx) != 4:
+                continue
+            
+            # Convert to list of (x, y) tuples
+            points = [(int(p[0][0]), int(p[0][1])) for p in approx]
+            candidates.append((points, area))
+        
+        if not candidates:
+            return []
+        
+        # Filter by area: exclude outliers (keep within 0.5x to 1.5x of median)
+        areas = [c[1] for c in candidates]
+        median_area = sorted(areas)[len(areas) // 2]
+        
+        regions = []
+        for points, area in candidates:
+            if 0.5 * median_area <= area <= 1.5 * median_area:
                 regions.append(points)
         
         return regions
