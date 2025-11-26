@@ -823,35 +823,48 @@ class RandomPatchViewer:
         btn_load_model.pack(fill=tk.X, pady=5)
         
         # Sample controls
-        sample_frame = ttk.LabelFrame(sidebar, text="Full Frame Inference", padding=10)
+        sample_frame = ttk.LabelFrame(sidebar, text="Inference Settings", padding=10)
         sample_frame.pack(fill=tk.X, pady=(0, 10))
         
-        ttk.Label(sample_frame, text="Number of frames:").pack(anchor="w", pady=2)
+        # Mode selection (Region vs Full Frame)
+        ttk.Label(sample_frame, text="Inference Mode:").pack(anchor="w", pady=2)
+        self.inference_mode_var = tk.StringVar(value="Full Frame")
+        mode_combo = ttk.Combobox(sample_frame, textvariable=self.inference_mode_var, 
+                                  values=["Full Frame", "Random Regions"], state="readonly")
+        mode_combo.pack(fill=tk.X, pady=5)
+        mode_combo.bind("<<ComboboxSelected>>", self._update_inference_controls)
+        
+        # Number of samples/frames
+        self.lbl_num_samples = ttk.Label(sample_frame, text="Number of frames:")
+        self.lbl_num_samples.pack(anchor="w", pady=2)
+        
         self.inference_samples_var = tk.IntVar(value=3)
-        samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=10, increment=1, 
+        self.samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=100, increment=1, 
                                        textvariable=self.inference_samples_var, width=10)
-        samples_spinbox.pack(anchor="w", pady=5)
+        self.samples_spinbox.pack(anchor="w", pady=5)
         
-        # Full frame vs sliding window toggle
-        self.full_frame_mode_var = tk.BooleanVar(value=True)
-        full_frame_check = ttk.Checkbutton(sample_frame, text="Full frame (fast)", 
-                                           variable=self.full_frame_mode_var,
-                                           command=self._toggle_stride_controls)
-        full_frame_check.pack(anchor="w", pady=5)
-        
-        # Stride controls (only visible when not using full frame mode)
+        # Stride controls (container)
         self.stride_frame = ttk.Frame(sample_frame)
         self.stride_frame.pack(fill=tk.X)
         
-        ttk.Label(self.stride_frame, text="Stride (overlap):").pack(anchor="w", pady=2)
+        ttk.Label(self.stride_frame, text="Full Frame Stride:").pack(anchor="w", pady=2)
         self.inference_stride_var = tk.IntVar(value=64)
         stride_spinbox = ttk.Spinbox(self.stride_frame, from_=32, to=128, increment=16, 
                                       textvariable=self.inference_stride_var, width=10)
         stride_spinbox.pack(anchor="w", pady=5)
-        ttk.Label(self.stride_frame, text="(64=50% overlap, 128=no overlap)", font=("TkDefaultFont", 8)).pack(anchor="w")
         
-        # Initially hide stride controls if full frame is selected
-        self._toggle_stride_controls()
+        # Full frame direct inference toggle
+        self.direct_inference_frame = ttk.Frame(sample_frame)
+        self.direct_inference_frame.pack(fill=tk.X)
+        
+        self.full_frame_mode_var = tk.BooleanVar(value=True)
+        full_frame_check = ttk.Checkbutton(self.direct_inference_frame, text="Use Direct Inference (Fast)", 
+                                           variable=self.full_frame_mode_var,
+                                           command=self._toggle_stride_controls)
+        full_frame_check.pack(anchor="w", pady=5)
+        
+        # Initialize UI state
+        self._update_inference_controls()
         
         btn_generate_inference = ttk.Button(sample_frame, text="Generate Predictions", 
                                            command=self.generate_inference_samples)
@@ -2371,6 +2384,30 @@ class RandomPatchViewer:
         
         return result
     
+    def _update_inference_controls(self, event=None):
+        """Update UI based on selected inference mode."""
+        mode = self.inference_mode_var.get()
+        
+        if mode == "Full Frame":
+            self.lbl_num_samples.config(text="Number of frames:")
+            self.samples_spinbox.config(to=10)
+            if self.inference_samples_var.get() > 10:
+                self.inference_samples_var.set(3)
+            
+            # Show full frame options
+            self.direct_inference_frame.pack(fill=tk.X)
+            self._toggle_stride_controls()
+            
+        else:  # Random Regions
+            self.lbl_num_samples.config(text="Number of patches:")
+            self.samples_spinbox.config(to=100)
+            if self.inference_samples_var.get() < 16:
+                self.inference_samples_var.set(16)
+            
+            # Hide full frame options
+            self.direct_inference_frame.pack_forget()
+            self.stride_frame.pack_forget()
+
     def _toggle_stride_controls(self):
         """Show/hide stride controls based on full frame mode."""
         if self.full_frame_mode_var.get():
@@ -2394,13 +2431,13 @@ class RandomPatchViewer:
             messagebox.showerror("Error", f"Failed to load model: {str(e)}")
     
     def generate_inference_samples(self):
-        """Generate full-frame predictions using either direct inference or sliding window."""
+        """Generate predictions based on selected mode (Full Frame or Random Regions)."""
         if self.model is None:
             messagebox.showwarning("No Model", "Please load a model first.")
             return
         
-        num_frames = self.inference_samples_var.get()
-        use_full_frame = self.full_frame_mode_var.get()
+        mode = self.inference_mode_var.get()
+        num_samples = self.inference_samples_var.get()
         self.inference_samples = []
         
         self.model.eval()
@@ -2409,125 +2446,168 @@ class RandomPatchViewer:
         mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
         
-        if use_full_frame:
-            print(f"Generating {num_frames} predictions using FULL FRAME mode (fast)...")
-        else:
-            stride = self.inference_stride_var.get()
-            batch_size = 32
-            print(f"Generating {num_frames} predictions using SLIDING WINDOW mode (stride {stride})...")
+        print(f"Generating {num_samples} samples in {mode} mode...")
         
-        for i in range(num_frames):
-            # Get random video and frame
-            video_path, frame_idx = self.get_random_frame_location()
-            if not video_path:
-                continue
+        if mode == "Random Regions":
+            # Use configured patch size (e.g. 400x400) instead of 128x128
+            patch_size = self.patch_size
             
-            cap = cv2.VideoCapture(video_path)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            cap.release()
-            
-            if not ret or frame is None:
-                continue
-            
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w = frame_rgb.shape[:2]
-            
-            if h < 128 or w < 128:
-                continue
-            
-            if use_full_frame:
-                # === FULL FRAME DIRECT INFERENCE ===
-                # Pad to nearest multiple of 32
-                pad_h = (32 - h % 32) % 32
-                pad_w = (32 - w % 32) % 32
+            for i in range(num_samples):
+                # Get random video and frame
+                video_path, frame_idx = self.get_random_frame_location()
+                if not video_path: continue
+                
+                cap = cv2.VideoCapture(video_path)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                
+                if not ret or frame is None: continue
+                
+                h, w = frame.shape[:2]
+                if h < patch_size or w < patch_size: continue
+                
+                x = random.randint(0, w - patch_size)
+                y = random.randint(0, h - patch_size)
+                
+                patch = frame[y:y+patch_size, x:x+patch_size]
+                patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+                
+                # For inference, we need to process this large patch
+                # We can use the same sliding window or direct inference approach
+                # Let's use direct inference on the patch (padded)
+                
+                # Pad to multiple of 32
+                ph, pw = patch_rgb.shape[:2]
+                pad_h = (32 - ph % 32) % 32
+                pad_w = (32 - pw % 32) % 32
                 
                 if pad_h > 0 or pad_w > 0:
-                    frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                    patch_padded = np.pad(patch_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
                 else:
-                    frame_padded = frame_rgb
-                
-                print(f"  Frame {i+1}: {w}x{h} (padded to {frame_padded.shape[1]}x{frame_padded.shape[0]})")
+                    patch_padded = patch_rgb
                 
                 with torch.no_grad():
-                    # Prepare full frame input
-                    input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
-                    input_tensor = input_tensor.to(self.device)
-                    
-                    # Apply ImageNet normalization
-                    input_tensor = (input_tensor - mean) / std
-                    
-                    # Single forward pass for entire frame!
+                    input_tensor = torch.from_numpy(patch_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                    input_tensor = (input_tensor.to(self.device) - mean) / std
                     prediction = self.model(input_tensor)
                     pred_full = prediction.squeeze().cpu().numpy()
                 
                 # Crop back to original size
-                pred_mask = (pred_full[:h, :w] * 255).astype(np.uint8)
+                pred_mask = (pred_full[:ph, :pw] * 255).astype(np.uint8)
                 pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
-                num_patches = 1
                 
-            else:
-                # === SLIDING WINDOW INFERENCE ===
-                stride = self.inference_stride_var.get()
-                batch_size = 32
+                detected_lines = self._detect_lines_lsd(pred_mask_rgb)
                 
-                pred_sum = np.zeros((h, w), dtype=np.float32)
-                pred_count = np.zeros((h, w), dtype=np.float32)
-                patch_size = 128
+                self.inference_samples.append({
+                    'frame': patch_rgb,
+                    'prediction': pred_mask_rgb,
+                    'detected_lines': detected_lines,
+                    'source_video': os.path.basename(video_path),
+                    'source_frame': frame_idx,
+                    'size': (patch_size, patch_size),
+                    'type': 'patch'
+                })
                 
-                # Calculate grid positions
-                y_positions = list(range(0, h - patch_size + 1, stride))
-                if y_positions[-1] + patch_size < h:
-                    y_positions.append(h - patch_size)
-                
-                x_positions = list(range(0, w - patch_size + 1, stride))
-                if x_positions[-1] + patch_size < w:
-                    x_positions.append(w - patch_size)
-                
-                all_positions = [(y, x) for y in y_positions for x in x_positions]
-                num_patches = len(all_positions)
-                print(f"  Frame {i+1}: {w}x{h}, {num_patches} patches...")
-                
-                with torch.no_grad():
-                    for batch_start in range(0, num_patches, batch_size):
-                        batch_end = min(batch_start + batch_size, num_patches)
-                        batch_positions = all_positions[batch_start:batch_end]
-                        
-                        batch_patches = []
-                        for y, x in batch_positions:
-                            patch = frame_rgb[y:y+patch_size, x:x+patch_size]
-                            patch_tensor = torch.from_numpy(patch.astype(np.float32) / 255.0).permute(2, 0, 1)
-                            batch_patches.append(patch_tensor)
-                        
-                        batch_tensor = torch.stack(batch_patches).to(self.device)
-                        batch_tensor = (batch_tensor - mean) / std
-                        
-                        predictions = self.model(batch_tensor)
-                        pred_patches = predictions.squeeze(1).cpu().numpy()
-                        
-                        for idx, (y, x) in enumerate(batch_positions):
-                            pred_sum[y:y+patch_size, x:x+patch_size] += pred_patches[idx]
-                            pred_count[y:y+patch_size, x:x+patch_size] += 1
-                
-                pred_count[pred_count == 0] = 1
-                pred_avg = pred_sum / pred_count
-                pred_mask = (pred_avg * 255).astype(np.uint8)
-                pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+        else:  # Full Frame mode
+            use_full_frame = self.full_frame_mode_var.get()
             
-            # Detect lines from the full prediction
-            detected_lines = self._detect_lines_lsd(pred_mask_rgb)
-            
-            self.inference_samples.append({
-                'frame': frame_rgb,
-                'prediction': pred_mask_rgb,
-                'detected_lines': detected_lines,
-                'source_video': os.path.basename(video_path),
-                'source_frame': frame_idx,
-                'size': (w, h),
-                'num_patches': num_patches
-            })
+            for i in range(num_samples):
+                # Get random video and frame
+                video_path, frame_idx = self.get_random_frame_location()
+                if not video_path: continue
+                
+                cap = cv2.VideoCapture(video_path)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                
+                if not ret or frame is None: continue
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w = frame_rgb.shape[:2]
+                if h < 128 or w < 128: continue
+                
+                if use_full_frame:
+                    # === FULL FRAME DIRECT INFERENCE ===
+                    # Pad to nearest multiple of 32
+                    pad_h = (32 - h % 32) % 32
+                    pad_w = (32 - w % 32) % 32
+                    
+                    if pad_h > 0 or pad_w > 0:
+                        frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                    else:
+                        frame_padded = frame_rgb
+                    
+                    print(f"  Frame {i+1}: {w}x{h} (padded to {frame_padded.shape[1]}x{frame_padded.shape[0]})")
+                    
+                    with torch.no_grad():
+                        input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                        input_tensor = (input_tensor.to(self.device) - mean) / std
+                        prediction = self.model(input_tensor)
+                        pred_full = prediction.squeeze().cpu().numpy()
+                    
+                    # Crop back to original size
+                    pred_mask = (pred_full[:h, :w] * 255).astype(np.uint8)
+                    pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+                    
+                else:
+                    # === SLIDING WINDOW INFERENCE ===
+                    stride = self.inference_stride_var.get()
+                    batch_size = 32
+                    
+                    pred_sum = np.zeros((h, w), dtype=np.float32)
+                    pred_count = np.zeros((h, w), dtype=np.float32)
+                    patch_size = 128
+                    
+                    # Calculate grid positions
+                    y_positions = list(range(0, h - patch_size + 1, stride))
+                    if y_positions[-1] + patch_size < h: y_positions.append(h - patch_size)
+                    x_positions = list(range(0, w - patch_size + 1, stride))
+                    if x_positions[-1] + patch_size < w: x_positions.append(w - patch_size)
+                    
+                    all_positions = [(y, x) for y in y_positions for x in x_positions]
+                    print(f"  Frame {i+1}: {w}x{h}, {len(all_positions)} patches...")
+                    
+                    with torch.no_grad():
+                        for batch_start in range(0, len(all_positions), batch_size):
+                            batch_end = min(batch_start + batch_size, len(all_positions))
+                            batch_positions = all_positions[batch_start:batch_end]
+                            
+                            batch_patches = []
+                            for y, x in batch_positions:
+                                patch = frame_rgb[y:y+patch_size, x:x+patch_size]
+                                patch_tensor = torch.from_numpy(patch.astype(np.float32) / 255.0).permute(2, 0, 1)
+                                batch_patches.append(patch_tensor)
+                            
+                            batch_tensor = torch.stack(batch_patches).to(self.device)
+                            batch_tensor = (batch_tensor - mean) / std
+                            
+                            predictions = self.model(batch_tensor)
+                            pred_patches = predictions.squeeze(1).cpu().numpy()
+                            
+                            for idx, (y, x) in enumerate(batch_positions):
+                                pred_sum[y:y+patch_size, x:x+patch_size] += pred_patches[idx]
+                                pred_count[y:y+patch_size, x:x+patch_size] += 1
+                    
+                    pred_count[pred_count == 0] = 1
+                    pred_avg = pred_sum / pred_count
+                    pred_mask = (pred_avg * 255).astype(np.uint8)
+                    pred_mask_rgb = cv2.cvtColor(pred_mask, cv2.COLOR_GRAY2RGB)
+                
+                detected_lines = self._detect_lines_lsd(pred_mask_rgb)
+                
+                self.inference_samples.append({
+                    'frame': frame_rgb,
+                    'prediction': pred_mask_rgb,
+                    'detected_lines': detected_lines,
+                    'source_video': os.path.basename(video_path),
+                    'source_frame': frame_idx,
+                    'size': (w, h),
+                    'type': 'full'
+                })
         
-        print(f"Generated {len(self.inference_samples)} full-frame predictions")
+        print(f"Generated {len(self.inference_samples)} predictions")
         
         if self.inference_samples:
             self.inference_idx = 0
@@ -2537,25 +2617,32 @@ class RandomPatchViewer:
             messagebox.showwarning("No Samples", "Failed to generate predictions.")
     
     def display_inference_sample(self):
-        """Display full-frame predictions in a grid layout."""
+        """Display predictions in appropriate layout."""
         if not self.inference_samples:
             return
         
         # Update info
-        num_frames = len(self.inference_samples)
-        self.lbl_inference_idx.config(text=f"Frames: {num_frames}")
+        num_samples = len(self.inference_samples)
+        mode = self.inference_mode_var.get()
+        self.lbl_inference_idx.config(text=f"{mode}: {num_samples}")
         
         # Update button text
         if self.show_inference_prediction:
             self.btn_toggle_inference.config(text="Show: Predictions")
         else:
-            self.btn_toggle_inference.config(text="Show: Frames")
+            self.btn_toggle_inference.config(text="Show: Images")
         
-        # Layout: Show frames in a row (or 2 rows if many)
-        num_cols = min(3, num_frames)
-        num_rows = (num_frames + num_cols - 1) // num_cols
+        # Layout configuration based on mode
+        if mode == "Random Regions":
+            num_cols = 4
+            num_rows = 4
+            max_items = 16
+        else:
+            num_cols = min(3, num_samples)
+            num_rows = (num_samples + num_cols - 1) // num_cols
+            max_items = 100  # Show all frames
         
-        # Get canvas size for scaling
+        # Get canvas size
         canvas_w = self.inference_canvas.winfo_width()
         canvas_h = self.inference_canvas.winfo_height()
         
@@ -2570,12 +2657,11 @@ class RandomPatchViewer:
         cell_w = available_w // num_cols
         cell_h = available_h // num_rows
         
-        # Create grid image
-        grid_width = canvas_w
-        grid_height = canvas_h
-        grid_img = np.full((grid_height, grid_width, 3), 32, dtype=np.uint8)
+        grid_img = np.full((canvas_h, canvas_w, 3), 32, dtype=np.uint8)
         
         for idx, sample in enumerate(self.inference_samples):
+            if idx >= max_items: break
+            
             row = idx // num_cols
             col = idx % num_cols
             
@@ -2583,11 +2669,9 @@ class RandomPatchViewer:
             if self.show_inference_prediction:
                 img_data = sample['prediction'].copy()
                 
-                # Overlay detected lines on the prediction (if toggle enabled)
                 if self.show_inference_lines_var.get():
                     detected_lines = sample.get('detected_lines', [])
                     if detected_lines:
-                        # Scale line thickness based on image size
                         img_h, img_w = img_data.shape[:2]
                         thickness = max(1, min(img_w, img_h) // 200)
                         endpoint_size = max(2, thickness + 1)
@@ -2595,14 +2679,14 @@ class RandomPatchViewer:
                         img_data = self._draw_lines_on_image(
                             img_data, 
                             detected_lines, 
-                            color=(0, 255, 255),  # Cyan lines
+                            color=(0, 255, 255),
                             thickness=thickness,
                             endpoint_size=endpoint_size
                         )
             else:
                 img_data = sample['frame'].copy()
             
-            # Resize to fit cell while maintaining aspect ratio
+            # Resize
             img_h, img_w = img_data.shape[:2]
             scale = min(cell_w / img_w, cell_h / img_h)
             new_w = int(img_w * scale)
@@ -2610,14 +2694,12 @@ class RandomPatchViewer:
             
             resized = cv2.resize(img_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             
-            # Calculate position (centered in cell)
+            # Position
             x_start = padding + col * (cell_w + padding) + (cell_w - new_w) // 2
             y_start = padding + row * (cell_h + padding) + (cell_h - new_h) // 2
             
-            # Place in grid
             grid_img[y_start:y_start+new_h, x_start:x_start+new_w] = resized
         
-        # Display the grid directly
         self._draw_inference_image(grid_img)
     
     def _draw_inference_image(self, img_arr):
