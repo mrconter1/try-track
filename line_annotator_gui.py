@@ -4172,7 +4172,15 @@ class RandomPatchViewer:
         
         # Get video basenames for dropdown
         video_names = [os.path.basename(vp) for vp in self.video_paths]
-        self.tile_video_var = tk.StringVar(value=video_names[0] if video_names else "")
+        
+        # Default to "20251117_171939.mp4" if available, otherwise first video
+        default_video = "20251117_171939.mp4"
+        if default_video in video_names:
+            default_value = default_video
+        else:
+            default_value = video_names[0] if video_names else ""
+        
+        self.tile_video_var = tk.StringVar(value=default_value)
         self.tile_video_combo = ttk.Combobox(video_frame, textvariable=self.tile_video_var,
                                               values=video_names, state="readonly", width=25)
         self.tile_video_combo.pack(fill=tk.X, pady=5)
@@ -4281,23 +4289,28 @@ class RandomPatchViewer:
         self._load_and_predict_frame(0)
     
     def _on_tile_slider_changed(self, value):
-        """Handle slider change with debouncing."""
-        # Cancel previous pending update
+        """Handle slider change - instant frame display, debounced prediction."""
+        frame_idx = int(float(value))
+        
+        # Instantly load and display the frame
+        self._load_tile_frame(frame_idx)
+        
+        # Cancel previous pending prediction
         if self.tile_slider_debounce is not None:
             self.root.after_cancel(self.tile_slider_debounce)
         
-        # Schedule new update after 150ms
-        self.tile_slider_debounce = self.root.after(150, self._do_tile_slider_update)
+        # Schedule prediction after 300ms of no slider movement
+        self.tile_slider_debounce = self.root.after(300, self._do_tile_prediction)
     
-    def _do_tile_slider_update(self):
-        """Actually load and predict the frame after debounce."""
+    def _do_tile_prediction(self):
+        """Run prediction after slider stops moving."""
         self.tile_slider_debounce = None
-        frame_idx = int(self.tile_frame_var.get())
-        self._load_and_predict_frame(frame_idx)
+        self._predict_current_frame()
+        self._display_tile_frame()
     
-    def _load_and_predict_frame(self, frame_idx):
-        """Load a frame and run prediction on it."""
-        if self.tile_cap is None or self.model is None:
+    def _load_tile_frame(self, frame_idx):
+        """Load and display a frame instantly (no prediction)."""
+        if self.tile_cap is None:
             return
         
         # Seek to frame
@@ -4311,6 +4324,10 @@ class RandomPatchViewer:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self.tile_current_frame = frame_rgb
         
+        # Clear previous prediction while sliding
+        self.tile_current_prediction = None
+        self.tile_current_lines = []
+        
         # Update frame label
         self.lbl_tile_frame.config(text=f"Frame: {frame_idx} / {self.tile_total_frames}")
         
@@ -4320,11 +4337,20 @@ class RandomPatchViewer:
         seconds = time_sec % 60
         self.lbl_tile_time.config(text=f"Time: {minutes}:{seconds:05.2f}")
         
-        # Run prediction
-        self._predict_current_frame()
+        # Show "Predicting..." status
+        self.lbl_tile_lines.config(text="Lines: ...")
+        self.lbl_tile_regions.config(text="Regions: ...")
         
-        # Display
+        # Display frame immediately (without prediction overlays)
         self._display_tile_frame()
+    
+    def _load_and_predict_frame(self, frame_idx):
+        """Load a frame and run prediction on it (used for initial load)."""
+        self._load_tile_frame(frame_idx)
+        
+        if self.model is not None:
+            self._predict_current_frame()
+            self._display_tile_frame()
     
     def _predict_current_frame(self):
         """Run line detection on current frame."""
