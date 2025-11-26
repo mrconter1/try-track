@@ -3158,18 +3158,43 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
         print("[ERROR] No samples available for training!")
         return False
     
+    # Build a mapping from video basenames to full paths
+    video_path_map = {}
+    for vp in video_paths:
+        basename = os.path.basename(vp)
+        video_path_map[basename] = vp
+    
     # Pre-load frames
     print(f"\n[STEP 1/4] Pre-loading frames...")
     frame_cache = {}
+    path_warnings = set()
+    
     for i, sample in enumerate(all_samples):
-        cache_key = (sample.video_path, sample.frame_idx)
+        # Resolve video path - try original first, then by basename
+        video_path = sample.video_path
+        if not os.path.exists(video_path):
+            basename = os.path.basename(video_path)
+            if basename in video_path_map:
+                video_path = video_path_map[basename]
+            else:
+                if basename not in path_warnings:
+                    print(f"  [WARN] Video not found: {basename}")
+                    path_warnings.add(basename)
+                continue
+        
+        cache_key = (video_path, sample.frame_idx)
         if cache_key not in frame_cache:
-            cap = cv2.VideoCapture(sample.video_path)
+            cap = cv2.VideoCapture(video_path)
             cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
             ret, frame = cap.read()
             cap.release()
             if ret and frame is not None:
                 frame_cache[cache_key] = frame
+                # Store resolved path for later use
+                sample._resolved_path = video_path
+        else:
+            sample._resolved_path = video_path
+            
         if (i + 1) % 50 == 0 or i == len(all_samples) - 1:
             print(f"  Loaded {i+1}/{len(all_samples)} samples ({len(frame_cache)} unique frames)")
     
@@ -3181,9 +3206,18 @@ def train_cli(video_paths, num_samples, batch_size, epochs, lr, model_name="line
     patch_size = 128
     
     start_time = time.time()
+    # Filter to only samples with resolved paths
+    valid_samples = [s for s in all_samples if hasattr(s, '_resolved_path')]
+    
+    if not valid_samples:
+        print("[ERROR] No valid samples with accessible video files!")
+        return False
+    
+    print(f"[INFO] {len(valid_samples)} samples have accessible video files")
+    
     for i in range(num_samples):
-        sample = random.choice(all_samples)
-        cache_key = (sample.video_path, sample.frame_idx)
+        sample = random.choice(valid_samples)
+        cache_key = (sample._resolved_path, sample.frame_idx)
         
         if cache_key not in frame_cache:
             continue
