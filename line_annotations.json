@@ -11929,6 +11929,314 @@
           ]
         }
       ]
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_171939.mp4",
+      "frame_idx": 1828,
+      "crop_rect": [
+        25,
+        582,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_170346.mp4",
+      "frame_idx": 7876,
+      "crop_rect": [
+        200,
+        357,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_170346.mp4",
+      "frame_idx": 7129,
+      "crop_rect": [
+        155,
+        354,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145301.mp4",
+      "frame_idx": 324,
+      "crop_rect": [
+        64,
+        226,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_171441.mp4",
+      "frame_idx": 7587,
+      "crop_rect": [
+        271,
+        451,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_170346.mp4",
+      "frame_idx": 3433,
+      "crop_rect": [
+        298,
+        408,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145134.mp4",
+      "frame_idx": 886,
+      "crop_rect": [
+        310,
+        385,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_171939.mp4",
+      "frame_idx": 6450,
+      "crop_rect": [
+        77,
+        376,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_171939.mp4",
+      "frame_idx": 6305,
+      "crop_rect": [
+        219,
+        545,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_151505.mp4",
+      "frame_idx": 80,
+      "crop_rect": [
+        318,
+        487,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_171939.mp4",
+      "frame_idx": 3386,
+      "crop_rect": [
+        125,
+        60,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_150712.mp4",
+      "frame_idx": 304,
+      "crop_rect": [
+        149,
+        867,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_171939.mp4",
+      "frame_idx": 4912,
+      "crop_rect": [
+        30,
+        873,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145614.mp4",
+      "frame_idx": 224,
+      "crop_rect": [
+        151,
+        50,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\video.mp4",
+      "frame_idx": 2999,
+      "crop_rect": [
+        50,
+        603,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_170139.mp4",
+      "frame_idx": 2671,
+      "crop_rect": [
+        271,
+        461,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145803.mp4",
+      "frame_idx": 272,
+      "crop_rect": [
+        1,
+        55,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_151218.mp4",
+      "frame_idx": 190,
+      "crop_rect": [
+        175,
+        46,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_170346.mp4",
+      "frame_idx": 7014,
+      "crop_rect": [
+        141,
+        342,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145614.mp4",
+      "frame_idx": 230,
+      "crop_rect": [
+        298,
+        425,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_170851.mp4",
+      "frame_idx": 269,
+      "crop_rect": [
+        9,
+        253,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_150803.mp4",
+      "frame_idx": 13,
+      "crop_rect": [
+        154,
+        354,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145515.mp4",
+      "frame_idx": 361,
+      "crop_rect": [
+        89,
+        744,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_151505.mp4",
+      "frame_idx": 191,
+      "crop_rect": [
+        123,
+        439,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145925.mp4",
+      "frame_idx": 331,
+      "crop_rect": [
+        7,
+        498,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_150712.mp4",
+      "frame_idx": 857,
+      "crop_rect": [
+        97,
+        489,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_145515.mp4",
+      "frame_idx": 248,
+      "crop_rect": [
+        307,
+        807,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "C:\\Users\\rasmu\\Repos\\try-track\\videos\\20251117_144726.mp4",
+      "frame_idx": 347,
+      "crop_rect": [
+        248,
+        823,
+        400,
+        400
+      ],
+      "lines": []
     }
   ]
 }

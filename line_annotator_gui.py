@@ -465,6 +465,9 @@ class RandomPatchViewer:
         self._build_data_generation_tab()
         self._build_training_tab()
         self._build_inference_tab()
+        
+        # Bind tab change event
+        self.tab_control.bind("<<NotebookTabChanged>>", self._on_tab_changed)
     
     def _build_labelling_tab(self):
         """Build the UI for the labelling tab."""
@@ -838,9 +841,9 @@ class RandomPatchViewer:
         
         # Mode selection (Region vs Full Frame)
         ttk.Label(sample_frame, text="Inference Mode:").pack(anchor="w", pady=2)
-        self.inference_mode_var = tk.StringVar(value="Full Frame")
+        self.inference_mode_var = tk.StringVar(value="Random Regions")
         mode_combo = ttk.Combobox(sample_frame, textvariable=self.inference_mode_var, 
-                                  values=["Full Frame", "Random Regions"], state="readonly")
+                                  values=["Random Regions", "Full Frame"], state="readonly")
         mode_combo.pack(fill=tk.X, pady=5)
         mode_combo.bind("<<ComboboxSelected>>", self._update_inference_controls)
         
@@ -1896,7 +1899,18 @@ class RandomPatchViewer:
             self.toggle_mask()
         elif current_tab == 1:  # Data Generation tab
             self.toggle_generation_view()
+        elif current_tab == 3:  # Inference tab
+            self.toggle_inference_view()
     
+    def _on_tab_changed(self, event):
+        """Handle tab change events."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        
+        # Auto-load model when switching to Inference tab
+        if current_tab == 3:  # Inference tab
+            if self.model is None:
+                self.load_model_for_inference()
+
     # Training Methods
     
     def log_training(self, message):
