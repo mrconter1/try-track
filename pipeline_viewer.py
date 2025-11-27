@@ -1,7 +1,15 @@
 """
 Pipeline Viewer - Visualize each step of the line detection and grid unwrapping pipeline.
 
-Usage: python pipeline_viewer.py <video_path>
+Usage: python pipeline_viewer.py <video_path> [--frame N] [--model path]
+
+Pipeline Steps:
+  1. Raw Frame - Load frame from video
+  2. Mask - Neural network line prediction
+  3. Lines - HoughLinesP detection
+  4. Merged Lines - Rho-theta clustering to merge collinear segments
+  5. Crossings - Find intersections between horizontal/vertical lines
+  6. Unwrapped - Homography-based perspective correction
 
 Controls:
   - A / Left Arrow: Previous frame
@@ -91,6 +99,7 @@ class PipelineViewer:
         self.raw_frame = None
         self.mask = None
         self.lines = []
+        self.lines_merged = []
         self.crossings = []
         self.grid_crossings = []
         self.unwrapped = None
@@ -147,11 +156,11 @@ class PipelineViewer:
         self.lbl_tile_size = ttk.Label(control_frame, text="100px")
         self.lbl_tile_size.pack(side=tk.LEFT)
         
-        # Main content - 5 panels
+        # Main content - 6 panels (3x2 grid)
         content = ttk.Frame(self.root)
         content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Top row: Raw Frame, Mask, Lines
+        # Top row: Raw Frame, Mask, Lines (raw)
         top_row = ttk.Frame(content)
         top_row.pack(fill=tk.BOTH, expand=True)
         
@@ -167,30 +176,40 @@ class PipelineViewer:
         self.canvas_mask = tk.Canvas(p2, bg="#1a1a1a", highlightthickness=0)
         self.canvas_mask.pack(fill=tk.BOTH, expand=True)
         
-        # Panel 3: Lines
+        # Panel 3: Lines (raw from HoughP)
         p3 = ttk.LabelFrame(top_row, text="3. Lines (HoughP)", padding=5)
         p3.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
         self.canvas_lines = tk.Canvas(p3, bg="#1a1a1a", highlightthickness=0)
         self.canvas_lines.pack(fill=tk.BOTH, expand=True)
+        self.lbl_lines = ttk.Label(p3, text="0 lines")
+        self.lbl_lines.pack()
         
-        # Bottom row: Crossings, Unwrapped
+        # Bottom row: Merged Lines, Crossings, Unwrapped
         bottom_row = ttk.Frame(content)
         bottom_row.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
         
-        # Panel 4: Crossings
-        p4 = ttk.LabelFrame(bottom_row, text="4. Crossings", padding=5)
+        # Panel 4: Merged Lines
+        p4 = ttk.LabelFrame(bottom_row, text="4. Merged Lines (ρ,θ cluster)", padding=5)
         p4.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
-        self.canvas_crossings = tk.Canvas(p4, bg="#1a1a1a", highlightthickness=0)
+        self.canvas_merged = tk.Canvas(p4, bg="#1a1a1a", highlightthickness=0)
+        self.canvas_merged.pack(fill=tk.BOTH, expand=True)
+        self.lbl_merged = ttk.Label(p4, text="0 lines")
+        self.lbl_merged.pack()
+        
+        # Panel 5: Crossings
+        p5 = ttk.LabelFrame(bottom_row, text="5. Crossings", padding=5)
+        p5.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+        self.canvas_crossings = tk.Canvas(p5, bg="#1a1a1a", highlightthickness=0)
         self.canvas_crossings.pack(fill=tk.BOTH, expand=True)
-        self.lbl_crossings = ttk.Label(p4, text="0 crossings")
+        self.lbl_crossings = ttk.Label(p5, text="0 crossings")
         self.lbl_crossings.pack()
         
-        # Panel 5: Unwrapped
-        p5 = ttk.LabelFrame(bottom_row, text="5. Unwrapped (Homography)", padding=5)
-        p5.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
-        self.canvas_unwrapped = tk.Canvas(p5, bg="#1a1a2e", highlightthickness=0)
+        # Panel 6: Unwrapped
+        p6 = ttk.LabelFrame(bottom_row, text="6. Unwrapped (Homography)", padding=5)
+        p6.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+        self.canvas_unwrapped = tk.Canvas(p6, bg="#1a1a2e", highlightthickness=0)
         self.canvas_unwrapped.pack(fill=tk.BOTH, expand=True)
-        self.lbl_unwrap_status = ttk.Label(p5, text="")
+        self.lbl_unwrap_status = ttk.Label(p6, text="")
         self.lbl_unwrap_status.pack()
     
     def _on_slider_changed(self, value):
@@ -202,7 +221,7 @@ class PipelineViewer:
         self.tile_size = int(float(value))
         self.lbl_tile_size.config(text=f"{self.tile_size}px")
         # Recompute unwrap with new tile size
-        self._step5_unwrap()
+        self._step6_unwrap()
         self._display_all()
     
     def step_frame(self, delta):
@@ -228,11 +247,14 @@ class PipelineViewer:
         # Step 3: Detect lines
         self._step3_lines()
         
-        # Step 4: Find crossings
-        self._step4_crossings()
+        # Step 4: Merge collinear lines
+        self._step4_merge_lines()
         
-        # Step 5: Unwrap
-        self._step5_unwrap()
+        # Step 5: Find crossings
+        self._step5_crossings()
+        
+        # Step 6: Unwrap
+        self._step6_unwrap()
         
         # Display all panels
         self._display_all()
@@ -283,20 +305,178 @@ class PipelineViewer:
         # Convert to list of (x1, y1, x2, y2)
         self.lines = [tuple(line[0]) for line in lines_raw]
     
-    def _step4_crossings(self):
-        """Find crossings between horizontal and vertical lines."""
+    def _step4_merge_lines(self):
+        """Merge collinear line segments using rho-theta clustering."""
         if len(self.lines) < 2:
+            self.lines_merged = self.lines.copy()
+            return
+        
+        def segment_to_rho_theta(x1, y1, x2, y2):
+            """Convert line segment to (rho, theta) representation."""
+            # Line direction
+            dx, dy = x2 - x1, y2 - y1
+            length = np.sqrt(dx*dx + dy*dy)
+            if length < 1e-6:
+                return None, None
+            
+            # Normalize direction
+            dx, dy = dx / length, dy / length
+            
+            # Theta is angle of the line (not the perpendicular)
+            theta = np.arctan2(dy, dx)
+            
+            # Normalize theta to [0, pi) - lines are undirected
+            if theta < 0:
+                theta += np.pi
+            if theta >= np.pi:
+                theta -= np.pi
+            
+            # Rho is perpendicular distance from origin to the line
+            # Using midpoint for stability
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            # Perpendicular direction
+            perp_x, perp_y = -dy, dx
+            # Rho = projection of midpoint onto perpendicular
+            rho = mx * perp_x + my * perp_y
+            
+            # Ensure rho is positive (flip theta if needed)
+            if rho < 0:
+                rho = -rho
+                theta = theta + np.pi if theta < np.pi else theta - np.pi
+                if theta >= np.pi:
+                    theta -= np.pi
+            
+            return rho, theta
+        
+        # Convert all segments to (rho, theta, segment_data)
+        line_params = []
+        for seg in self.lines:
+            x1, y1, x2, y2 = seg
+            rho, theta = segment_to_rho_theta(x1, y1, x2, y2)
+            if rho is not None:
+                line_params.append((rho, theta, seg))
+        
+        if len(line_params) == 0:
+            self.lines_merged = []
+            return
+        
+        # Clustering parameters
+        rho_tolerance = 20  # pixels
+        theta_tolerance = 5 * np.pi / 180  # 5 degrees in radians
+        
+        # Debug: print theta distribution
+        thetas_deg = [p[1] * 180 / np.pi for p in line_params]
+        print(f"[DEBUG] {len(line_params)} lines, theta range: {min(thetas_deg):.1f}° - {max(thetas_deg):.1f}°")
+        # Count lines in each direction (roughly 45° vs 135°)
+        dir1 = sum(1 for t in thetas_deg if t < 90)
+        dir2 = sum(1 for t in thetas_deg if t >= 90)
+        print(f"[DEBUG] Direction split: {dir1} lines < 90°, {dir2} lines >= 90°")
+        
+        # Print each line's rho, theta
+        print("[DEBUG] Line params (rho, theta°):")
+        for rho, theta, seg in line_params:
+            print(f"  rho={rho:7.1f}, theta={theta*180/np.pi:5.1f}°, seg={seg}")
+        
+        # Simple greedy clustering
+        clusters = []
+        used = [False] * len(line_params)
+        
+        for i in range(len(line_params)):
+            if used[i]:
+                continue
+            
+            rho_i, theta_i, seg_i = line_params[i]
+            cluster = [line_params[i]]
+            used[i] = True
+            
+            for j in range(i + 1, len(line_params)):
+                if used[j]:
+                    continue
+                
+                rho_j, theta_j, seg_j = line_params[j]
+                
+                # Check angle similarity (handle wraparound at 0/pi)
+                angle_diff = abs(theta_i - theta_j)
+                angle_diff = min(angle_diff, np.pi - angle_diff)
+                
+                # Check rho similarity
+                rho_diff = abs(rho_i - rho_j)
+                
+                if angle_diff < theta_tolerance and rho_diff < rho_tolerance:
+                    cluster.append(line_params[j])
+                    used[j] = True
+            
+            clusters.append(cluster)
+        
+        print(f"[DEBUG] Created {len(clusters)} clusters")
+        
+        # Merge each cluster into a single line segment
+        self.lines_merged = []
+        
+        for cluster in clusters:
+            if len(cluster) == 1:
+                # Single segment, keep as is
+                self.lines_merged.append(cluster[0][2])
+            else:
+                # Multiple segments - find combined extent using original endpoints
+                # Get direction from the first segment (they're all similar)
+                first_seg = cluster[0][2]
+                dx = first_seg[2] - first_seg[0]
+                dy = first_seg[3] - first_seg[1]
+                length = np.sqrt(dx*dx + dy*dy)
+                if length < 1e-6:
+                    self.lines_merged.append(first_seg)
+                    continue
+                dir_x, dir_y = dx / length, dy / length
+                
+                # Collect all endpoints
+                all_points = []
+                for _, _, (x1, y1, x2, y2) in cluster:
+                    all_points.append((x1, y1))
+                    all_points.append((x2, y2))
+                
+                # Project all endpoints onto the line direction
+                # Find the two extreme points
+                min_proj = float('inf')
+                max_proj = float('-inf')
+                min_point = None
+                max_point = None
+                
+                for px, py in all_points:
+                    proj = px * dir_x + py * dir_y
+                    if proj < min_proj:
+                        min_proj = proj
+                        min_point = (px, py)
+                    if proj > max_proj:
+                        max_proj = proj
+                        max_point = (px, py)
+                
+                if min_point and max_point:
+                    self.lines_merged.append((int(min_point[0]), int(min_point[1]), 
+                                              int(max_point[0]), int(max_point[1])))
+        
+        # Debug: show merged line details
+        print("[DEBUG] Merged lines:")
+        for x1, y1, x2, y2 in self.lines_merged:
+            angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
+            if angle < 0:
+                angle += 180
+            print(f"  ({x1}, {y1}) -> ({x2}, {y2}), angle={angle:.1f}°")
+    
+    def _step5_crossings(self):
+        """Find crossings between horizontal and vertical lines (using merged lines)."""
+        if len(self.lines_merged) < 2:
             self.crossings = []
             self.grid_crossings = []
             return
         
         h, w = self.raw_frame.shape[:2]
         
-        # Group lines by angle
+        # Group merged lines by angle
         horizontal = []
         vertical = []
         
-        for x1, y1, x2, y2 in self.lines:
+        for x1, y1, x2, y2 in self.lines_merged:
             dx, dy = x2 - x1, y2 - y1
             angle_deg = abs(np.arctan2(dy, dx) * 180 / np.pi)
             if angle_deg > 90:
@@ -334,7 +514,7 @@ class PipelineViewer:
                         self.crossings.append((x, y))
                         self.grid_crossings.append(((x, y), (i, j)))
     
-    def _step5_unwrap(self):
+    def _step6_unwrap(self):
         """Compute homography and unwarp the frame."""
         if len(self.grid_crossings) < 4:
             self.unwrapped = None
@@ -389,7 +569,7 @@ class PipelineViewer:
             mask_rgb = cv2.cvtColor(self.mask, cv2.COLOR_GRAY2RGB)
             self._display_on_canvas(self.canvas_mask, mask_rgb, "mask")
         
-        # 3. Lines on frame
+        # 3. Raw lines from HoughP
         if self.raw_frame is not None:
             lines_img = self.raw_frame.copy()
             for x1, y1, x2, y2 in self.lines:
@@ -397,12 +577,23 @@ class PipelineViewer:
                 cv2.circle(lines_img, (x1, y1), 4, (255, 0, 0), -1)
                 cv2.circle(lines_img, (x2, y2), 4, (255, 0, 0), -1)
             self._display_on_canvas(self.canvas_lines, lines_img, "lines")
+            self.lbl_lines.config(text=f"{len(self.lines)} lines")
         
-        # 4. Crossings
+        # 4. Merged lines
+        if self.raw_frame is not None:
+            merged_img = self.raw_frame.copy()
+            for x1, y1, x2, y2 in self.lines_merged:
+                cv2.line(merged_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.circle(merged_img, (x1, y1), 5, (255, 100, 0), -1)
+                cv2.circle(merged_img, (x2, y2), 5, (255, 100, 0), -1)
+            self._display_on_canvas(self.canvas_merged, merged_img, "merged")
+            self.lbl_merged.config(text=f"{len(self.lines_merged)} lines (was {len(self.lines)})")
+        
+        # 5. Crossings (using merged lines)
         if self.raw_frame is not None:
             cross_img = self.raw_frame.copy()
-            # Draw lines faintly
-            for x1, y1, x2, y2 in self.lines:
+            # Draw merged lines faintly
+            for x1, y1, x2, y2 in self.lines_merged:
                 cv2.line(cross_img, (x1, y1), (x2, y2), (100, 100, 100), 1)
             # Draw crossings with grid indices
             for (x, y), (i, j) in self.grid_crossings:
@@ -413,7 +604,7 @@ class PipelineViewer:
             self._display_on_canvas(self.canvas_crossings, cross_img, "crossings")
             self.lbl_crossings.config(text=f"{len(self.crossings)} crossings")
         
-        # 5. Unwrapped
+        # 6. Unwrapped
         if self.unwrapped is not None:
             self._display_on_canvas(self.canvas_unwrapped, self.unwrapped, "unwrapped")
             self.lbl_unwrap_status.config(text="OK", foreground="green")
