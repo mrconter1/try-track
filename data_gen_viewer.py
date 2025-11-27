@@ -173,7 +173,7 @@ class DataGenViewer:
     def __init__(self, videos_dir: str = "videos", annotations_file: str = "line_annotations.json"):
         self.root = tk.Tk()
         self.root.title("Crossing Detection Data Generator")
-        self.root.geometry("1200x800")
+        self.root.state('zoomed')  # Launch maximized
         
         # Find videos
         self.videos_dir = videos_dir
