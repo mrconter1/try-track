@@ -4,7 +4,9 @@ Crossing Detection Data Generator
 Generates augmented training patches for crossing/intersection detection.
 Each crossing is rendered as a soft 2D Gaussian blob (sigma ~3.5) in the mask.
 
-Usage: python data_gen_viewer.py [--videos VIDEOS_DIR] [--annotations ANNOTATIONS_FILE]
+Usage: 
+  GUI mode:   python data_gen_viewer.py
+  Train mode: python data_gen_viewer.py --train 10000 --epochs 50 --batch-size 32
 """
 
 import tkinter as tk
@@ -19,6 +21,13 @@ from dataclasses import dataclass, field
 from typing import List, Tuple
 import json
 import threading
+
+# PyTorch imports for training
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision.models as models
 
 
 @dataclass
@@ -165,6 +174,124 @@ def render_gaussian_blob(mask: np.ndarray, cx: float, cy: float, sigma: float = 
         mask[y_min:y_max, x_min:x_max],
         gaussian
     )
+
+
+# ============================================================================
+# Neural Network Model and Training
+# ============================================================================
+
+class MobileUNet(nn.Module):
+    """Mobile-optimized U-Net with MobileNetV2 backbone for crossing detection."""
+    
+    def __init__(self, pretrained=True):
+        super().__init__()
+        
+        # Load pretrained MobileNetV2 as encoder
+        if pretrained:
+            mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
+        else:
+            mobilenet = models.mobilenet_v2(weights=None)
+        self.encoder = mobilenet.features
+        
+        # Decoder (lightweight upsampling path)
+        self.up1 = nn.ConvTranspose2d(1280, 96, 2, stride=2)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(96 + 96, 96, 3, padding=1),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up2 = nn.ConvTranspose2d(96, 32, 2, stride=2)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(32 + 32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up3 = nn.ConvTranspose2d(32, 24, 2, stride=2)
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(24 + 24, 24, 3, padding=1),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up4 = nn.ConvTranspose2d(24, 16, 2, stride=2)
+        self.dec4 = nn.Sequential(
+            nn.Conv2d(16 + 16, 16, 3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final upsampling to original resolution
+        self.final_up = nn.ConvTranspose2d(16, 16, 2, stride=2)
+        self.out = nn.Sequential(
+            nn.Conv2d(16, 1, 1),
+            nn.Sigmoid()  # Output 0-1 for grayscale heatmap
+        )
+    
+    def forward(self, x):
+        skip_connections = []
+        skip_indices = [1, 3, 6, 13]
+        
+        for idx, layer in enumerate(self.encoder):
+            x = layer(x)
+            if idx in skip_indices:
+                skip_connections.append(x)
+        
+        x = self.up1(x)
+        x = torch.cat([x, skip_connections[3]], dim=1)
+        x = self.dec1(x)
+        
+        x = self.up2(x)
+        x = torch.cat([x, skip_connections[2]], dim=1)
+        x = self.dec2(x)
+        
+        x = self.up3(x)
+        x = torch.cat([x, skip_connections[1]], dim=1)
+        x = self.dec3(x)
+        
+        x = self.up4(x)
+        x = torch.cat([x, skip_connections[0]], dim=1)
+        x = self.dec4(x)
+        
+        x = self.final_up(x)
+        x = self.out(x)
+        
+        return x
+
+
+class CrossingDataset(Dataset):
+    """Dataset for crossing detection training."""
+    
+    def __init__(self, samples):
+        self.samples = samples
+        # ImageNet normalization for pretrained MobileNetV2
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        image = sample['image'].astype(np.float32) / 255.0
+        mask = sample['mask'].astype(np.float32) / 255.0
+        
+        # Convert to tensors (C, H, W)
+        image = torch.from_numpy(image).permute(2, 0, 1)
+        
+        # Apply ImageNet normalization
+        mean = torch.from_numpy(self.mean).reshape(3, 1, 1)
+        std = torch.from_numpy(self.std).reshape(3, 1, 1)
+        image = (image - mean) / std
+        
+        # Mask is single channel
+        if len(mask.shape) == 2:
+            mask = torch.from_numpy(mask).unsqueeze(0)
+        else:
+            mask = torch.from_numpy(mask[:, :, 0]).unsqueeze(0)
+        
+        return image, mask
 
 
 class DataGenViewer:
@@ -746,14 +873,388 @@ class DataGenViewer:
         self.display_gen_grid()
 
 
+# ============================================================================
+# Standalone Training Functions
+# ============================================================================
+
+def generate_training_samples(db: AnnotationDatabase, video_paths: List[str], 
+                               num_samples: int, balance_ratio: float = 0.5) -> List[dict]:
+    """
+    Generate training samples with specified positive/negative balance.
+    
+    Args:
+        db: Annotation database with samples
+        video_paths: List of video file paths
+        num_samples: Total number of samples to generate
+        balance_ratio: Ratio of positive samples (default 0.5 = 50/50)
+    
+    Returns:
+        List of sample dictionaries with 'image' and 'mask' keys
+    """
+    samples_with_crossings = [s for s in db.samples if len(s.lines) >= 2]
+    samples_no_crossings = [s for s in db.samples if len(s.lines) == 1]
+    all_labeled = samples_with_crossings + samples_no_crossings
+    
+    if not all_labeled:
+        raise ValueError("No labeled samples found in database")
+    
+    target_positive = int(num_samples * balance_ratio)
+    target_negative = num_samples - target_positive
+    
+    print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
+    
+    positive_samples = []
+    negative_samples = []
+    frame_cache = {}
+    attempts = 0
+    max_attempts = num_samples * 10
+    
+    # Create a temporary generator to use _generate_single_patch
+    temp_viewer = _SampleGenerator(video_paths)
+    
+    while (len(positive_samples) < target_positive or len(negative_samples) < target_negative) and attempts < max_attempts:
+        attempts += 1
+        
+        # Strategic sampling
+        if len(positive_samples) < target_positive and samples_with_crossings:
+            sample = random.choice(samples_with_crossings)
+        elif len(negative_samples) < target_negative:
+            sample = random.choice(all_labeled)
+        else:
+            break
+        
+        # Load frame
+        cache_key = (sample.video_path, sample.frame_idx)
+        if cache_key not in frame_cache:
+            cap = cv2.VideoCapture(sample.video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                frame_cache[cache_key] = frame
+        
+        if cache_key not in frame_cache:
+            continue
+        
+        frame = frame_cache[cache_key]
+        patch_data = temp_viewer.generate_patch(sample, frame)
+        
+        if patch_data['has_crossing'] and len(positive_samples) < target_positive:
+            positive_samples.append(patch_data)
+            if len(positive_samples) % 100 == 0:
+                print(f"  Positive: {len(positive_samples)}/{target_positive}")
+        elif not patch_data['has_crossing'] and len(negative_samples) < target_negative:
+            negative_samples.append(patch_data)
+            if len(negative_samples) % 100 == 0:
+                print(f"  Negative: {len(negative_samples)}/{target_negative}")
+    
+    all_samples = positive_samples + negative_samples
+    random.shuffle(all_samples)
+    
+    print(f"Generated {len(all_samples)} samples in {attempts} attempts")
+    return all_samples
+
+
+class _SampleGenerator:
+    """Minimal class for generating samples without GUI."""
+    
+    def __init__(self, video_paths: List[str]):
+        self.video_paths = video_paths
+    
+    def generate_patch(self, sample, frame):
+        """Generate a single patch - mirrors DataGenViewer._generate_single_patch."""
+        x, y, w, h = sample.crop_rect
+        crop = frame[y:y+h, x:x+w]
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        
+        zoom_factor = random.uniform(0.75, 2.0)
+        rotation_angle = random.uniform(-180, 180)
+        stretch_x = random.uniform(0.9, 1.1)
+        stretch_y = random.uniform(0.9, 1.1)
+        
+        perspective_strength = 0.15
+        perspective_corners = [
+            (random.uniform(-perspective_strength, perspective_strength),
+             random.uniform(-perspective_strength, perspective_strength))
+            for _ in range(4)
+        ]
+        
+        flip_horizontal = random.random() < 0.5
+        flip_vertical = random.random() < 0.5
+        
+        buffer_factor = 3.0
+        initial_size = int(128 * buffer_factor)
+        
+        if w < initial_size or h < initial_size:
+            patch_x, patch_y = 0, 0
+            patch_w, patch_h = w, h
+        else:
+            patch_x = random.randint(0, w - initial_size)
+            patch_y = random.randint(0, h - initial_size)
+            patch_w, patch_h = initial_size, initial_size
+        
+        large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+        
+        intersections = find_line_intersections(sample.lines)
+        intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
+        
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                perspective_corners = [
+                    (random.uniform(-perspective_strength, perspective_strength),
+                     random.uniform(-perspective_strength, perspective_strength))
+                    for _ in range(4)
+                ]
+            
+            center_x, center_y = patch_w / 2, patch_h / 2
+            rad = np.deg2rad(rotation_angle)
+            cos_a = np.cos(rad)
+            sin_a = np.sin(rad)
+            scale_x = zoom_factor * stretch_x
+            scale_y = zoom_factor * stretch_y
+            
+            src_corners = np.array([
+                [0, 0], [patch_w, 0], [patch_w, patch_h], [0, patch_h]
+            ], dtype=np.float32)
+            
+            dst_corners = []
+            for i, (sx, sy) in enumerate(src_corners):
+                x_c = sx - center_x
+                y_c = sy - center_y
+                xr = x_c * cos_a - y_c * sin_a
+                yr = x_c * sin_a + y_c * cos_a
+                xs = xr * scale_x
+                ys = yr * scale_y
+                xf = xs + center_x
+                yf = ys + center_y
+                px, py = perspective_corners[i]
+                xf += px * patch_w
+                yf += py * patch_h
+                dst_corners.append([xf, yf])
+            
+            dst_corners = np.array(dst_corners, dtype=np.float32)
+            H = cv2.getPerspectiveTransform(src_corners, dst_corners)
+            H_inverse = np.linalg.inv(H)
+            crop_x_offset = (patch_w - 128) // 2
+            crop_y_offset = (patch_h - 128) // 2
+            
+            output_corners = np.array([
+                [crop_x_offset, crop_y_offset],
+                [crop_x_offset + 128, crop_y_offset],
+                [crop_x_offset + 128, crop_y_offset + 128],
+                [crop_x_offset, crop_y_offset + 128]
+            ], dtype=np.float32).reshape(-1, 1, 2)
+            
+            source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+            
+            margin = 2
+            valid = True
+            for sx, sy in source_corners_check:
+                if sx < margin or sx > patch_w - margin or sy < margin or sy > patch_h - margin:
+                    valid = False
+                    break
+            
+            if valid:
+                break
+        
+        transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
+                                              borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        
+        final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+        
+        edge_margin = 128 // 10
+        valid_crossings = []
+        
+        if intersections_local:
+            points = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
+            transformed_points = cv2.perspectiveTransform(points, H).reshape(-1, 2)
+            
+            for tx, ty in transformed_points:
+                fx = tx - crop_x_offset
+                fy = ty - crop_y_offset
+                
+                if fx >= edge_margin and fx <= 128 - edge_margin and fy >= edge_margin and fy <= 128 - edge_margin:
+                    valid_crossings.append((fx, fy))
+        
+        final_mask = np.zeros((128, 128), dtype=np.float32)
+        for cx, cy in valid_crossings:
+            render_gaussian_blob(final_mask, cx, cy, sigma=3.5)
+        
+        if flip_horizontal:
+            final_image = cv2.flip(final_image, 1)
+            final_mask = cv2.flip(final_mask, 1)
+        if flip_vertical:
+            final_image = cv2.flip(final_image, 0)
+            final_mask = cv2.flip(final_mask, 0)
+        
+        # Image augmentations
+        final_image = final_image.astype(np.float32)
+        
+        brightness = random.uniform(-0.3, 0.3)
+        final_image = final_image + brightness * 255
+        
+        contrast = random.uniform(0.7, 1.3)
+        mean = np.mean(final_image)
+        final_image = (final_image - mean) * contrast + mean
+        
+        gamma = random.uniform(0.7, 1.5)
+        final_image = np.clip(final_image, 0, 255)
+        final_image = 255.0 * np.power(final_image / 255.0, gamma)
+        
+        noise_sigma = random.uniform(0, 25)
+        if noise_sigma > 0:
+            noise = np.random.normal(0, noise_sigma, final_image.shape)
+            final_image = final_image + noise
+        
+        if random.random() < 0.5:
+            blur_sigma = random.uniform(0.5, 1.5)
+            final_image = cv2.GaussianBlur(final_image.astype(np.float32), (0, 0), blur_sigma)
+        
+        final_image = np.clip(final_image, 0, 255).astype(np.uint8)
+        final_mask = np.clip(final_mask, 0, 1)
+        final_mask = (final_mask * 255).astype(np.uint8)
+        
+        return {
+            'image': final_image,
+            'mask': final_mask,
+            'has_crossing': len(valid_crossings) > 0,
+            'num_crossings': len(valid_crossings)
+        }
+
+
+def train_crossing_detector(args):
+    """Main training function."""
+    print("=" * 60)
+    print("Crossing Detector Training")
+    print("=" * 60)
+    
+    # Setup device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        device = torch.device('xpu')
+    else:
+        device = torch.device('cpu')
+    print(f"Device: {device}")
+    
+    # Load annotations
+    base_dir = os.path.dirname(args.annotations) if os.path.dirname(args.annotations) else "."
+    db = AnnotationDatabase.load(args.annotations, base_dir)
+    print(f"Loaded {len(db.samples)} samples from {args.annotations}")
+    
+    # Find videos
+    video_paths = []
+    if os.path.isdir(args.videos):
+        for fname in os.listdir(args.videos):
+            if fname.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
+                video_paths.append(os.path.join(args.videos, fname))
+    print(f"Found {len(video_paths)} videos in {args.videos}")
+    
+    # Generate training samples
+    print(f"\nGenerating {args.train} training samples...")
+    all_samples = generate_training_samples(db, video_paths, args.train, balance_ratio=0.5)
+    
+    # Split into train/val (90/10)
+    val_size = max(1, len(all_samples) // 10)
+    train_samples = all_samples[val_size:]
+    val_samples = all_samples[:val_size]
+    print(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
+    
+    # Create datasets and loaders
+    train_dataset = CrossingDataset(train_samples)
+    val_dataset = CrossingDataset(val_samples)
+    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    
+    # Create model
+    print("\nInitializing MobileUNet model...")
+    model = MobileUNet(pretrained=True).to(device)
+    
+    # Loss and optimizer
+    criterion = nn.MSELoss()  # Regression loss for grayscale heatmap
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    
+    # Training loop
+    best_val_loss = float('inf')
+    print(f"\nStarting training for {args.epochs} epochs...")
+    print("-" * 60)
+    
+    for epoch in range(args.epochs):
+        # Training phase
+        model.train()
+        train_loss = 0.0
+        
+        for batch_idx, (images, masks) in enumerate(train_loader):
+            images = images.to(device)
+            masks = masks.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+        
+        train_loss /= len(train_loader)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images = images.to(device)
+                masks = masks.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, masks)
+                val_loss += loss.item()
+        
+        val_loss /= len(val_loader)
+        
+        # Update scheduler
+        scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), args.output)
+            save_marker = " *"
+        else:
+            save_marker = ""
+        
+        print(f"Epoch {epoch+1:3d}/{args.epochs} | Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {current_lr:.6f}{save_marker}")
+    
+    print("-" * 60)
+    print(f"Training complete! Best val loss: {best_val_loss:.6f}")
+    print(f"Model saved to: {args.output}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Standalone Data Generation Viewer")
+    parser = argparse.ArgumentParser(description="Crossing Detection Data Generator & Trainer")
     parser.add_argument("--videos", default="videos", help="Path to videos directory")
     parser.add_argument("--annotations", default="line_annotations.json", help="Path to annotations JSON file")
+    
+    # Training arguments
+    parser.add_argument("--train", type=int, default=None, help="Number of samples to generate for training (enables training mode)")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--output", default="crossing_detector_best.pth", help="Output model path")
+    
     args = parser.parse_args()
     
-    app = DataGenViewer(videos_dir=args.videos, annotations_file=args.annotations)
-    app.run()
+    if args.train is not None:
+        # Training mode
+        train_crossing_detector(args)
+    else:
+        # GUI mode
+        app = DataGenViewer(videos_dir=args.videos, annotations_file=args.annotations)
+        app.run()
 
 
 if __name__ == "__main__":
