@@ -447,45 +447,248 @@ class PipelineViewer:
         print(f"[DEBUG] Found {len(self.crossings)} crossings")
     
     def _step6_unwrap(self):
-        """Compute homography and unwarp the frame."""
+        """Find all quads, collect point correspondences, RANSAC global homography."""
+        h, w = self.raw_frame.shape[:2]
+        
         if len(self.grid_crossings) < 4:
             self.unwrapped = None
+            self.quads = []
+            self.inlier_quads = []
+            self.outlier_quads = []
+            self.H = None
             return
         
-        src_points = []
-        dst_points = []
+        # Build lookup: (i, j) -> (x, y)
+        crossing_map = {(i, j): (x, y) for (x, y), (i, j) in self.grid_crossings}
         
-        for (x, y), (i, j) in self.grid_crossings:
-            src_points.append([x, y])
-            dst_points.append([j * self.tile_size, i * self.tile_size])
+        # Find all valid quads: 4 corners at (i,j), (i+1,j), (i,j+1), (i+1,j+1)
+        self.quads = []
+        all_i = sorted(set(i for (i, j) in crossing_map.keys()))
+        all_j = sorted(set(j for (i, j) in crossing_map.keys()))
         
-        src_points = np.array(src_points, dtype=np.float32)
-        dst_points = np.array(dst_points, dtype=np.float32)
+        for i in all_i:
+            for j in all_j:
+                if (i, j) in crossing_map and (i+1, j) in crossing_map and \
+                   (i, j+1) in crossing_map and (i+1, j+1) in crossing_map:
+                    corners = [
+                        crossing_map[(i, j)],
+                        crossing_map[(i+1, j)],
+                        crossing_map[(i+1, j+1)],
+                        crossing_map[(i, j+1)]
+                    ]
+                    self.quads.append({'corners': corners, 'grid_pos': (i, j)})
         
-        try:
-            H, _ = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
-            if H is None:
-                self.unwrapped = None
-                return
-            
-            max_i = max(i for (x, y), (i, j) in self.grid_crossings)
-            max_j = max(j for (x, y), (i, j) in self.grid_crossings)
-            out_w = (max_j + 1) * self.tile_size
-            out_h = (max_i + 1) * self.tile_size
-            
-            frame_bgr = cv2.cvtColor(self.raw_frame, cv2.COLOR_RGB2BGR)
-            unwarped = cv2.warpPerspective(frame_bgr, H, (out_w, out_h))
-            self.unwrapped = cv2.cvtColor(unwarped, cv2.COLOR_BGR2RGB)
-            
-            # Draw grid
-            for i in range(out_h // self.tile_size + 1):
-                y = i * self.tile_size
-                cv2.line(self.unwrapped, (0, y), (out_w, y), (100, 100, 255), 1)
-            for j in range(out_w // self.tile_size + 1):
-                x = j * self.tile_size
-                cv2.line(self.unwrapped, (x, 0), (x, out_h), (100, 100, 255), 1)
-        except Exception:
+        print(f"[DEBUG] Found {len(self.quads)} complete quads")
+        
+        # Collect ALL point correspondences from all quads
+        # Each quad corner: image (x,y) -> grid (col*tile, row*tile)
+        src_pts = []  # image points
+        dst_pts = []  # grid points
+        
+        for quad in self.quads:
+            i, j = quad['grid_pos']
+            corners = quad['corners']
+            # corners order: (i,j), (i+1,j), (i+1,j+1), (i,j+1)
+            grid_corners = [
+                (j * self.tile_size, i * self.tile_size),           # (i,j)
+                (j * self.tile_size, (i+1) * self.tile_size),       # (i+1,j)
+                ((j+1) * self.tile_size, (i+1) * self.tile_size),   # (i+1,j+1)
+                ((j+1) * self.tile_size, i * self.tile_size)        # (i,j+1)
+            ]
+            for (img_x, img_y), (grid_x, grid_y) in zip(corners, grid_corners):
+                src_pts.append([img_x, img_y])
+                dst_pts.append([grid_x, grid_y])
+        
+        print(f"[DEBUG] Collected {len(src_pts)} point correspondences from {len(self.quads)} quads")
+        
+        if len(src_pts) < 4:
             self.unwrapped = None
+            self.H = None
+            self.inlier_quads = []
+            self.outlier_quads = []
+            return
+        
+        src_pts = np.array(src_pts, dtype=np.float32)
+        dst_pts = np.array(dst_pts, dtype=np.float32)
+        
+        # RANSAC to find global homography
+        self.H, inlier_mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        
+        if self.H is None:
+            print(f"[DEBUG] RANSAC failed to find homography")
+            self.unwrapped = None
+            self.inlier_quads = []
+            self.outlier_quads = []
+            return
+        
+        n_inliers = np.sum(inlier_mask) if inlier_mask is not None else 0
+        print(f"[DEBUG] RANSAC: {n_inliers}/{len(src_pts)} inliers")
+        
+        # Compute output size from grid bounds
+        min_i = min(i for (i, j) in crossing_map.keys())
+        max_i = max(i for (i, j) in crossing_map.keys())
+        min_j = min(j for (i, j) in crossing_map.keys())
+        max_j = max(j for (i, j) in crossing_map.keys())
+        
+        out_w = (max_j + 1) * self.tile_size
+        out_h = (max_i + 1) * self.tile_size
+        
+        # Warp entire frame with global homography
+        frame_bgr = cv2.cvtColor(self.raw_frame, cv2.COLOR_RGB2BGR)
+        unwarped = cv2.warpPerspective(frame_bgr, self.H, (out_w, out_h))
+        self.unwrapped = cv2.cvtColor(unwarped, cv2.COLOR_BGR2RGB)
+        
+        # Draw grid lines
+        for i in range(out_h // self.tile_size + 1):
+            y = i * self.tile_size
+            cv2.line(self.unwrapped, (0, y), (out_w, y), (100, 100, 255), 1)
+        for j in range(out_w // self.tile_size + 1):
+            x = j * self.tile_size
+            cv2.line(self.unwrapped, (x, 0), (x, out_h), (100, 100, 255), 1)
+        
+        # Mark which quads were inliers vs outliers
+        self.inlier_quads = []
+        self.outlier_quads = []
+        if inlier_mask is not None:
+            pts_per_quad = 4
+            for q_idx, quad in enumerate(self.quads):
+                quad_inliers = inlier_mask[q_idx*pts_per_quad:(q_idx+1)*pts_per_quad]
+                if np.all(quad_inliers):
+                    self.inlier_quads.append(quad)
+                else:
+                    self.outlier_quads.append(quad)
+        
+        print(f"[DEBUG] {len(self.inlier_quads)} inlier quads, {len(self.outlier_quads)} outlier quads")
+    
+    def _refine_homography(self, H_init, mask, n_lines=8, samples_per_line=50):
+        """Refine homography by maximizing alignment with mask.
+        
+        Projects a regular grid through inverse homography onto the image,
+        and optimizes to maximize mask values along projected grid lines.
+        """
+        from scipy.optimize import minimize
+        
+        h, w = mask.shape[:2]
+        
+        # Determine grid bounds from detected crossings
+        if self.grid_crossings:
+            min_i = min(i for (x, y), (i, j) in self.grid_crossings)
+            max_i = max(i for (x, y), (i, j) in self.grid_crossings)
+            min_j = min(j for (x, y), (i, j) in self.grid_crossings)
+            max_j = max(j for (x, y), (i, j) in self.grid_crossings)
+            grid_x_min = min_j * self.tile_size
+            grid_x_max = (max_j + 1) * self.tile_size
+            grid_y_min = min_i * self.tile_size
+            grid_y_max = (max_i + 1) * self.tile_size
+        else:
+            grid_x_min, grid_x_max = 0, n_lines * self.tile_size
+            grid_y_min, grid_y_max = 0, n_lines * self.tile_size
+        
+        print(f"[DEBUG] Grid bounds: x=[{grid_x_min}, {grid_x_max}], y=[{grid_y_min}, {grid_y_max}]")
+        
+        # Parameterize homography as 8 values (H[2,2] = 1 for normalization)
+        def h_to_params(H):
+            return np.array([H[0,0], H[0,1], H[0,2], H[1,0], H[1,1], H[1,2], H[2,0], H[2,1]])
+        
+        def params_to_h(params):
+            H = np.zeros((3, 3), dtype=np.float64)
+            H[0, 0] = params[0]
+            H[0, 1] = params[1]
+            H[0, 2] = params[2]
+            H[1, 0] = params[3]
+            H[1, 1] = params[4]
+            H[1, 2] = params[5]
+            H[2, 0] = params[6]
+            H[2, 1] = params[7]
+            H[2, 2] = 1.0
+            return H
+        
+        def score_homography(params, debug=False):
+            """Negative score (for minimization). Higher mask alignment = better."""
+            H = params_to_h(params)
+            try:
+                H_inv = np.linalg.inv(H)
+            except:
+                return 1e10
+            
+            total_score = 0.0
+            count = 0
+            out_of_bounds = 0
+            
+            # Project horizontal grid lines onto image
+            for i in range(n_lines):
+                y_grid = grid_y_min + i * (grid_y_max - grid_y_min) / (n_lines - 1) if n_lines > 1 else grid_y_min
+                for s in range(samples_per_line):
+                    x_grid = grid_x_min + s * (grid_x_max - grid_x_min) / (samples_per_line - 1) if samples_per_line > 1 else grid_x_min
+                    
+                    # Transform from grid space to image space
+                    pt = np.array([x_grid, y_grid, 1.0])
+                    pt_img = H_inv @ pt
+                    if abs(pt_img[2]) < 1e-6:
+                        continue
+                    px, py = pt_img[0] / pt_img[2], pt_img[1] / pt_img[2]
+                    
+                    # Sample mask
+                    if 0 <= int(py) < h and 0 <= int(px) < w:
+                        total_score += mask[int(py), int(px)]
+                        count += 1
+                    else:
+                        out_of_bounds += 1
+            
+            # Project vertical grid lines onto image
+            for j in range(n_lines):
+                x_grid = grid_x_min + j * (grid_x_max - grid_x_min) / (n_lines - 1) if n_lines > 1 else grid_x_min
+                for s in range(samples_per_line):
+                    y_grid = grid_y_min + s * (grid_y_max - grid_y_min) / (samples_per_line - 1) if samples_per_line > 1 else grid_y_min
+                    
+                    pt = np.array([x_grid, y_grid, 1.0])
+                    pt_img = H_inv @ pt
+                    if abs(pt_img[2]) < 1e-6:
+                        continue
+                    px, py = pt_img[0] / pt_img[2], pt_img[1] / pt_img[2]
+                    
+                    if 0 <= int(py) < h and 0 <= int(px) < w:
+                        total_score += mask[int(py), int(px)]
+                        count += 1
+                    else:
+                        out_of_bounds += 1
+            
+            if debug or count == 0:
+                print(f"[DEBUG] Score: count={count}, out_of_bounds={out_of_bounds}, mask shape={mask.shape}, h={h}, w={w}")
+            
+            if count == 0:
+                return 1e10
+            
+            return -total_score / count  # Negative for minimization
+        
+        # Debug: check initial homography
+        print(f"[DEBUG] H_init:\n{H_init}")
+        try:
+            H_inv = np.linalg.inv(H_init)
+            print(f"[DEBUG] H_inv computed OK")
+            # Test a few points
+            for test_pt in [[0, 0, 1], [100, 0, 1], [0, 100, 1], [100, 100, 1]]:
+                pt_img = H_inv @ np.array(test_pt, dtype=np.float64)
+                if abs(pt_img[2]) > 1e-6:
+                    px, py = pt_img[0] / pt_img[2], pt_img[1] / pt_img[2]
+                    print(f"[DEBUG] Grid {test_pt[:2]} -> Image ({px:.1f}, {py:.1f})")
+        except Exception as e:
+            print(f"[DEBUG] H_inv failed: {e}")
+        
+        # Optimize
+        init_params = h_to_params(H_init)
+        init_score = -score_homography(init_params, debug=True)
+        
+        result = minimize(score_homography, init_params, method='Powell',
+                         options={'maxiter': 100, 'ftol': 1e-4})
+        
+        final_score = -result.fun
+        print(f"[DEBUG] Homography refinement: score {init_score:.1f} -> {final_score:.1f}")
+        
+        if final_score > init_score:
+            return params_to_h(result.x)
+        else:
+            return H_init
     
     def _display_all(self):
         """Display all pipeline stages."""
@@ -541,9 +744,21 @@ class PipelineViewer:
             self._display_on_canvas(self.canvas_merged, merged_img, "merged")
             self.lbl_merged.config(text=f"{len(self.infinite_lines)} infinite lines (was {len(self.lines)} segs)")
         
-        # 5. Crossings (using merged lines)
+        # 5. Crossings (using merged lines) + detected quads (inliers green, outliers red)
         if self.raw_frame is not None:
             cross_img = self.raw_frame.copy()
+            # Draw inlier quads (green)
+            if hasattr(self, 'inlier_quads'):
+                for quad in self.inlier_quads:
+                    corners = np.array(quad['corners'], dtype=np.int32)
+                    cv2.fillPoly(cross_img, [corners], (50, 120, 50))
+                    cv2.polylines(cross_img, [corners], True, (0, 255, 0), 2)
+            # Draw outlier quads (red)
+            if hasattr(self, 'outlier_quads'):
+                for quad in self.outlier_quads:
+                    corners = np.array(quad['corners'], dtype=np.int32)
+                    cv2.fillPoly(cross_img, [corners], (50, 50, 120))
+                    cv2.polylines(cross_img, [corners], True, (0, 0, 255), 2)
             # Draw merged lines faintly
             for x1, y1, x2, y2 in self.lines_merged:
                 cv2.line(cross_img, (x1, y1), (x2, y2), (100, 100, 100), 1)
@@ -553,21 +768,24 @@ class PipelineViewer:
                 cv2.circle(cross_img, (x, y), 8, (0, 0, 0), 2)
                 cv2.putText(cross_img, f"{i},{j}", (x + 10, y - 5),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            n_in = len(self.inlier_quads) if hasattr(self, 'inlier_quads') else 0
+            n_out = len(self.outlier_quads) if hasattr(self, 'outlier_quads') else 0
             self._display_on_canvas(self.canvas_crossings, cross_img, "crossings")
-            self.lbl_crossings.config(text=f"{len(self.crossings)} crossings")
+            self.lbl_crossings.config(text=f"{len(self.crossings)} crossings, {n_in} inlier / {n_out} outlier quads")
         
-        # 6. Unwrapped
-        if self.unwrapped is not None:
+        # 6. Unwrapped (global homography from RANSAC)
+        n_in = len(self.inlier_quads) if hasattr(self, 'inlier_quads') else 0
+        if self.unwrapped is not None and self.H is not None:
             self._display_on_canvas(self.canvas_unwrapped, self.unwrapped, "unwrapped")
-            self.lbl_unwrap_status.config(text="OK", foreground="green")
+            self.lbl_unwrap_status.config(text=f"RANSAC: {n_in} inlier quads", foreground="green")
         else:
             self.canvas_unwrapped.delete("all")
             cw = self.canvas_unwrapped.winfo_width()
             ch = self.canvas_unwrapped.winfo_height()
             if cw > 10 and ch > 10:
                 self.canvas_unwrapped.create_text(cw // 2, ch // 2,
-                    text="Need 4+ crossings", fill="#666666", font=("Arial", 12))
-            self.lbl_unwrap_status.config(text=f"Need 4+ crossings (have {len(self.crossings)})", foreground="orange")
+                    text="No homography", fill="#666666", font=("Arial", 12))
+            self.lbl_unwrap_status.config(text=f"No homography (need quads)", foreground="orange")
     
     def _display_on_canvas(self, canvas, img, key):
         """Scale and display image on canvas."""
