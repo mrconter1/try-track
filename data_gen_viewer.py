@@ -436,7 +436,7 @@ class DataGenViewer:
         intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
         
         edge_margin = 128 // 10  # 1/10 of patch width = ~12 pixels
-        max_augment_attempts = 50 if center_on_crossing else 10
+        max_augment_attempts = 20 if center_on_crossing else 10
         
         valid_crossings = []
         final_image = None
@@ -962,78 +962,52 @@ def generate_training_samples(db: AnnotationDatabase, video_paths: List[str],
     
     print(f"  Cached {len(frame_cache)} frames total")
     
-    # Step 2: Prepare task batches
+    # Step 2: Generate samples directly (simple and fast)
     print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
     
-    # Prepare sample data in serializable form
-    def sample_to_dict(s):
-        return {
-            'video_path': s.video_path,
-            'frame_idx': s.frame_idx,
-            'crop_rect': s.crop_rect,
-            'lines': [{'start': l.start, 'end': l.end} for l in s.lines]
-        }
-    
-    # Generate tasks - oversample to account for potential failures
-    positive_tasks = []
-    negative_tasks = []
-    
-    # Create more tasks than needed (some might fail)
-    oversample_factor = 1.2
-    
-    for _ in range(int(target_positive * oversample_factor)):
-        if samples_with_crossings:
-            s = random.choice(samples_with_crossings)
-            cache_key = (s.video_path, s.frame_idx)
-            if cache_key in frame_cache:
-                positive_tasks.append((sample_to_dict(s), frame_cache[cache_key], True, video_paths))
-    
-    for _ in range(int(target_negative * oversample_factor)):
-        s = random.choice(samples_for_negatives)
-        cache_key = (s.video_path, s.frame_idx)
-        if cache_key in frame_cache:
-            negative_tasks.append((sample_to_dict(s), frame_cache[cache_key], False, video_paths))
-    
-    # Step 3: Process in parallel using threads (OpenCV releases GIL)
-    num_workers = min(multiprocessing.cpu_count(), 16)
-    print(f"Processing with {num_workers} workers...")
-    
+    generator = _SampleGenerator(video_paths)
     positive_samples = []
     negative_samples = []
     
-    # Process positive samples
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(_generate_one_sample, task) for task in positive_tasks]
-        for future in as_completed(futures):
-            if len(positive_samples) >= target_positive:
-                break
-            try:
-                result = future.result()
-                if result['has_crossing']:
-                    positive_samples.append(result)
-                    if len(positive_samples) % 1000 == 0:
-                        print(f"  Positive: {len(positive_samples)}/{target_positive}")
-            except Exception as e:
-                pass  # Skip failed samples
+    # Generate positive samples (centered on crossings)
+    print("Generating positive samples...")
+    attempts = 0
+    max_attempts = target_positive * 3
+    while len(positive_samples) < target_positive and attempts < max_attempts:
+        attempts += 1
+        if not samples_with_crossings:
+            break
+        s = random.choice(samples_with_crossings)
+        cache_key = (s.video_path, s.frame_idx)
+        if cache_key not in frame_cache:
+            continue
+        
+        result = generator.generate_patch(s, frame_cache[cache_key], force_crossing=True)
+        if result['has_crossing']:
+            positive_samples.append(result)
+            if len(positive_samples) % 2500 == 0:
+                print(f"  Positive: {len(positive_samples)}/{target_positive}")
     
-    # Process negative samples
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(_generate_one_sample, task) for task in negative_tasks]
-        for future in as_completed(futures):
-            if len(negative_samples) >= target_negative:
-                break
-            try:
-                result = future.result()
-                if not result['has_crossing']:
-                    negative_samples.append(result)
-                    if len(negative_samples) % 1000 == 0:
-                        print(f"  Negative: {len(negative_samples)}/{target_negative}")
-            except Exception as e:
-                pass
+    print(f"  Positive: {len(positive_samples)}/{target_positive} done")
     
-    # Trim to exact counts
-    positive_samples = positive_samples[:target_positive]
-    negative_samples = negative_samples[:target_negative]
+    # Generate negative samples (random placement)
+    print("Generating negative samples...")
+    attempts = 0
+    max_attempts = target_negative * 3
+    while len(negative_samples) < target_negative and attempts < max_attempts:
+        attempts += 1
+        s = random.choice(samples_for_negatives)
+        cache_key = (s.video_path, s.frame_idx)
+        if cache_key not in frame_cache:
+            continue
+        
+        result = generator.generate_patch(s, frame_cache[cache_key], force_crossing=False)
+        if not result['has_crossing']:
+            negative_samples.append(result)
+            if len(negative_samples) % 2500 == 0:
+                print(f"  Negative: {len(negative_samples)}/{target_negative}")
+    
+    print(f"  Negative: {len(negative_samples)}/{target_negative} done")
     
     all_samples = positive_samples + negative_samples
     random.shuffle(all_samples)
@@ -1085,7 +1059,7 @@ class _SampleGenerator:
         intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
         
         edge_margin = 128 // 10
-        max_augment_attempts = 50 if center_on_crossing else 10
+        max_augment_attempts = 20 if center_on_crossing else 10
         
         valid_crossings = []
         final_image = None
