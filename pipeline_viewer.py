@@ -128,6 +128,8 @@ class PipelineViewer:
         self.root.bind("<d>", lambda e: self.step_frame(1))
         self.root.bind("<Left>", lambda e: self.step_frame(-1))
         self.root.bind("<Right>", lambda e: self.step_frame(1))
+        self.root.bind("<A>", lambda e: self.step_frame(-500))  # Shift+A
+        self.root.bind("<D>", lambda e: self.step_frame(500))   # Shift+D
         
         # Load starting frame after window is shown (so canvases have dimensions)
         self.frame_var.set(self.start_frame)
