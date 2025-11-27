@@ -265,7 +265,7 @@ class DataGenViewer:
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         
         # Random augmentation parameters
-        zoom_factor = random.uniform(0.75, 1.25)
+        zoom_factor = random.uniform(0.75, 2.0)  # Extended zoom range for more variety
         rotation_angle = random.uniform(-180, 180)
         stretch_x = random.uniform(0.9, 1.1)
         stretch_y = random.uniform(0.9, 1.1)
@@ -280,7 +280,8 @@ class DataGenViewer:
         flip_horizontal = random.random() < 0.5
         flip_vertical = random.random() < 0.5
         
-        buffer_factor = 2.5
+        # Increase buffer for larger zoom range
+        buffer_factor = 3.0
         initial_size = int(128 * buffer_factor)
         
         if w < initial_size or h < initial_size:
@@ -296,13 +297,8 @@ class DataGenViewer:
         # Find line intersections (crossings)
         intersections = find_line_intersections(sample.lines)
         
-        # Create mask with Gaussian blobs at crossing points
-        mask_large = np.zeros((patch_h, patch_w), dtype=np.float32)
-        for ix, iy in intersections:
-            # Translate to large patch coordinates
-            cx = ix - patch_x
-            cy = iy - patch_y
-            render_gaussian_blob(mask_large, cx, cy, sigma=3.5)
+        # Translate intersections to large patch coordinates
+        intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
         
         max_attempts = 10
         for attempt in range(max_attempts):
@@ -364,24 +360,54 @@ class DataGenViewer:
             if valid:
                 break
         
+        # Transform image
         transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
                                               borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-        transformed_mask = cv2.warpPerspective(mask_large, H, (patch_w, patch_h),
-                                               borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         
+        # Crop to 128x128
         final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
-        final_mask = transformed_mask[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         
+        # Transform intersection points through homography and filter by edge margin
+        edge_margin = 128 // 10  # 1/10 of patch width = ~12 pixels
+        valid_crossings = []
+        
+        if intersections_local:
+            # Convert points to homogeneous coordinates and transform
+            points = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
+            transformed_points = cv2.perspectiveTransform(points, H).reshape(-1, 2)
+            
+            # Convert to final 128x128 coordinates and filter by edge margin
+            for tx, ty in transformed_points:
+                # Translate to 128x128 crop coordinates
+                fx = tx - crop_x_offset
+                fy = ty - crop_y_offset
+                
+                # Check edge margin (must be at least edge_margin pixels from any edge)
+                if fx >= edge_margin and fx <= 128 - edge_margin and fy >= edge_margin and fy <= 128 - edge_margin:
+                    valid_crossings.append((fx, fy))
+        
+        # Create mask with Gaussian blobs at valid crossing points
+        final_mask = np.zeros((128, 128), dtype=np.float32)
+        for cx, cy in valid_crossings:
+            render_gaussian_blob(final_mask, cx, cy, sigma=3.5)
+        
+        # Apply flips
         if flip_horizontal:
             final_image = cv2.flip(final_image, 1)
             final_mask = cv2.flip(final_mask, 1)
+            # Update crossing positions for visualization
+            valid_crossings = [(128 - cx, cy) for cx, cy in valid_crossings]
         if flip_vertical:
             final_image = cv2.flip(final_image, 0)
             final_mask = cv2.flip(final_mask, 0)
+            valid_crossings = [(cx, 128 - cy) for cx, cy in valid_crossings]
         
         # Convert mask to uint8 for display (0-255 grayscale)
         final_mask = np.clip(final_mask, 0, 1)
         final_mask = (final_mask * 255).astype(np.uint8)
+        
+        # Track if this patch has valid crossings (for balancing)
+        has_crossing = len(valid_crossings) > 0
         
         final_image = final_image.astype(np.float32)
         
@@ -407,10 +433,15 @@ class DataGenViewer:
         
         final_image = np.clip(final_image, 0, 255).astype(np.uint8)
         
-        result = {'image': final_image, 'mask': final_mask}
+        result = {
+            'image': final_image,
+            'mask': final_mask,
+            'has_crossing': has_crossing,
+            'num_crossings': len(valid_crossings)
+        }
         
         if include_visualization:
-            # Create visualization mask showing crossings as Gaussian blobs
+            # Create visualization mask showing ALL crossings in source (before edge filtering)
             full_source_mask = np.zeros((h, w), dtype=np.float32)
             for ix, iy in intersections:
                 render_gaussian_blob(full_source_mask, ix, iy, sigma=3.5)
@@ -424,7 +455,8 @@ class DataGenViewer:
                 'source_crop': sample.crop_rect,
                 'source_mask': full_source_mask,
                 'patch_offset': (patch_x, patch_y, patch_w, patch_h),
-                'num_crossings': len(intersections),
+                'total_intersections': len(intersections),
+                'valid_crossings': valid_crossings,
                 'step3_params': {
                     'rotation': rotation_angle,
                     'zoom': zoom_factor,
@@ -448,26 +480,46 @@ class DataGenViewer:
         threading.Thread(target=self.generate_training_patches, daemon=True).start()
     
     def generate_training_patches(self):
-        """Generate random 128x128 patches from labeled samples for visualization."""
+        """Generate random 128x128 patches with 50/50 balance of positive/negative."""
         self.root.after(0, lambda: self.lbl_gen_count.config(text="Generating..."))
         
         self.generated_patches = []
-        new_patches = []
         
-        # Prefer samples with 2+ lines (can have crossings)
+        # Separate samples: those that CAN have crossings (2+ lines) vs those that can't
         samples_with_crossings = [s for s in self.db.samples if len(s.lines) >= 2]
-        labeled_samples = samples_with_crossings if samples_with_crossings else [s for s in self.db.samples if len(s.lines) > 0]
+        samples_no_crossings = [s for s in self.db.samples if len(s.lines) == 1]
+        all_labeled = samples_with_crossings + samples_no_crossings
         
-        if not labeled_samples:
+        if not all_labeled:
             self.root.after(0, lambda: messagebox.showwarning("No Labeled Data", "No labeled samples found."))
             return
         
-        print(f"Generating patches from {len(labeled_samples)} samples ({len(samples_with_crossings)} with 2+ lines)...")
+        print(f"Generating balanced patches: {len(samples_with_crossings)} samples with 2+ lines, {len(samples_no_crossings)} with 1 line...")
         
+        # Target: 5 positive, 4 negative (or vice versa) for 9 total
+        target_positive = 5
+        target_negative = 4
+        max_attempts = 200  # Prevent infinite loop
+        
+        positive_patches = []
+        negative_patches = []
         frame_cache = {}
-        selected_samples = [random.choice(labeled_samples) for _ in range(9)]
+        attempts = 0
         
-        for sample in selected_samples:
+        while (len(positive_patches) < target_positive or len(negative_patches) < target_negative) and attempts < max_attempts:
+            attempts += 1
+            
+            # Choose sample strategically based on what we still need
+            if len(positive_patches) < target_positive and samples_with_crossings:
+                # Try to get a positive - use sample with 2+ lines
+                sample = random.choice(samples_with_crossings)
+            elif len(negative_patches) < target_negative:
+                # Get a negative - can use any sample (even 2+ lines might not produce crossing in patch)
+                sample = random.choice(all_labeled)
+            else:
+                break
+            
+            # Load frame
             cache_key = (sample.video_path, sample.frame_idx)
             if cache_key not in frame_cache:
                 cap = cv2.VideoCapture(sample.video_path)
@@ -476,17 +528,24 @@ class DataGenViewer:
                 cap.release()
                 if ret and frame is not None:
                     frame_cache[cache_key] = frame
-        
-        for sample in selected_samples:
-            cache_key = (sample.video_path, sample.frame_idx)
+            
             if cache_key not in frame_cache:
                 continue
             
             frame = frame_cache[cache_key]
             patch_data = self._generate_single_patch(sample, frame, include_visualization=True)
-            new_patches.append(patch_data)
+            
+            # Categorize by whether it has valid crossings
+            if patch_data['has_crossing'] and len(positive_patches) < target_positive:
+                positive_patches.append(patch_data)
+            elif not patch_data['has_crossing'] and len(negative_patches) < target_negative:
+                negative_patches.append(patch_data)
         
-        print(f"Generated {len(new_patches)} patches")
+        # Combine and shuffle
+        new_patches = positive_patches + negative_patches
+        random.shuffle(new_patches)
+        
+        print(f"Generated {len(new_patches)} patches: {len(positive_patches)} positive, {len(negative_patches)} negative ({attempts} attempts)")
         
         def update_ui():
             self.generated_patches = new_patches
@@ -501,8 +560,10 @@ class DataGenViewer:
         if not self.generated_patches:
             return
         
+        num_positive = sum(1 for p in self.generated_patches if p.get('has_crossing', False))
+        num_negative = len(self.generated_patches) - num_positive
         total_crossings = sum(p.get('num_crossings', 0) for p in self.generated_patches)
-        self.lbl_gen_count.config(text=f"Patches: {len(self.generated_patches)} | Crossings: {total_crossings}")
+        self.lbl_gen_count.config(text=f"+{num_positive}/-{num_negative} | {total_crossings} crossings")
         
         if self.show_gen_mask:
             self.btn_toggle_gen_view.config(text="Show: Crossing Masks")
