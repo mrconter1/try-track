@@ -130,8 +130,8 @@ class CrossingViewer:
         self.total_frames = 0
         self.current_frame_idx = 0
         self.photo_image = None
-        self.stride = 64  # 50% overlap with 128 patch
-        self.threshold = 0.5
+        self.stride = 32  # 75% overlap with 128 patch
+        self.threshold = 0.1
         self.show_heatmap = True
         
         # Build UI
@@ -197,13 +197,13 @@ class CrossingViewer:
         detect_frame.pack(fill=tk.X, pady=(0, 10))
         
         ttk.Label(detect_frame, text="Stride:").pack(anchor='w')
-        self.stride_var = tk.IntVar(value=64)
+        self.stride_var = tk.IntVar(value=32)
         stride_combo = ttk.Combobox(detect_frame, textvariable=self.stride_var, values=[32, 64, 96, 128], state='readonly', width=10)
         stride_combo.pack(anchor='w', pady=(0, 5))
         stride_combo.bind('<<ComboboxSelected>>', lambda e: self._predict_current())
         
         ttk.Label(detect_frame, text="Threshold:").pack(anchor='w')
-        self.threshold_var = tk.DoubleVar(value=0.5)
+        self.threshold_var = tk.DoubleVar(value=0.1)
         threshold_scale = ttk.Scale(detect_frame, from_=0.1, to=0.9, variable=self.threshold_var, command=self._on_threshold_changed)
         threshold_scale.pack(fill=tk.X, pady=(0, 5))
         
