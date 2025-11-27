@@ -516,6 +516,26 @@ class PipelineViewer:
                 angle = np.arccos(cos_angle) * 180 / np.pi
                 angles.append(angle)
             return min(angles)
+            
+        def is_mostly_square(pts):
+            """Check if quad is roughly square-ish (not a long rectangle)."""
+            sides = []
+            for i in range(4):
+                p1 = pts[i]
+                p2 = pts[(i + 1) % 4]
+                dist = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+                sides.append(dist)
+            
+            if min(sides) < 1.0: return False
+            
+            # Check 1: Side ratio (max side shouldn't be > 2x min side)
+            # Real grid cells are 1:1. Perspective might make this 1:2 or 2:1.
+            # False matches (2x1 or 3x1 merged cells) will be > 2:1.
+            ratio = max(sides) / min(sides)
+            if ratio > 2.0:
+                return False
+            
+            return True
         
         self.quads = []
         
@@ -527,11 +547,15 @@ class PipelineViewer:
             if not is_convex_quad(ordered):
                 continue
             
-            # Check 2: Min angle > 60 degrees (avoid sharp slivers)
+            # Check 2: Min angle > 60 degrees
             if get_min_angle(ordered) < 60:
                 continue
+                
+            # Check 3: Mostly square (side ratios)
+            if not is_mostly_square(ordered):
+                continue
             
-            # Check 3: No OTHER point inside or near this quad
+            # Check 4: No OTHER point inside or near this quad
             is_empty = True
             for i, p in enumerate(points):
                 if i not in combo:
