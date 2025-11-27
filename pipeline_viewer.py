@@ -98,8 +98,9 @@ class PipelineViewer:
         # Pipeline state
         self.raw_frame = None
         self.mask = None
-        self.lines = []
-        self.lines_merged = []
+        self.lines = []  # Raw segments from HoughP
+        self.lines_merged = []  # Segments (for display)
+        self.infinite_lines = []  # List of (rho, theta) for infinite lines
         self.crossings = []
         self.grid_crossings = []
         self.unwrapped = None
@@ -188,8 +189,8 @@ class PipelineViewer:
         bottom_row = ttk.Frame(content)
         bottom_row.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
         
-        # Panel 4: Merged Lines
-        p4 = ttk.LabelFrame(bottom_row, text="4. Merged Lines (ρ,θ cluster)", padding=5)
+        # Panel 4: Infinite Lines
+        p4 = ttk.LabelFrame(bottom_row, text="4. Infinite Lines (ρ,θ)", padding=5)
         p4.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
         self.canvas_merged = tk.Canvas(p4, bg="#1a1a1a", highlightthickness=0)
         self.canvas_merged.pack(fill=tk.BOTH, expand=True)
@@ -306,213 +307,147 @@ class PipelineViewer:
         self.lines = [tuple(line[0]) for line in lines_raw]
     
     def _step4_merge_lines(self):
-        """Merge collinear line segments using rho-theta clustering."""
+        """Merge collinear segments. Simple: angle_diff < 10° AND dist_diff < 25px → same bin."""
         if len(self.lines) < 2:
             self.lines_merged = self.lines.copy()
+            self.infinite_lines = []
             return
         
-        def segment_to_rho_theta(x1, y1, x2, y2):
-            """Convert line segment to (rho, theta) representation."""
-            # Line direction
-            dx, dy = x2 - x1, y2 - y1
-            length = np.sqrt(dx*dx + dy*dy)
-            if length < 1e-6:
-                return None, None
-            
-            # Normalize direction
-            dx, dy = dx / length, dy / length
-            
-            # Theta is angle of the line (not the perpendicular)
-            theta = np.arctan2(dy, dx)
-            
-            # Normalize theta to [0, pi) - lines are undirected
-            if theta < 0:
-                theta += np.pi
-            if theta >= np.pi:
-                theta -= np.pi
-            
-            # Rho is perpendicular distance from origin to the line
-            # Using midpoint for stability
-            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-            # Perpendicular direction
-            perp_x, perp_y = -dy, dx
-            # Rho = projection of midpoint onto perpendicular
-            rho = mx * perp_x + my * perp_y
-            
-            # Ensure rho is positive (flip theta if needed)
-            if rho < 0:
-                rho = -rho
-                theta = theta + np.pi if theta < np.pi else theta - np.pi
-                if theta >= np.pi:
-                    theta -= np.pi
-            
-            return rho, theta
-        
-        # Convert all segments to (rho, theta, segment_data)
-        line_params = []
+        # For each segment: (angle_deg, perp_dist, segment, midpoint)
+        line_data = []
         for seg in self.lines:
             x1, y1, x2, y2 = seg
-            rho, theta = segment_to_rho_theta(x1, y1, x2, y2)
-            if rho is not None:
-                line_params.append((rho, theta, seg))
+            dx, dy = x2 - x1, y2 - y1
+            length = np.sqrt(dx*dx + dy*dy)
+            if length < 1:
+                continue
+            
+            # Angle in degrees [0, 180)
+            angle = np.arctan2(dy, dx) * 180 / np.pi
+            if angle < 0:
+                angle += 180
+            
+            # Midpoint
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            
+            # Perpendicular distance from origin (signed)
+            # Normal = (-sin(angle), cos(angle))
+            angle_rad = angle * np.pi / 180
+            nx, ny = -np.sin(angle_rad), np.cos(angle_rad)
+            dist = mx * nx + my * ny
+            
+            line_data.append((angle, dist, seg, (mx, my)))
         
-        if len(line_params) == 0:
-            self.lines_merged = []
-            return
+        print(f"[DEBUG] {len(line_data)} segments")
         
-        # Clustering parameters
-        rho_tolerance = 20  # pixels
-        theta_tolerance = 5 * np.pi / 180  # 5 degrees in radians
+        # Cluster: angle_diff < 10° AND dist_diff < 25px
+        ANGLE_TOL = 10
+        DIST_TOL = 25
         
-        # Debug: print theta distribution
-        thetas_deg = [p[1] * 180 / np.pi for p in line_params]
-        print(f"[DEBUG] {len(line_params)} lines, theta range: {min(thetas_deg):.1f}° - {max(thetas_deg):.1f}°")
-        # Count lines in each direction (roughly 45° vs 135°)
-        dir1 = sum(1 for t in thetas_deg if t < 90)
-        dir2 = sum(1 for t in thetas_deg if t >= 90)
-        print(f"[DEBUG] Direction split: {dir1} lines < 90°, {dir2} lines >= 90°")
-        
-        # Print each line's rho, theta
-        print("[DEBUG] Line params (rho, theta°):")
-        for rho, theta, seg in line_params:
-            print(f"  rho={rho:7.1f}, theta={theta*180/np.pi:5.1f}°, seg={seg}")
-        
-        # Simple greedy clustering
         clusters = []
-        used = [False] * len(line_params)
+        used = [False] * len(line_data)
         
-        for i in range(len(line_params)):
+        for i in range(len(line_data)):
             if used[i]:
                 continue
             
-            rho_i, theta_i, seg_i = line_params[i]
-            cluster = [line_params[i]]
+            angle_i, dist_i, _, _ = line_data[i]
+            cluster = [line_data[i]]
             used[i] = True
             
-            for j in range(i + 1, len(line_params)):
+            for j in range(i + 1, len(line_data)):
                 if used[j]:
                     continue
                 
-                rho_j, theta_j, seg_j = line_params[j]
+                angle_j, dist_j, _, _ = line_data[j]
                 
-                # Check angle similarity (handle wraparound at 0/pi)
-                angle_diff = abs(theta_i - theta_j)
-                angle_diff = min(angle_diff, np.pi - angle_diff)
+                # Angle diff with wraparound
+                angle_diff = abs(angle_i - angle_j)
+                if angle_diff > 90:
+                    angle_diff = 180 - angle_diff
                 
-                # Check rho similarity
-                rho_diff = abs(rho_i - rho_j)
-                
-                if angle_diff < theta_tolerance and rho_diff < rho_tolerance:
-                    cluster.append(line_params[j])
+                if angle_diff < ANGLE_TOL and abs(dist_i - dist_j) < DIST_TOL:
+                    cluster.append(line_data[j])
                     used[j] = True
             
             clusters.append(cluster)
         
-        print(f"[DEBUG] Created {len(clusters)} clusters")
+        print(f"[DEBUG] {len(clusters)} clusters")
         
-        # Merge each cluster into a single line segment
+        # Average each cluster → infinite line (angle_deg, dist)
+        self.infinite_lines = []
         self.lines_merged = []
         
         for cluster in clusters:
-            if len(cluster) == 1:
-                # Single segment, keep as is
-                self.lines_merged.append(cluster[0][2])
-            else:
-                # Multiple segments - find combined extent using original endpoints
-                # Get direction from the first segment (they're all similar)
-                first_seg = cluster[0][2]
-                dx = first_seg[2] - first_seg[0]
-                dy = first_seg[3] - first_seg[1]
-                length = np.sqrt(dx*dx + dy*dy)
-                if length < 1e-6:
-                    self.lines_merged.append(first_seg)
-                    continue
-                dir_x, dir_y = dx / length, dy / length
-                
-                # Collect all endpoints
-                all_points = []
-                for _, _, (x1, y1, x2, y2) in cluster:
-                    all_points.append((x1, y1))
-                    all_points.append((x2, y2))
-                
-                # Project all endpoints onto the line direction
-                # Find the two extreme points
-                min_proj = float('inf')
-                max_proj = float('-inf')
-                min_point = None
-                max_point = None
-                
-                for px, py in all_points:
-                    proj = px * dir_x + py * dir_y
-                    if proj < min_proj:
-                        min_proj = proj
-                        min_point = (px, py)
-                    if proj > max_proj:
-                        max_proj = proj
-                        max_point = (px, py)
-                
-                if min_point and max_point:
-                    self.lines_merged.append((int(min_point[0]), int(min_point[1]), 
-                                              int(max_point[0]), int(max_point[1])))
+            avg_angle = np.mean([c[0] for c in cluster])
+            avg_dist = np.mean([c[1] for c in cluster])
+            self.infinite_lines.append((avg_angle, avg_dist))
+            
+            # Merged segment: find extreme endpoints
+            angle_rad = avg_angle * np.pi / 180
+            dir_x, dir_y = np.cos(angle_rad), np.sin(angle_rad)
+            
+            all_pts = []
+            for _, _, (x1, y1, x2, y2), _ in cluster:
+                all_pts.extend([(x1, y1), (x2, y2)])
+            
+            projs = [(p, p[0]*dir_x + p[1]*dir_y) for p in all_pts]
+            projs.sort(key=lambda x: x[1])
+            p1, p2 = projs[0][0], projs[-1][0]
+            self.lines_merged.append((int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1])))
         
-        # Debug: show merged line details
-        print("[DEBUG] Merged lines:")
-        for x1, y1, x2, y2 in self.lines_merged:
-            angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
-            if angle < 0:
-                angle += 180
-            print(f"  ({x1}, {y1}) -> ({x2}, {y2}), angle={angle:.1f}°")
+        print(f"[DEBUG] {len(self.infinite_lines)} infinite lines (angle°, dist):")
+        for angle, dist in self.infinite_lines:
+            print(f"  angle={angle:5.1f}°, dist={dist:7.1f}")
     
     def _step5_crossings(self):
-        """Find crossings between horizontal and vertical lines (using merged lines)."""
-        if len(self.lines_merged) < 2:
+        """Find crossings between infinite lines. Lines are (angle_deg, dist)."""
+        if len(self.infinite_lines) < 2:
             self.crossings = []
             self.grid_crossings = []
             return
         
         h, w = self.raw_frame.shape[:2]
         
-        # Group merged lines by angle
-        horizontal = []
-        vertical = []
+        # Group by angle: < 90° vs >= 90°
+        group1 = [(a, d) for a, d in self.infinite_lines if a < 90]
+        group2 = [(a, d) for a, d in self.infinite_lines if a >= 90]
         
-        for x1, y1, x2, y2 in self.lines_merged:
-            dx, dy = x2 - x1, y2 - y1
-            angle_deg = abs(np.arctan2(dy, dx) * 180 / np.pi)
-            if angle_deg > 90:
-                angle_deg = 180 - angle_deg
+        # Sort by dist
+        group1.sort(key=lambda x: x[1])
+        group2.sort(key=lambda x: x[1])
+        
+        def intersect(angle1_deg, dist1, angle2_deg, dist2):
+            """Intersect two infinite lines. Line eq: -x*sin(a) + y*cos(a) = dist"""
+            a1 = angle1_deg * np.pi / 180
+            a2 = angle2_deg * np.pi / 180
             
-            if angle_deg < 45:
-                horizontal.append((x1, y1, x2, y2))
-            else:
-                vertical.append((x1, y1, x2, y2))
-        
-        # Sort
-        horizontal.sort(key=lambda l: (l[1] + l[3]) / 2)
-        vertical.sort(key=lambda l: (l[0] + l[2]) / 2)
-        
-        def line_intersection(l1, l2):
-            x1, y1, x2, y2 = l1
-            x3, y3, x4, y4 = l2
-            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-            if abs(denom) < 1e-6:
+            # Coefficients: -sin(a)*x + cos(a)*y = dist
+            A1, B1 = -np.sin(a1), np.cos(a1)
+            A2, B2 = -np.sin(a2), np.cos(a2)
+            
+            det = A1 * B2 - A2 * B1
+            if abs(det) < 1e-6:
                 return None
-            t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
-            x = x1 + t * (x2 - x1)
-            y = y1 + t * (y2 - y1)
+            
+            x = (dist1 * B2 - dist2 * B1) / det
+            y = (A1 * dist2 - A2 * dist1) / det
             return (int(x), int(y))
         
         self.crossings = []
         self.grid_crossings = []
         
-        for i, h_line in enumerate(horizontal):
-            for j, v_line in enumerate(vertical):
-                pt = line_intersection(h_line, v_line)
-                if pt is not None:
+        for i, (a1, d1) in enumerate(group1):
+            for j, (a2, d2) in enumerate(group2):
+                pt = intersect(a1, d1, a2, d2)
+                if pt:
                     x, y = pt
                     if -50 <= x < w + 50 and -50 <= y < h + 50:
                         self.crossings.append((x, y))
                         self.grid_crossings.append(((x, y), (i, j)))
+        
+        print(f"[DEBUG] Groups: {len(group1)} lines <90°, {len(group2)} lines >=90°")
+        print(f"[DEBUG] Found {len(self.crossings)} crossings")
     
     def _step6_unwrap(self):
         """Compute homography and unwarp the frame."""
@@ -579,15 +514,35 @@ class PipelineViewer:
             self._display_on_canvas(self.canvas_lines, lines_img, "lines")
             self.lbl_lines.config(text=f"{len(self.lines)} lines")
         
-        # 4. Merged lines
+        # 4. Infinite lines (draw extending to frame edges)
         if self.raw_frame is not None:
             merged_img = self.raw_frame.copy()
-            for x1, y1, x2, y2 in self.lines_merged:
+            h, w = merged_img.shape[:2]
+            
+            # Draw infinite lines (angle_deg, dist)
+            for angle_deg, dist in self.infinite_lines:
+                angle_rad = angle_deg * np.pi / 180
+                # Direction along line
+                dir_x = np.cos(angle_rad)
+                dir_y = np.sin(angle_rad)
+                # Normal direction
+                nx, ny = -np.sin(angle_rad), np.cos(angle_rad)
+                
+                # Point on line at perpendicular distance from origin
+                base_x = dist * nx
+                base_y = dist * ny
+                
+                # Extend far in both directions
+                t = max(w, h) * 2
+                x1 = int(base_x - t * dir_x)
+                y1 = int(base_y - t * dir_y)
+                x2 = int(base_x + t * dir_x)
+                y2 = int(base_y + t * dir_y)
+                
                 cv2.line(merged_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.circle(merged_img, (x1, y1), 5, (255, 100, 0), -1)
-                cv2.circle(merged_img, (x2, y2), 5, (255, 100, 0), -1)
+            
             self._display_on_canvas(self.canvas_merged, merged_img, "merged")
-            self.lbl_merged.config(text=f"{len(self.lines_merged)} lines (was {len(self.lines)})")
+            self.lbl_merged.config(text=f"{len(self.infinite_lines)} infinite lines (was {len(self.lines)} segs)")
         
         # 5. Crossings (using merged lines)
         if self.raw_frame is not None:
