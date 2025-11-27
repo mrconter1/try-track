@@ -1110,18 +1110,20 @@ def generate_training_samples(db: AnnotationDatabase, video_paths: List[str],
         }
     
     # Create tasks (don't pass frames, just cache keys)
-    oversample = 1.5
+    # Use higher oversample for positives since they have lower success rate
+    oversample_positive = 2.5
+    oversample_negative = 1.5
     positive_tasks = []
     negative_tasks = []
     
-    for _ in range(int(target_positive * oversample)):
+    for _ in range(int(target_positive * oversample_positive)):
         if samples_with_crossings:
             s = random.choice(samples_with_crossings)
             cache_key = (s.video_path, s.frame_idx)
             if cache_key in frame_cache:
                 positive_tasks.append((sample_to_dict(s), cache_key, True))
     
-    for _ in range(int(target_negative * oversample)):
+    for _ in range(int(target_negative * oversample_negative)):
         s = random.choice(samples_for_negatives)
         cache_key = (s.video_path, s.frame_idx)
         if cache_key in frame_cache:
