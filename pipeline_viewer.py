@@ -375,10 +375,18 @@ class PipelineViewer:
         print(f"[DEBUG] {len(clusters)} clusters")
         
         # Average each cluster → infinite line (angle_deg, dist)
+        # Only keep bins with at least 3 segments
+        MIN_SEGMENTS = 3
+        
         self.infinite_lines = []
         self.lines_merged = []
+        kept_clusters = []
         
         for cluster in clusters:
+            if len(cluster) < MIN_SEGMENTS:
+                continue
+            
+            kept_clusters.append(cluster)
             avg_angle = np.mean([c[0] for c in cluster])
             avg_dist = np.mean([c[1] for c in cluster])
             self.infinite_lines.append((avg_angle, avg_dist))
@@ -396,9 +404,11 @@ class PipelineViewer:
             p1, p2 = projs[0][0], projs[-1][0]
             self.lines_merged.append((int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1])))
         
-        print(f"[DEBUG] {len(self.infinite_lines)} infinite lines (angle°, dist):")
-        for angle, dist in self.infinite_lines:
-            print(f"  angle={angle:5.1f}°, dist={dist:7.1f}")
+        skipped = len(clusters) - len(kept_clusters)
+        print(f"[DEBUG] {len(self.infinite_lines)} infinite lines (skipped {skipped} with <{MIN_SEGMENTS} segs):")
+        for i, cluster in enumerate(kept_clusters):
+            angle, dist = self.infinite_lines[i]
+            print(f"  angle={angle:5.1f}°, dist={dist:7.1f}, {len(cluster)} segments")
     
     def _step5_crossings(self):
         """Find crossings between infinite lines. Lines are (angle_deg, dist)."""
