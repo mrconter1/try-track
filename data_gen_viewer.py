@@ -909,21 +909,151 @@ class DataGenViewer:
 # Standalone Training Functions
 # ============================================================================
 
+# Global cache for multiprocessing workers
+_worker_frame_cache = None
+_worker_video_paths = None
+
+def _init_worker(frame_cache, video_paths):
+    """Initialize worker process with shared frame cache."""
+    global _worker_frame_cache, _worker_video_paths
+    _worker_frame_cache = frame_cache
+    _worker_video_paths = video_paths
+
 def _generate_one_sample(args):
-    """Worker function for parallel sample generation."""
-    sample_data, frame, force_crossing, video_paths = args
+    """Worker function - inlined for speed."""
+    sample_data, cache_key, force_crossing = args
     
-    # Reconstruct sample object
-    sample = Sample(
-        video_path=sample_data['video_path'],
-        frame_idx=sample_data['frame_idx'],
-        crop_rect=sample_data['crop_rect']
-    )
-    for line_data in sample_data['lines']:
-        sample.add_line(line_data['start'], line_data['end'])
+    global _worker_frame_cache
     
-    generator = _SampleGenerator(video_paths)
-    return generator.generate_patch(sample, frame, force_crossing=force_crossing)
+    frame = _worker_frame_cache.get(cache_key)
+    if frame is None:
+        return None
+    
+    # Inline the patch generation for speed (avoid object creation)
+    crop_rect = sample_data['crop_rect']
+    lines_data = sample_data['lines']
+    
+    x, y, w, h = crop_rect
+    crop = frame[y:y+h, x:x+w]
+    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    
+    # Find intersections inline
+    intersections = []
+    for i in range(len(lines_data)):
+        for j in range(i + 1, len(lines_data)):
+            l1, l2 = lines_data[i], lines_data[j]
+            x1, y1 = l1['start']
+            x2, y2 = l1['end']
+            x3, y3 = l2['start']
+            x4, y4 = l2['end']
+            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(denom) < 1e-10:
+                continue
+            t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+            u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+            if 0 <= t <= 1 and 0 <= u <= 1:
+                intersections.append((x1 + t * (x2 - x1), y1 + t * (y2 - y1)))
+    
+    center_on_crossing = force_crossing and len(intersections) > 0
+    target_crossing = random.choice(intersections) if center_on_crossing else None
+    
+    buffer_factor = 3.0
+    initial_size = int(128 * buffer_factor)
+    
+    if center_on_crossing:
+        target_x, target_y = target_crossing
+        patch_x = max(0, min(w - initial_size, int(target_x - initial_size / 2)))
+        patch_y = max(0, min(h - initial_size, int(target_y - initial_size / 2)))
+        patch_w, patch_h = min(initial_size, w), min(initial_size, h)
+    else:
+        if w < initial_size or h < initial_size:
+            patch_x, patch_y = 0, 0
+            patch_w, patch_h = w, h
+        else:
+            patch_x = random.randint(0, w - initial_size)
+            patch_y = random.randint(0, h - initial_size)
+            patch_w, patch_h = initial_size, initial_size
+    
+    large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+    intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
+    
+    edge_margin = 12
+    max_attempts = 20 if center_on_crossing else 10
+    valid_crossings = []
+    final_image = None
+    
+    for _ in range(max_attempts):
+        zoom = random.uniform(0.75, 2.0)
+        angle = random.uniform(-180, 180)
+        stretch_x, stretch_y = random.uniform(0.9, 1.1), random.uniform(0.9, 1.1)
+        
+        cx, cy = patch_w / 2, patch_h / 2
+        rad = np.deg2rad(angle)
+        cos_a, sin_a = np.cos(rad), np.sin(rad)
+        sx, sy = zoom * stretch_x, zoom * stretch_y
+        
+        src = np.array([[0, 0], [patch_w, 0], [patch_w, patch_h], [0, patch_h]], dtype=np.float32)
+        dst = []
+        for i, (px, py) in enumerate(src):
+            rx, ry = (px - cx) * cos_a - (py - cy) * sin_a, (px - cx) * sin_a + (py - cy) * cos_a
+            fx = rx * sx + cx + random.uniform(-0.15, 0.15) * patch_w
+            fy = ry * sy + cy + random.uniform(-0.15, 0.15) * patch_h
+            dst.append([fx, fy])
+        
+        dst = np.array(dst, dtype=np.float32)
+        H = cv2.getPerspectiveTransform(src, dst)
+        
+        crop_off = (patch_w - 128) // 2
+        
+        # Check crossings
+        valid_crossings = []
+        if intersections_local:
+            pts = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
+            tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+            for tx, ty in tpts:
+                fx, fy = tx - crop_off, ty - crop_off
+                if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
+                    valid_crossings.append((fx, fy))
+        
+        if center_on_crossing and not valid_crossings:
+            continue
+        
+        transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), borderMode=cv2.BORDER_CONSTANT)
+        final_image = transformed[crop_off:crop_off+128, crop_off:crop_off+128]
+        break
+    
+    if final_image is None:
+        final_image = cv2.resize(large_patch, (128, 128))
+        valid_crossings = []
+    
+    # Mask
+    mask = np.zeros((128, 128), dtype=np.float32)
+    for cx, cy in valid_crossings:
+        render_gaussian_blob(mask, cx, cy, sigma=3.5)
+    
+    # Flips
+    if random.random() < 0.5:
+        final_image = cv2.flip(final_image, 1)
+        mask = cv2.flip(mask, 1)
+    if random.random() < 0.5:
+        final_image = cv2.flip(final_image, 0)
+        mask = cv2.flip(mask, 0)
+    
+    # Quick augmentations
+    img = final_image.astype(np.float32)
+    img = img + random.uniform(-0.3, 0.3) * 255
+    img = (img - img.mean()) * random.uniform(0.7, 1.3) + img.mean()
+    img = np.clip(img, 0, 255)
+    img = 255.0 * np.power(img / 255.0, random.uniform(0.7, 1.5))
+    if random.random() < 0.5:
+        img = img + np.random.normal(0, random.uniform(0, 25), img.shape)
+    
+    return {
+        'image': np.clip(img, 0, 255).astype(np.uint8),
+        'mask': (np.clip(mask, 0, 1) * 255).astype(np.uint8),
+        'has_crossing': len(valid_crossings) > 0,
+        'num_crossings': len(valid_crossings)
+    }
 
 
 def generate_training_samples(db: AnnotationDatabase, video_paths: List[str], 
@@ -943,71 +1073,99 @@ def generate_training_samples(db: AnnotationDatabase, video_paths: List[str],
     target_positive = int(num_samples * balance_ratio)
     target_negative = num_samples - target_positive
     
-    # Step 1: Pre-cache ALL unique frames upfront
+    # Step 1: Pre-cache ALL unique frames upfront (parallel)
     print("Pre-caching frames...")
-    unique_frames = set()
-    for s in db.samples:
-        unique_frames.add((s.video_path, s.frame_idx))
+    unique_frames = list(set((s.video_path, s.frame_idx) for s in db.samples))
     
-    frame_cache = {}
-    for i, (video_path, frame_idx) in enumerate(unique_frames):
+    def load_frame(args):
+        video_path, frame_idx = args
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         cap.release()
         if ret and frame is not None:
-            frame_cache[(video_path, frame_idx)] = frame
-        if (i + 1) % 50 == 0:
-            print(f"  Cached {i + 1}/{len(unique_frames)} frames")
+            return ((video_path, frame_idx), frame)
+        return None
+    
+    frame_cache = {}
+    num_workers = min(multiprocessing.cpu_count(), 8)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for i, result in enumerate(executor.map(load_frame, unique_frames)):
+            if result:
+                frame_cache[result[0]] = result[1]
+            if (i + 1) % 100 == 0:
+                print(f"  Cached {i + 1}/{len(unique_frames)} frames")
     
     print(f"  Cached {len(frame_cache)} frames total")
     
-    # Step 2: Generate samples directly (simple and fast)
+    # Step 2: Prepare tasks
     print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
     
-    generator = _SampleGenerator(video_paths)
+    def sample_to_dict(s):
+        return {
+            'video_path': s.video_path,
+            'frame_idx': s.frame_idx,
+            'crop_rect': s.crop_rect,
+            'lines': [{'start': l.start, 'end': l.end} for l in s.lines]
+        }
+    
+    # Create tasks (don't pass frames, just cache keys)
+    oversample = 1.5
+    positive_tasks = []
+    negative_tasks = []
+    
+    for _ in range(int(target_positive * oversample)):
+        if samples_with_crossings:
+            s = random.choice(samples_with_crossings)
+            cache_key = (s.video_path, s.frame_idx)
+            if cache_key in frame_cache:
+                positive_tasks.append((sample_to_dict(s), cache_key, True))
+    
+    for _ in range(int(target_negative * oversample)):
+        s = random.choice(samples_for_negatives)
+        cache_key = (s.video_path, s.frame_idx)
+        if cache_key in frame_cache:
+            negative_tasks.append((sample_to_dict(s), cache_key, False))
+    
+    # Step 3: Process with multiprocessing
+    num_workers = min(multiprocessing.cpu_count(), 8)
+    print(f"Processing with {num_workers} workers...")
+    
+    # Use ThreadPoolExecutor (shares memory, no pickle overhead for frames)
     positive_samples = []
     negative_samples = []
     
-    # Generate positive samples (centered on crossings)
+    # Initialize global cache for workers
+    global _worker_frame_cache, _worker_video_paths
+    _worker_frame_cache = frame_cache
+    _worker_video_paths = video_paths
+    
+    # Process in chunks with progress
+    chunk_size = 2500
+    
     print("Generating positive samples...")
-    attempts = 0
-    max_attempts = target_positive * 3
-    while len(positive_samples) < target_positive and attempts < max_attempts:
-        attempts += 1
-        if not samples_with_crossings:
-            break
-        s = random.choice(samples_with_crossings)
-        cache_key = (s.video_path, s.frame_idx)
-        if cache_key not in frame_cache:
-            continue
-        
-        result = generator.generate_patch(s, frame_cache[cache_key], force_crossing=True)
-        if result['has_crossing']:
-            positive_samples.append(result)
-            if len(positive_samples) % 2500 == 0:
-                print(f"  Positive: {len(positive_samples)}/{target_positive}")
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for i in range(0, len(positive_tasks), chunk_size):
+            chunk = positive_tasks[i:i+chunk_size]
+            results = list(executor.map(_generate_one_sample, chunk))
+            for r in results:
+                if r and r['has_crossing'] and len(positive_samples) < target_positive:
+                    positive_samples.append(r)
+            print(f"  Positive: {len(positive_samples)}/{target_positive} ({i+len(chunk)}/{len(positive_tasks)} processed)")
+            if len(positive_samples) >= target_positive:
+                break
     
-    print(f"  Positive: {len(positive_samples)}/{target_positive} done")
-    
-    # Generate negative samples (random placement)
     print("Generating negative samples...")
-    attempts = 0
-    max_attempts = target_negative * 3
-    while len(negative_samples) < target_negative and attempts < max_attempts:
-        attempts += 1
-        s = random.choice(samples_for_negatives)
-        cache_key = (s.video_path, s.frame_idx)
-        if cache_key not in frame_cache:
-            continue
-        
-        result = generator.generate_patch(s, frame_cache[cache_key], force_crossing=False)
-        if not result['has_crossing']:
-            negative_samples.append(result)
-            if len(negative_samples) % 2500 == 0:
-                print(f"  Negative: {len(negative_samples)}/{target_negative}")
-    
-    print(f"  Negative: {len(negative_samples)}/{target_negative} done")
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for i in range(0, len(negative_tasks), chunk_size):
+            chunk = negative_tasks[i:i+chunk_size]
+            results = list(executor.map(_generate_one_sample, chunk))
+            for r in results:
+                if r and not r['has_crossing'] and len(negative_samples) < target_negative:
+                    negative_samples.append(r)
+            print(f"  Negative: {len(negative_samples)}/{target_negative} ({i+len(chunk)}/{len(negative_tasks)} processed)")
+            if len(negative_samples) >= target_negative:
+                break
     
     all_samples = positive_samples + negative_samples
     random.shuffle(all_samples)
