@@ -1220,9 +1220,10 @@ def train_crossing_detector(args):
         current_lr = optimizer.param_groups[0]['lr']
         
         # Save best model
+        model_path = f"{args.model_name}_best.pth"
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), args.output)
+            torch.save(model.state_dict(), model_path)
             save_marker = " *"
         else:
             save_marker = ""
@@ -1231,7 +1232,7 @@ def train_crossing_detector(args):
     
     print("-" * 60)
     print(f"Training complete! Best val loss: {best_val_loss:.6f}")
-    print(f"Model saved to: {args.output}")
+    print(f"Model saved to: {model_path}")
 
 
 def main():
@@ -1244,7 +1245,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
-    parser.add_argument("--output", default="crossing_detector_best.pth", help="Output model path")
+    parser.add_argument("--model-name", default="crossing_detector", help="Model name (saves as {name}_best.pth)")
     
     args = parser.parse_args()
     
