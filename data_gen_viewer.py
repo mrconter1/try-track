@@ -547,7 +547,7 @@ class DataGenViewer:
         # Create mask with Gaussian blobs at valid crossing points
         final_mask = np.zeros((128, 128), dtype=np.float32)
         for cx, cy in valid_crossings:
-            render_gaussian_blob(final_mask, cx, cy, sigma=3.5)
+            render_gaussian_blob(final_mask, cx, cy, sigma=5.0)
         
         if flip_horizontal:
             final_image = cv2.flip(final_image, 1)
@@ -600,7 +600,7 @@ class DataGenViewer:
             # Create visualization mask showing ALL crossings in source (before edge filtering)
             full_source_mask = np.zeros((h, w), dtype=np.float32)
             for ix, iy in intersections:
-                render_gaussian_blob(full_source_mask, ix, iy, sigma=3.5)
+                render_gaussian_blob(full_source_mask, ix, iy, sigma=5.0)
             full_source_mask = np.clip(full_source_mask, 0, 1)
             full_source_mask = (full_source_mask * 255).astype(np.uint8)
             full_source_mask = cv2.cvtColor(full_source_mask, cv2.COLOR_GRAY2RGB)
@@ -1029,7 +1029,7 @@ def _generate_one_sample(args):
     # Mask
     mask = np.zeros((128, 128), dtype=np.float32)
     for cx, cy in valid_crossings:
-        render_gaussian_blob(mask, cx, cy, sigma=3.5)
+        render_gaussian_blob(mask, cx, cy, sigma=5.0)
     
     # Flips
     if random.random() < 0.5:
@@ -1324,7 +1324,7 @@ class _SampleGenerator:
         # Create mask
         final_mask = np.zeros((128, 128), dtype=np.float32)
         for cx, cy in valid_crossings:
-            render_gaussian_blob(final_mask, cx, cy, sigma=3.5)
+            render_gaussian_blob(final_mask, cx, cy, sigma=5.0)
         
         # Apply flips
         flip_horizontal = random.random() < 0.5
@@ -1414,16 +1414,24 @@ def train_crossing_detector(args):
     train_dataset = CrossingDataset(train_samples)
     val_dataset = CrossingDataset(val_samples)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     
     # Create model
     print("\nInitializing MobileUNet model...")
     model = MobileUNet(pretrained=True).to(device)
     
-    # Loss and optimizer
-    criterion = nn.MSELoss()  # Regression loss for grayscale heatmap
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    # Weighted MSE loss - penalize missing crossings more heavily
+    def weighted_mse_loss(pred, target, pos_weight=20.0):
+        """MSE with higher weight for positive pixels."""
+        # Weight: 1 for background, pos_weight for crossing pixels
+        weights = torch.ones_like(target)
+        weights[target > 0.1] = pos_weight
+        loss = weights * (pred - target) ** 2
+        return loss.mean()
+    
+    # Optimizer with weight decay
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     # Training loop
@@ -1442,7 +1450,7 @@ def train_crossing_detector(args):
             
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, masks)
+            loss = weighted_mse_loss(outputs, masks)
             loss.backward()
             optimizer.step()
             
@@ -1459,7 +1467,7 @@ def train_crossing_detector(args):
                 images = images.to(device)
                 masks = masks.to(device)
                 outputs = model(images)
-                loss = criterion(outputs, masks)
+                loss = weighted_mse_loss(outputs, masks)
                 val_loss += loss.item()
         
         val_loss /= len(val_loader)
