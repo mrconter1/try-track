@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import List, Tuple
 import json
 import threading
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # PyTorch imports for training
 import torch
@@ -907,84 +909,136 @@ class DataGenViewer:
 # Standalone Training Functions
 # ============================================================================
 
+def _generate_one_sample(args):
+    """Worker function for parallel sample generation."""
+    sample_data, frame, force_crossing, video_paths = args
+    
+    # Reconstruct sample object
+    sample = Sample(
+        video_path=sample_data['video_path'],
+        frame_idx=sample_data['frame_idx'],
+        crop_rect=sample_data['crop_rect']
+    )
+    for line_data in sample_data['lines']:
+        sample.add_line(line_data['start'], line_data['end'])
+    
+    generator = _SampleGenerator(video_paths)
+    return generator.generate_patch(sample, frame, force_crossing=force_crossing)
+
+
 def generate_training_samples(db: AnnotationDatabase, video_paths: List[str], 
                                num_samples: int, balance_ratio: float = 0.5) -> List[dict]:
     """
     Generate training samples with specified positive/negative balance.
-    
-    Args:
-        db: Annotation database with samples
-        video_paths: List of video file paths
-        num_samples: Total number of samples to generate
-        balance_ratio: Ratio of positive samples (default 0.5 = 50/50)
-    
-    Returns:
-        List of sample dictionaries with 'image' and 'mask' keys
+    Uses pre-cached frames and parallel processing for speed.
     """
-    samples_with_crossings = [s for s in db.samples if len(s.lines) >= 2]
-    samples_no_crossings = [s for s in db.samples if len(s.lines) == 1]
-    all_labeled = samples_with_crossings + samples_no_crossings
+    samples_with_crossings = [s for s in db.samples if len(s.lines) >= 2]  # Can have crossings
+    samples_for_negatives = [s for s in db.samples]  # All samples can be negatives (including 0 lines)
     
-    if not all_labeled:
-        raise ValueError("No labeled samples found in database")
+    if not db.samples:
+        raise ValueError("No samples found in database")
+    
+    print(f"Sample pool: {len(samples_with_crossings)} with 2+ lines (for positives), {len(db.samples)} total (for negatives)")
     
     target_positive = int(num_samples * balance_ratio)
     target_negative = num_samples - target_positive
     
+    # Step 1: Pre-cache ALL unique frames upfront
+    print("Pre-caching frames...")
+    unique_frames = set()
+    for s in db.samples:
+        unique_frames.add((s.video_path, s.frame_idx))
+    
+    frame_cache = {}
+    for i, (video_path, frame_idx) in enumerate(unique_frames):
+        cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        cap.release()
+        if ret and frame is not None:
+            frame_cache[(video_path, frame_idx)] = frame
+        if (i + 1) % 50 == 0:
+            print(f"  Cached {i + 1}/{len(unique_frames)} frames")
+    
+    print(f"  Cached {len(frame_cache)} frames total")
+    
+    # Step 2: Prepare task batches
     print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
+    
+    # Prepare sample data in serializable form
+    def sample_to_dict(s):
+        return {
+            'video_path': s.video_path,
+            'frame_idx': s.frame_idx,
+            'crop_rect': s.crop_rect,
+            'lines': [{'start': l.start, 'end': l.end} for l in s.lines]
+        }
+    
+    # Generate tasks - oversample to account for potential failures
+    positive_tasks = []
+    negative_tasks = []
+    
+    # Create more tasks than needed (some might fail)
+    oversample_factor = 1.2
+    
+    for _ in range(int(target_positive * oversample_factor)):
+        if samples_with_crossings:
+            s = random.choice(samples_with_crossings)
+            cache_key = (s.video_path, s.frame_idx)
+            if cache_key in frame_cache:
+                positive_tasks.append((sample_to_dict(s), frame_cache[cache_key], True, video_paths))
+    
+    for _ in range(int(target_negative * oversample_factor)):
+        s = random.choice(samples_for_negatives)
+        cache_key = (s.video_path, s.frame_idx)
+        if cache_key in frame_cache:
+            negative_tasks.append((sample_to_dict(s), frame_cache[cache_key], False, video_paths))
+    
+    # Step 3: Process in parallel using threads (OpenCV releases GIL)
+    num_workers = min(multiprocessing.cpu_count(), 16)
+    print(f"Processing with {num_workers} workers...")
     
     positive_samples = []
     negative_samples = []
-    frame_cache = {}
-    attempts = 0
-    max_attempts = num_samples * 10
     
-    # Create a temporary generator to use _generate_single_patch
-    temp_viewer = _SampleGenerator(video_paths)
+    # Process positive samples
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(_generate_one_sample, task) for task in positive_tasks]
+        for future in as_completed(futures):
+            if len(positive_samples) >= target_positive:
+                break
+            try:
+                result = future.result()
+                if result['has_crossing']:
+                    positive_samples.append(result)
+                    if len(positive_samples) % 1000 == 0:
+                        print(f"  Positive: {len(positive_samples)}/{target_positive}")
+            except Exception as e:
+                pass  # Skip failed samples
     
-    while (len(positive_samples) < target_positive or len(negative_samples) < target_negative) and attempts < max_attempts:
-        attempts += 1
-        
-        # Strategic sampling
-        if len(positive_samples) < target_positive and samples_with_crossings:
-            sample = random.choice(samples_with_crossings)
-        elif len(negative_samples) < target_negative:
-            sample = random.choice(all_labeled)
-        else:
-            break
-        
-        # Load frame
-        cache_key = (sample.video_path, sample.frame_idx)
-        if cache_key not in frame_cache:
-            cap = cv2.VideoCapture(sample.video_path)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
-            ret, frame = cap.read()
-            cap.release()
-            if ret and frame is not None:
-                frame_cache[cache_key] = frame
-        
-        if cache_key not in frame_cache:
-            continue
-        
-        frame = frame_cache[cache_key]
-        
-        # For positive samples, use force_crossing=True to center on crossing
-        want_positive = len(positive_samples) < target_positive and len(sample.lines) >= 2
-        patch_data = temp_viewer.generate_patch(sample, frame, force_crossing=want_positive)
-        
-        if patch_data['has_crossing'] and len(positive_samples) < target_positive:
-            positive_samples.append(patch_data)
-            if len(positive_samples) % 500 == 0:
-                print(f"  Positive: {len(positive_samples)}/{target_positive}")
-        elif not patch_data['has_crossing'] and len(negative_samples) < target_negative:
-            negative_samples.append(patch_data)
-            if len(negative_samples) % 500 == 0:
-                print(f"  Negative: {len(negative_samples)}/{target_negative}")
+    # Process negative samples
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(_generate_one_sample, task) for task in negative_tasks]
+        for future in as_completed(futures):
+            if len(negative_samples) >= target_negative:
+                break
+            try:
+                result = future.result()
+                if not result['has_crossing']:
+                    negative_samples.append(result)
+                    if len(negative_samples) % 1000 == 0:
+                        print(f"  Negative: {len(negative_samples)}/{target_negative}")
+            except Exception as e:
+                pass
+    
+    # Trim to exact counts
+    positive_samples = positive_samples[:target_positive]
+    negative_samples = negative_samples[:target_negative]
     
     all_samples = positive_samples + negative_samples
     random.shuffle(all_samples)
     
-    print(f"Generated {len(all_samples)} samples in {attempts} attempts")
+    print(f"Generated {len(all_samples)} samples ({len(positive_samples)} pos, {len(negative_samples)} neg)")
     return all_samples
 
 
