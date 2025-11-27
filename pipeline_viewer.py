@@ -76,7 +76,7 @@ class MobileUNet(nn.Module):
 
 
 class PipelineViewer:
-    def __init__(self, video_path, model_path="line_detector_unet_best.pth"):
+    def __init__(self, video_path, model_path="line_detector_unet_best.pth", start_frame=0):
         self.video_path = video_path
         self.model_path = model_path
         
@@ -85,6 +85,7 @@ class PipelineViewer:
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         self.current_frame_idx = 0
+        self.start_frame = max(0, min(start_frame, self.total_frames - 1))
         
         # Pipeline state
         self.raw_frame = None
@@ -118,8 +119,9 @@ class PipelineViewer:
         self.root.bind("<Left>", lambda e: self.step_frame(-1))
         self.root.bind("<Right>", lambda e: self.step_frame(1))
         
-        # Load first frame
-        self.load_and_process_frame(0)
+        # Load starting frame after window is shown (so canvases have dimensions)
+        self.frame_var.set(self.start_frame)
+        self.root.after(100, lambda: self.load_and_process_frame(self.start_frame))
     
     def _build_ui(self):
         # Top controls
@@ -458,9 +460,10 @@ def main():
     parser = argparse.ArgumentParser(description="Pipeline Viewer")
     parser.add_argument("video", help="Path to video file")
     parser.add_argument("--model", default="line_detector_unet_best.pth", help="Path to model file")
+    parser.add_argument("--frame", "-f", type=int, default=0, help="Starting frame index")
     args = parser.parse_args()
     
-    viewer = PipelineViewer(args.video, args.model)
+    viewer = PipelineViewer(args.video, args.model, start_frame=args.frame)
     viewer.run()
 
 
