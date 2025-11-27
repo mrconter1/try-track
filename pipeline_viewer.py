@@ -149,14 +149,6 @@ class PipelineViewer:
         self.lbl_frame = ttk.Label(control_frame, text=f"0 / {self.total_frames}")
         self.lbl_frame.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(control_frame, text="Tile Size:").pack(side=tk.LEFT, padx=(20, 5))
-        self.tile_size_var = tk.IntVar(value=100)
-        tile_slider = ttk.Scale(control_frame, from_=50, to=200, variable=self.tile_size_var,
-                                orient="horizontal", command=self._on_tile_size_changed, length=100)
-        tile_slider.pack(side=tk.LEFT, padx=5)
-        self.lbl_tile_size = ttk.Label(control_frame, text="100px")
-        self.lbl_tile_size.pack(side=tk.LEFT)
-        
         # Main content - 6 panels (3x2 grid)
         content = ttk.Frame(self.root)
         content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -217,13 +209,6 @@ class PipelineViewer:
         frame_idx = int(float(value))
         if frame_idx != self.current_frame_idx:
             self.load_and_process_frame(frame_idx)
-    
-    def _on_tile_size_changed(self, value):
-        self.tile_size = int(float(value))
-        self.lbl_tile_size.config(text=f"{self.tile_size}px")
-        # Recompute unwrap with new tile size
-        self._step6_unwrap()
-        self._display_all()
     
     def step_frame(self, delta):
         new_idx = max(0, min(self.total_frames - 1, self.current_frame_idx + delta))
