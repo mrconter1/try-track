@@ -110,7 +110,7 @@ class PipelineViewer:
         # Build UI
         self.root = tk.Tk()
         self.root.title(f"Pipeline Viewer - {video_path}")
-        self.root.geometry("1400x900")
+        self.root.state('zoomed')  # Start maximized (Windows)
         self._build_ui()
         
         # Bindings
