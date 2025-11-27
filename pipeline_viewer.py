@@ -241,8 +241,11 @@ class PipelineViewer:
         # Step 5: Find crossings
         self._step5_crossings()
         
-        # Step 6: Unwrap
-        self._step6_unwrap()
+        # Step 6: Find quads from points (no line info needed)
+        self._step6_find_quads()
+        
+        # Step 7: Unwrap using quads
+        self._step7_unwrap()
         
         # Display all panels
         self._display_all()
@@ -446,60 +449,214 @@ class PipelineViewer:
         print(f"[DEBUG] Groups: {len(group1)} lines <90°, {len(group2)} lines >=90°")
         print(f"[DEBUG] Found {len(self.crossings)} crossings")
     
-    def _step6_unwrap(self):
-        """Find all quads, collect point correspondences, RANSAC global homography."""
+    def _step6_find_quads(self):
+        """Find quads from point cloud only. No line info needed.
+        
+        Algorithm: Find all 4-point combinations where no other point is inside.
+        These are the atomic grid cells.
+        """
+        from itertools import combinations
+        
+        points = self.crossings  # List of (x, y)
+        n = len(points)
+        
+        if n < 4:
+            self.quads = []
+            print(f"[DEBUG] Step 6: Only {n} points, need 4+")
+            return
+        
+        def point_in_or_near_polygon(p, polygon, threshold=5):
+            """Check if point is inside OR on/near the boundary of polygon."""
+            contour = np.array(polygon, dtype=np.float32).reshape(-1, 1, 2)
+            dist = cv2.pointPolygonTest(contour, (float(p[0]), float(p[1])), True)
+            return dist >= -threshold
+        
+        def is_convex_quad(pts):
+            """Check if 4 points form a convex quad.
+            None of the 4 points should be inside the triangle formed by the other 3.
+            """
+            for i in range(4):
+                triangle = [pts[j] for j in range(4) if j != i]
+                contour = np.array(triangle, dtype=np.float32).reshape(-1, 1, 2)
+                dist = cv2.pointPolygonTest(contour, (float(pts[i][0]), float(pts[i][1])), True)
+                if dist > 0:  # Point is strictly inside the triangle
+                    return False
+            return True
+        
+        def order_quad_points(pts):
+            """Order 4 points clockwise from centroid."""
+            cx = sum(p[0] for p in pts) / 4
+            cy = sum(p[1] for p in pts) / 4
+            
+            def angle_from_center(p):
+                return np.arctan2(p[1] - cy, p[0] - cx)
+            
+            return sorted(pts, key=angle_from_center)
+        
+        def get_min_angle(pts):
+            """Compute minimum internal angle of the quad in degrees."""
+            angles = []
+            n = len(pts)
+            for i in range(n):
+                p1 = pts[i - 1]
+                p2 = pts[i]
+                p3 = pts[(i + 1) % n]
+                
+                v1 = (p1[0] - p2[0], p1[1] - p2[1])
+                v2 = (p3[0] - p2[0], p3[1] - p2[1])
+                
+                len1 = np.sqrt(v1[0]**2 + v1[1]**2)
+                len2 = np.sqrt(v2[0]**2 + v2[1]**2)
+                
+                if len1 < 1e-6 or len2 < 1e-6:
+                    return 0
+                    
+                dot = v1[0]*v2[0] + v1[1]*v2[1]
+                cos_angle = np.clip(dot / (len1 * len2), -1.0, 1.0)
+                angle = np.arccos(cos_angle) * 180 / np.pi
+                angles.append(angle)
+            return min(angles)
+        
+        self.quads = []
+        
+        for combo in combinations(range(n), 4):
+            corners = [points[i] for i in combo]
+            ordered = order_quad_points(corners)
+            
+            # Check 1: Must be a convex quad
+            if not is_convex_quad(ordered):
+                continue
+            
+            # Check 2: Min angle > 60 degrees (avoid sharp slivers)
+            if get_min_angle(ordered) < 60:
+                continue
+            
+            # Check 3: No OTHER point inside or near this quad
+            is_empty = True
+            for i, p in enumerate(points):
+                if i not in combo:
+                    if point_in_or_near_polygon(p, ordered):
+                        is_empty = False
+                        break
+            
+            if is_empty:
+                area = cv2.contourArea(np.array(ordered, dtype=np.float32))
+                self.quads.append({'corners': ordered, 'point_indices': combo, 'area': area})
+        
+        # Sort by area (smallest first)
+        self.quads.sort(key=lambda x: x['area'])
+        # self.quads = self.quads[:3]
+        
+        print(f"[DEBUG] Step 6: {n} points, C({n},4)={len(list(combinations(range(n), 4)))} combos -> {len(self.quads)} valid empty quads")
+    
+    def _step7_unwrap(self):
+        """Assign grid positions to quads via adjacency, then RANSAC homography."""
         h, w = self.raw_frame.shape[:2]
         
-        if len(self.grid_crossings) < 4:
+        if len(self.quads) < 1:
             self.unwrapped = None
-            self.quads = []
             self.inlier_quads = []
             self.outlier_quads = []
             self.H = None
             return
         
-        # Build lookup: (i, j) -> (x, y)
-        crossing_map = {(i, j): (x, y) for (x, y), (i, j) in self.grid_crossings}
+        # Step 7a: Build adjacency graph - quads sharing exactly 2 corners are neighbors
+        def corners_to_set(corners):
+            return set((int(c[0]), int(c[1])) for c in corners)
         
-        # Find all valid quads: 4 corners at (i,j), (i+1,j), (i,j+1), (i+1,j+1)
-        self.quads = []
-        all_i = sorted(set(i for (i, j) in crossing_map.keys()))
-        all_j = sorted(set(j for (i, j) in crossing_map.keys()))
+        n_quads = len(self.quads)
+        adjacency = {i: [] for i in range(n_quads)}
         
-        for i in all_i:
-            for j in all_j:
-                if (i, j) in crossing_map and (i+1, j) in crossing_map and \
-                   (i, j+1) in crossing_map and (i+1, j+1) in crossing_map:
-                    corners = [
-                        crossing_map[(i, j)],
-                        crossing_map[(i+1, j)],
-                        crossing_map[(i+1, j+1)],
-                        crossing_map[(i, j+1)]
-                    ]
-                    self.quads.append({'corners': corners, 'grid_pos': (i, j)})
+        for i in range(n_quads):
+            set_i = corners_to_set(self.quads[i]['corners'])
+            for j in range(i + 1, n_quads):
+                set_j = corners_to_set(self.quads[j]['corners'])
+                shared = set_i & set_j
+                if len(shared) == 2:
+                    # They share an edge - find relative position
+                    adjacency[i].append(j)
+                    adjacency[j].append(i)
         
-        print(f"[DEBUG] Found {len(self.quads)} complete quads")
+        # Step 7b: BFS to assign grid positions
+        from collections import deque
         
-        # Collect ALL point correspondences from all quads
-        # Each quad corner: image (x,y) -> grid (col*tile, row*tile)
+        grid_pos = {0: (0, 0)}  # Start first quad at origin
+        queue = deque([0])
+        
+        def get_relative_position(quad_a, quad_b):
+            """Determine if B is left/right/up/down of A based on shared edge."""
+            ca = self.quads[quad_a]['corners']  # ordered clockwise
+            cb = self.quads[quad_b]['corners']
+            set_a = corners_to_set(ca)
+            set_b = corners_to_set(cb)
+            shared = list(set_a & set_b)
+            
+            if len(shared) != 2:
+                return (0, 0)
+            
+            # Find center of each quad
+            cx_a = sum(c[0] for c in ca) / 4
+            cy_a = sum(c[1] for c in ca) / 4
+            cx_b = sum(c[0] for c in cb) / 4
+            cy_b = sum(c[1] for c in cb) / 4
+            
+            dx = cx_b - cx_a
+            dy = cy_b - cy_a
+            
+            # Determine primary direction
+            if abs(dx) > abs(dy):
+                return (0, 1) if dx > 0 else (0, -1)  # right or left
+            else:
+                return (1, 0) if dy > 0 else (-1, 0)  # down or up
+        
+        while queue:
+            current = queue.popleft()
+            cr, cc = grid_pos[current]
+            
+            for neighbor in adjacency[current]:
+                if neighbor not in grid_pos:
+                    dr, dc = get_relative_position(current, neighbor)
+                    grid_pos[neighbor] = (cr + dr, cc + dc)
+                    queue.append(neighbor)
+        
+        # Normalize positions to start at (0, 0)
+        if grid_pos:
+            min_r = min(r for r, c in grid_pos.values())
+            min_c = min(c for r, c in grid_pos.values())
+            grid_pos = {k: (r - min_r, c - min_c) for k, (r, c) in grid_pos.items()}
+        
+        # Assign grid_pos to quads
+        for i, quad in enumerate(self.quads):
+            if i in grid_pos:
+                quad['grid_pos'] = grid_pos[i]
+            else:
+                quad['grid_pos'] = None  # Disconnected quad
+        
+        assigned = sum(1 for q in self.quads if q.get('grid_pos') is not None)
+        print(f"[DEBUG] Step 7: Assigned grid positions to {assigned}/{n_quads} quads")
+        
+        # Step 7c: Collect point correspondences
         src_pts = []  # image points
         dst_pts = []  # grid points
         
         for quad in self.quads:
+            if quad.get('grid_pos') is None:
+                continue
             i, j = quad['grid_pos']
             corners = quad['corners']
-            # corners order: (i,j), (i+1,j), (i+1,j+1), (i,j+1)
+            # corners are ordered clockwise from top-left-ish
+            # Map to: (j,i), (j+1,i), (j+1,i+1), (j,i+1) in grid coords
             grid_corners = [
-                (j * self.tile_size, i * self.tile_size),           # (i,j)
-                (j * self.tile_size, (i+1) * self.tile_size),       # (i+1,j)
-                ((j+1) * self.tile_size, (i+1) * self.tile_size),   # (i+1,j+1)
-                ((j+1) * self.tile_size, i * self.tile_size)        # (i,j+1)
+                (j * self.tile_size, i * self.tile_size),
+                ((j+1) * self.tile_size, i * self.tile_size),
+                ((j+1) * self.tile_size, (i+1) * self.tile_size),
+                (j * self.tile_size, (i+1) * self.tile_size)
             ]
             for (img_x, img_y), (grid_x, grid_y) in zip(corners, grid_corners):
                 src_pts.append([img_x, img_y])
                 dst_pts.append([grid_x, grid_y])
         
-        print(f"[DEBUG] Collected {len(src_pts)} point correspondences from {len(self.quads)} quads")
+        print(f"[DEBUG] Collected {len(src_pts)} point correspondences from {assigned} quads")
         
         if len(src_pts) < 4:
             self.unwrapped = None
@@ -524,14 +681,13 @@ class PipelineViewer:
         n_inliers = np.sum(inlier_mask) if inlier_mask is not None else 0
         print(f"[DEBUG] RANSAC: {n_inliers}/{len(src_pts)} inliers")
         
-        # Compute output size from grid bounds
-        min_i = min(i for (i, j) in crossing_map.keys())
-        max_i = max(i for (i, j) in crossing_map.keys())
-        min_j = min(j for (i, j) in crossing_map.keys())
-        max_j = max(j for (i, j) in crossing_map.keys())
+        # Compute output size from assigned grid positions
+        valid_quads = [q for q in self.quads if q.get('grid_pos') is not None]
+        max_i = max(q['grid_pos'][0] for q in valid_quads)
+        max_j = max(q['grid_pos'][1] for q in valid_quads)
         
-        out_w = (max_j + 1) * self.tile_size
-        out_h = (max_i + 1) * self.tile_size
+        out_w = (max_j + 2) * self.tile_size  # +2 because quad at (i,j) spans to (i+1, j+1)
+        out_h = (max_i + 2) * self.tile_size
         
         # Warp entire frame with global homography
         frame_bgr = cv2.cvtColor(self.raw_frame, cv2.COLOR_RGB2BGR)
@@ -546,17 +702,21 @@ class PipelineViewer:
             x = j * self.tile_size
             cv2.line(self.unwrapped, (x, 0), (x, out_h), (100, 100, 255), 1)
         
-        # Mark which quads were inliers vs outliers
+        # Mark which quads were inliers vs outliers (only count quads with grid_pos)
         self.inlier_quads = []
         self.outlier_quads = []
         if inlier_mask is not None:
             pts_per_quad = 4
-            for q_idx, quad in enumerate(self.quads):
-                quad_inliers = inlier_mask[q_idx*pts_per_quad:(q_idx+1)*pts_per_quad]
+            quad_idx = 0
+            for quad in self.quads:
+                if quad.get('grid_pos') is None:
+                    continue
+                quad_inliers = inlier_mask[quad_idx*pts_per_quad:(quad_idx+1)*pts_per_quad]
                 if np.all(quad_inliers):
                     self.inlier_quads.append(quad)
                 else:
                     self.outlier_quads.append(quad)
+                quad_idx += 1
         
         print(f"[DEBUG] {len(self.inlier_quads)} inlier quads, {len(self.outlier_quads)} outlier quads")
     
@@ -744,21 +904,36 @@ class PipelineViewer:
             self._display_on_canvas(self.canvas_merged, merged_img, "merged")
             self.lbl_merged.config(text=f"{len(self.infinite_lines)} infinite lines (was {len(self.lines)} segs)")
         
-        # 5. Crossings (using merged lines) + detected quads (inliers green, outliers red)
+        # 5. Crossings + Step 6 quads (before RANSAC: yellow, after: green=inlier, red=outlier)
         if self.raw_frame is not None:
             cross_img = self.raw_frame.copy()
-            # Draw inlier quads (green)
-            if hasattr(self, 'inlier_quads'):
-                for quad in self.inlier_quads:
+            
+            # If we haven't run step 7 yet, draw all quads from step 6 in different colors
+            has_ransac_result = hasattr(self, 'inlier_quads') and (self.inlier_quads or hasattr(self, 'outlier_quads') and self.outlier_quads)
+            
+            if hasattr(self, 'quads'):
+                colors = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 100, 255), (255, 100, 0)]
+                for idx, quad in enumerate(self.quads):
+                    color = colors[idx % len(colors)]
                     corners = np.array(quad['corners'], dtype=np.int32)
-                    cv2.fillPoly(cross_img, [corners], (50, 120, 50))
-                    cv2.polylines(cross_img, [corners], True, (0, 255, 0), 2)
-            # Draw outlier quads (red)
-            if hasattr(self, 'outlier_quads'):
-                for quad in self.outlier_quads:
-                    corners = np.array(quad['corners'], dtype=np.int32)
-                    cv2.fillPoly(cross_img, [corners], (50, 50, 120))
-                    cv2.polylines(cross_img, [corners], True, (0, 0, 255), 2)
+                    # Draw filled faintly
+                    overlay = cross_img.copy()
+                    cv2.fillPoly(overlay, [corners], color)
+                    cv2.addWeighted(overlay, 0.3, cross_img, 0.7, 0, cross_img)
+                    # Draw border solid
+                    cv2.polylines(cross_img, [corners], True, color, 2)
+            
+            if has_ransac_result:
+                # Draw inlier quads (green)
+                if hasattr(self, 'inlier_quads'):
+                    for quad in self.inlier_quads:
+                        corners = np.array(quad['corners'], dtype=np.int32)
+                        cv2.polylines(cross_img, [corners], True, (0, 255, 0), 3)
+                # Draw outlier quads (red)
+                if hasattr(self, 'outlier_quads'):
+                    for quad in self.outlier_quads:
+                        corners = np.array(quad['corners'], dtype=np.int32)
+                        cv2.polylines(cross_img, [corners], True, (0, 0, 255), 1)
             # Draw merged lines faintly
             for x1, y1, x2, y2 in self.lines_merged:
                 cv2.line(cross_img, (x1, y1), (x2, y2), (100, 100, 100), 1)
@@ -768,10 +943,11 @@ class PipelineViewer:
                 cv2.circle(cross_img, (x, y), 8, (0, 0, 0), 2)
                 cv2.putText(cross_img, f"{i},{j}", (x + 10, y - 5),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            n_quads = len(self.quads) if hasattr(self, 'quads') else 0
             n_in = len(self.inlier_quads) if hasattr(self, 'inlier_quads') else 0
             n_out = len(self.outlier_quads) if hasattr(self, 'outlier_quads') else 0
             self._display_on_canvas(self.canvas_crossings, cross_img, "crossings")
-            self.lbl_crossings.config(text=f"{len(self.crossings)} crossings, {n_in} inlier / {n_out} outlier quads")
+            self.lbl_crossings.config(text=f"{len(self.crossings)} pts → {n_quads} quads → {n_in} inlier / {n_out} outlier")
         
         # 6. Unwrapped (global homography from RANSAC)
         n_in = len(self.inlier_quads) if hasattr(self, 'inlier_quads') else 0
