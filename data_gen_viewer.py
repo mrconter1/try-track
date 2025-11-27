@@ -385,56 +385,74 @@ class DataGenViewer:
         """Start the application."""
         self.root.mainloop()
     
-    def _generate_single_patch(self, sample, frame, include_visualization=False):
-        """Generate a single augmented training patch + mask from a sample."""
+    def _generate_single_patch(self, sample, frame, include_visualization=False, force_crossing=False):
+        """Generate a single augmented training patch + mask from a sample.
+        
+        Args:
+            sample: Sample object with lines
+            frame: Video frame (BGR)
+            include_visualization: Include extra data for GUI display
+            force_crossing: If True, center on a crossing and retry until valid
+        """
         x, y, w, h = sample.crop_rect
         crop = frame[y:y+h, x:x+w]
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         
-        # Random augmentation parameters
-        zoom_factor = random.uniform(0.75, 2.0)  # Extended zoom range for more variety
-        rotation_angle = random.uniform(-180, 180)
-        stretch_x = random.uniform(0.9, 1.1)
-        stretch_y = random.uniform(0.9, 1.1)
+        # Find line intersections (crossings)
+        intersections = find_line_intersections(sample.lines)
         
-        perspective_strength = 0.15
-        perspective_corners = [
-            (random.uniform(-perspective_strength, perspective_strength),
-             random.uniform(-perspective_strength, perspective_strength))
-            for _ in range(4)
-        ]
+        # Determine if we should center on a crossing
+        center_on_crossing = force_crossing and len(intersections) > 0
+        target_crossing = random.choice(intersections) if center_on_crossing else None
         
-        flip_horizontal = random.random() < 0.5
-        flip_vertical = random.random() < 0.5
-        
-        # Increase buffer for larger zoom range
         buffer_factor = 3.0
         initial_size = int(128 * buffer_factor)
         
-        if w < initial_size or h < initial_size:
-            patch_x, patch_y = 0, 0
-            patch_w, patch_h = w, h
+        # Patch placement - center on crossing if requested
+        if center_on_crossing:
+            # Center the patch on the target crossing
+            target_x, target_y = target_crossing
+            patch_x = int(target_x - initial_size / 2)
+            patch_y = int(target_y - initial_size / 2)
+            # Clamp to valid range
+            patch_x = max(0, min(w - initial_size, patch_x))
+            patch_y = max(0, min(h - initial_size, patch_y))
+            patch_w, patch_h = min(initial_size, w), min(initial_size, h)
         else:
-            patch_x = random.randint(0, w - initial_size)
-            patch_y = random.randint(0, h - initial_size)
-            patch_w, patch_h = initial_size, initial_size
+            # Random placement
+            if w < initial_size or h < initial_size:
+                patch_x, patch_y = 0, 0
+                patch_w, patch_h = w, h
+            else:
+                patch_x = random.randint(0, w - initial_size)
+                patch_y = random.randint(0, h - initial_size)
+                patch_w, patch_h = initial_size, initial_size
         
         large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-        
-        # Find line intersections (crossings)
-        intersections = find_line_intersections(sample.lines)
         
         # Translate intersections to large patch coordinates
         intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
         
-        max_attempts = 10
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                perspective_corners = [
-                    (random.uniform(-perspective_strength, perspective_strength),
-                     random.uniform(-perspective_strength, perspective_strength))
-                    for _ in range(4)
-                ]
+        edge_margin = 128 // 10  # 1/10 of patch width = ~12 pixels
+        max_augment_attempts = 50 if center_on_crossing else 10
+        
+        valid_crossings = []
+        final_image = None
+        H = None
+        
+        for attempt in range(max_augment_attempts):
+            # Random augmentation parameters (re-roll each attempt)
+            zoom_factor = random.uniform(0.75, 2.0)
+            rotation_angle = random.uniform(-180, 180)
+            stretch_x = random.uniform(0.9, 1.1)
+            stretch_y = random.uniform(0.9, 1.1)
+            
+            perspective_strength = 0.15
+            perspective_corners = [
+                (random.uniform(-perspective_strength, perspective_strength),
+                 random.uniform(-perspective_strength, perspective_strength))
+                for _ in range(4)
+            ]
             
             center_x, center_y = patch_w / 2, patch_h / 2
             rad = np.deg2rad(rotation_angle)
@@ -468,6 +486,7 @@ class DataGenViewer:
             crop_x_offset = (patch_w - 128) // 2
             crop_y_offset = (patch_h - 128) // 2
             
+            # Check if output region maps to valid source pixels
             output_corners = np.array([
                 [crop_x_offset, crop_y_offset],
                 [crop_x_offset + 128, crop_y_offset],
@@ -478,51 +497,59 @@ class DataGenViewer:
             source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
             
             margin = 2
-            valid = True
+            valid_transform = True
             for sx, sy in source_corners_check:
                 if sx < margin or sx > patch_w - margin or sy < margin or sy > patch_h - margin:
-                    valid = False
+                    valid_transform = False
                     break
             
-            if valid:
-                break
-        
-        # Transform image
-        transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
-                                              borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-        
-        # Crop to 128x128
-        final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
-        
-        # Transform intersection points through homography and filter by edge margin
-        edge_margin = 128 // 10  # 1/10 of patch width = ~12 pixels
-        valid_crossings = []
-        
-        if intersections_local:
-            # Convert points to homogeneous coordinates and transform
-            points = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
-            transformed_points = cv2.perspectiveTransform(points, H).reshape(-1, 2)
+            if not valid_transform:
+                continue
             
-            # Convert to final 128x128 coordinates and filter by edge margin
-            for tx, ty in transformed_points:
-                # Translate to 128x128 crop coordinates
-                fx = tx - crop_x_offset
-                fy = ty - crop_y_offset
+            # Check if crossing is in valid zone (for force_crossing mode)
+            valid_crossings = []
+            if intersections_local:
+                points = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
+                transformed_points = cv2.perspectiveTransform(points, H).reshape(-1, 2)
                 
-                # Check edge margin (must be at least edge_margin pixels from any edge)
-                if fx >= edge_margin and fx <= 128 - edge_margin and fy >= edge_margin and fy <= 128 - edge_margin:
-                    valid_crossings.append((fx, fy))
+                for tx, ty in transformed_points:
+                    fx = tx - crop_x_offset
+                    fy = ty - crop_y_offset
+                    
+                    if fx >= edge_margin and fx <= 128 - edge_margin and fy >= edge_margin and fy <= 128 - edge_margin:
+                        valid_crossings.append((fx, fy))
+            
+            # If force_crossing, we need at least one valid crossing
+            if center_on_crossing and len(valid_crossings) == 0:
+                continue  # Retry with new augmentation
+            
+            # Success - apply transform
+            transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
+                                                  borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+            break
+        
+        # Fallback if no valid augmentation found
+        if final_image is None:
+            crop_x_offset = (patch_w - 128) // 2
+            crop_y_offset = (patch_h - 128) // 2
+            final_image = large_patch[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+            if final_image.shape[0] < 128 or final_image.shape[1] < 128:
+                final_image = cv2.resize(large_patch, (128, 128))
+            valid_crossings = []
+        
+        # Apply flips
+        flip_horizontal = random.random() < 0.5
+        flip_vertical = random.random() < 0.5
         
         # Create mask with Gaussian blobs at valid crossing points
         final_mask = np.zeros((128, 128), dtype=np.float32)
         for cx, cy in valid_crossings:
             render_gaussian_blob(final_mask, cx, cy, sigma=3.5)
         
-        # Apply flips
         if flip_horizontal:
             final_image = cv2.flip(final_image, 1)
             final_mask = cv2.flip(final_mask, 1)
-            # Update crossing positions for visualization
             valid_crossings = [(128 - cx, cy) for cx, cy in valid_crossings]
         if flip_vertical:
             final_image = cv2.flip(final_image, 0)
@@ -660,7 +687,10 @@ class DataGenViewer:
                 continue
             
             frame = frame_cache[cache_key]
-            patch_data = self._generate_single_patch(sample, frame, include_visualization=True)
+            
+            # For positive samples, use force_crossing=True to center on crossing
+            want_positive = len(positive_patches) < target_positive and len(sample.lines) >= 2
+            patch_data = self._generate_single_patch(sample, frame, include_visualization=True, force_crossing=want_positive)
             
             # Categorize by whether it has valid crossings
             if patch_data['has_crossing'] and len(positive_patches) < target_positive:
@@ -937,15 +967,18 @@ def generate_training_samples(db: AnnotationDatabase, video_paths: List[str],
             continue
         
         frame = frame_cache[cache_key]
-        patch_data = temp_viewer.generate_patch(sample, frame)
+        
+        # For positive samples, use force_crossing=True to center on crossing
+        want_positive = len(positive_samples) < target_positive and len(sample.lines) >= 2
+        patch_data = temp_viewer.generate_patch(sample, frame, force_crossing=want_positive)
         
         if patch_data['has_crossing'] and len(positive_samples) < target_positive:
             positive_samples.append(patch_data)
-            if len(positive_samples) % 100 == 0:
+            if len(positive_samples) % 500 == 0:
                 print(f"  Positive: {len(positive_samples)}/{target_positive}")
         elif not patch_data['has_crossing'] and len(negative_samples) < target_negative:
             negative_samples.append(patch_data)
-            if len(negative_samples) % 100 == 0:
+            if len(negative_samples) % 500 == 0:
                 print(f"  Negative: {len(negative_samples)}/{target_negative}")
     
     all_samples = positive_samples + negative_samples
@@ -961,51 +994,61 @@ class _SampleGenerator:
     def __init__(self, video_paths: List[str]):
         self.video_paths = video_paths
     
-    def generate_patch(self, sample, frame):
-        """Generate a single patch - mirrors DataGenViewer._generate_single_patch."""
+    def generate_patch(self, sample, frame, force_crossing=False):
+        """Generate a single patch with optional crossing-centered placement."""
         x, y, w, h = sample.crop_rect
         crop = frame[y:y+h, x:x+w]
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         
-        zoom_factor = random.uniform(0.75, 2.0)
-        rotation_angle = random.uniform(-180, 180)
-        stretch_x = random.uniform(0.9, 1.1)
-        stretch_y = random.uniform(0.9, 1.1)
+        # Find intersections
+        intersections = find_line_intersections(sample.lines)
         
-        perspective_strength = 0.15
-        perspective_corners = [
-            (random.uniform(-perspective_strength, perspective_strength),
-             random.uniform(-perspective_strength, perspective_strength))
-            for _ in range(4)
-        ]
-        
-        flip_horizontal = random.random() < 0.5
-        flip_vertical = random.random() < 0.5
+        # Determine if we should center on a crossing
+        center_on_crossing = force_crossing and len(intersections) > 0
+        target_crossing = random.choice(intersections) if center_on_crossing else None
         
         buffer_factor = 3.0
         initial_size = int(128 * buffer_factor)
         
-        if w < initial_size or h < initial_size:
-            patch_x, patch_y = 0, 0
-            patch_w, patch_h = w, h
+        # Patch placement
+        if center_on_crossing:
+            target_x, target_y = target_crossing
+            patch_x = int(target_x - initial_size / 2)
+            patch_y = int(target_y - initial_size / 2)
+            patch_x = max(0, min(w - initial_size, patch_x))
+            patch_y = max(0, min(h - initial_size, patch_y))
+            patch_w, patch_h = min(initial_size, w), min(initial_size, h)
         else:
-            patch_x = random.randint(0, w - initial_size)
-            patch_y = random.randint(0, h - initial_size)
-            patch_w, patch_h = initial_size, initial_size
+            if w < initial_size or h < initial_size:
+                patch_x, patch_y = 0, 0
+                patch_w, patch_h = w, h
+            else:
+                patch_x = random.randint(0, w - initial_size)
+                patch_y = random.randint(0, h - initial_size)
+                patch_w, patch_h = initial_size, initial_size
         
         large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-        
-        intersections = find_line_intersections(sample.lines)
         intersections_local = [(ix - patch_x, iy - patch_y) for ix, iy in intersections]
         
-        max_attempts = 10
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                perspective_corners = [
-                    (random.uniform(-perspective_strength, perspective_strength),
-                     random.uniform(-perspective_strength, perspective_strength))
-                    for _ in range(4)
-                ]
+        edge_margin = 128 // 10
+        max_augment_attempts = 50 if center_on_crossing else 10
+        
+        valid_crossings = []
+        final_image = None
+        
+        for attempt in range(max_augment_attempts):
+            # Random augmentation parameters
+            zoom_factor = random.uniform(0.75, 2.0)
+            rotation_angle = random.uniform(-180, 180)
+            stretch_x = random.uniform(0.9, 1.1)
+            stretch_y = random.uniform(0.9, 1.1)
+            
+            perspective_strength = 0.15
+            perspective_corners = [
+                (random.uniform(-perspective_strength, perspective_strength),
+                 random.uniform(-perspective_strength, perspective_strength))
+                for _ in range(4)
+            ]
             
             center_x, center_y = patch_w / 2, patch_h / 2
             rad = np.deg2rad(rotation_angle)
@@ -1049,37 +1092,55 @@ class _SampleGenerator:
             source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
             
             margin = 2
-            valid = True
+            valid_transform = True
             for sx, sy in source_corners_check:
                 if sx < margin or sx > patch_w - margin or sy < margin or sy > patch_h - margin:
-                    valid = False
+                    valid_transform = False
                     break
             
-            if valid:
-                break
-        
-        transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
-                                              borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-        
-        final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
-        
-        edge_margin = 128 // 10
-        valid_crossings = []
-        
-        if intersections_local:
-            points = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
-            transformed_points = cv2.perspectiveTransform(points, H).reshape(-1, 2)
+            if not valid_transform:
+                continue
             
-            for tx, ty in transformed_points:
-                fx = tx - crop_x_offset
-                fy = ty - crop_y_offset
+            # Check crossing validity
+            valid_crossings = []
+            if intersections_local:
+                points = np.array(intersections_local, dtype=np.float32).reshape(-1, 1, 2)
+                transformed_points = cv2.perspectiveTransform(points, H).reshape(-1, 2)
                 
-                if fx >= edge_margin and fx <= 128 - edge_margin and fy >= edge_margin and fy <= 128 - edge_margin:
-                    valid_crossings.append((fx, fy))
+                for tx, ty in transformed_points:
+                    fx = tx - crop_x_offset
+                    fy = ty - crop_y_offset
+                    
+                    if fx >= edge_margin and fx <= 128 - edge_margin and fy >= edge_margin and fy <= 128 - edge_margin:
+                        valid_crossings.append((fx, fy))
+            
+            # If force_crossing, need at least one valid crossing
+            if center_on_crossing and len(valid_crossings) == 0:
+                continue
+            
+            # Success
+            transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
+                                                  borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+            break
         
+        # Fallback
+        if final_image is None:
+            crop_x_offset = (patch_w - 128) // 2
+            crop_y_offset = (patch_h - 128) // 2
+            final_image = large_patch[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
+            if final_image.shape[0] < 128 or final_image.shape[1] < 128:
+                final_image = cv2.resize(large_patch, (128, 128))
+            valid_crossings = []
+        
+        # Create mask
         final_mask = np.zeros((128, 128), dtype=np.float32)
         for cx, cy in valid_crossings:
             render_gaussian_blob(final_mask, cx, cy, sigma=3.5)
+        
+        # Apply flips
+        flip_horizontal = random.random() < 0.5
+        flip_vertical = random.random() < 0.5
         
         if flip_horizontal:
             final_image = cv2.flip(final_image, 1)
@@ -1095,8 +1156,8 @@ class _SampleGenerator:
         final_image = final_image + brightness * 255
         
         contrast = random.uniform(0.7, 1.3)
-        mean = np.mean(final_image)
-        final_image = (final_image - mean) * contrast + mean
+        mean_val = np.mean(final_image)
+        final_image = (final_image - mean_val) * contrast + mean_val
         
         gamma = random.uniform(0.7, 1.5)
         final_image = np.clip(final_image, 0, 255)
