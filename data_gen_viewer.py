@@ -1,7 +1,9 @@
 """
-Standalone Data Generation Viewer - Extracted from line_annotator_gui.py
+Crossing Detection Data Generator
 
-Visualizes augmented training patches from labeled annotation data.
+Generates augmented training patches for crossing/intersection detection.
+Each crossing is rendered as a soft 2D Gaussian blob (sigma ~3.5) in the mask.
+
 Usage: python data_gen_viewer.py [--videos VIDEOS_DIR] [--annotations ANNOTATIONS_FILE]
 """
 
@@ -95,12 +97,82 @@ class AnnotationDatabase:
         return db
 
 
+def find_line_intersections(lines: List[Line]) -> List[Tuple[float, float]]:
+    """
+    Find all intersection points between line segments.
+    Returns list of (x, y) intersection coordinates.
+    """
+    intersections = []
+    
+    for i in range(len(lines)):
+        for j in range(i + 1, len(lines)):
+            line1 = lines[i]
+            line2 = lines[j]
+            
+            # Line 1: from (x1, y1) to (x2, y2)
+            x1, y1 = line1.start
+            x2, y2 = line1.end
+            
+            # Line 2: from (x3, y3) to (x4, y4)
+            x3, y3 = line2.start
+            x4, y4 = line2.end
+            
+            # Calculate intersection using parametric form
+            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            
+            if abs(denom) < 1e-10:
+                continue  # Lines are parallel
+            
+            t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+            u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+            
+            # Check if intersection is within both line segments
+            if 0 <= t <= 1 and 0 <= u <= 1:
+                ix = x1 + t * (x2 - x1)
+                iy = y1 + t * (y2 - y1)
+                intersections.append((ix, iy))
+    
+    return intersections
+
+
+def render_gaussian_blob(mask: np.ndarray, cx: float, cy: float, sigma: float = 3.5):
+    """
+    Render a 2D Gaussian blob onto the mask at (cx, cy).
+    Adds to existing values (for overlapping blobs).
+    """
+    h, w = mask.shape[:2]
+    
+    # Only render within a reasonable radius (3*sigma covers 99.7%)
+    radius = int(np.ceil(3 * sigma))
+    
+    x_min = max(0, int(cx - radius))
+    x_max = min(w, int(cx + radius) + 1)
+    y_min = max(0, int(cy - radius))
+    y_max = min(h, int(cy + radius) + 1)
+    
+    if x_min >= x_max or y_min >= y_max:
+        return
+    
+    # Create coordinate grids for the local region
+    y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
+    
+    # Compute Gaussian
+    dist_sq = (x_coords - cx) ** 2 + (y_coords - cy) ** 2
+    gaussian = np.exp(-dist_sq / (2 * sigma ** 2))
+    
+    # Add to mask (use maximum to avoid over-saturation with overlapping blobs)
+    mask[y_min:y_max, x_min:x_max] = np.maximum(
+        mask[y_min:y_max, x_min:x_max],
+        gaussian
+    )
+
+
 class DataGenViewer:
     """Standalone viewer for data generation / augmented training patches."""
     
     def __init__(self, videos_dir: str = "videos", annotations_file: str = "line_annotations.json"):
         self.root = tk.Tk()
-        self.root.title("Data Generation Viewer")
+        self.root.title("Crossing Detection Data Generator")
         self.root.geometry("1200x800")
         
         # Find videos
@@ -180,7 +252,7 @@ class DataGenViewer:
         help_frame.pack(fill=tk.X, pady=(0, 10))
         
         ttk.Label(help_frame, text="R - Regenerate patches").pack(anchor="w", pady=1)
-        ttk.Label(help_frame, text="M - Toggle mask/image").pack(anchor="w", pady=1)
+        ttk.Label(help_frame, text="M - Toggle crossings/image").pack(anchor="w", pady=1)
     
     def run(self):
         """Start the application."""
@@ -221,13 +293,16 @@ class DataGenViewer:
         
         large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
         
-        mask_large = np.zeros((patch_h, patch_w, 3), dtype=np.uint8)
-        for line in sample.lines:
-            p1_x, p1_y = line.start
-            p2_x, p2_y = line.end
-            p1_patch = (int(p1_x - patch_x), int(p1_y - patch_y))
-            p2_patch = (int(p2_x - patch_x), int(p2_y - patch_y))
-            cv2.line(mask_large, p1_patch, p2_patch, (255, 255, 255), thickness=1)
+        # Find line intersections (crossings)
+        intersections = find_line_intersections(sample.lines)
+        
+        # Create mask with Gaussian blobs at crossing points
+        mask_large = np.zeros((patch_h, patch_w), dtype=np.float32)
+        for ix, iy in intersections:
+            # Translate to large patch coordinates
+            cx = ix - patch_x
+            cy = iy - patch_y
+            render_gaussian_blob(mask_large, cx, cy, sigma=3.5)
         
         max_attempts = 10
         for attempt in range(max_attempts):
@@ -292,7 +367,7 @@ class DataGenViewer:
         transformed_img = cv2.warpPerspective(large_patch, H, (patch_w, patch_h),
                                               borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         transformed_mask = cv2.warpPerspective(mask_large, H, (patch_w, patch_h),
-                                               borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                                               borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         
         final_image = transformed_img[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
         final_mask = transformed_mask[crop_y_offset:crop_y_offset+128, crop_x_offset:crop_x_offset+128]
@@ -303,6 +378,10 @@ class DataGenViewer:
         if flip_vertical:
             final_image = cv2.flip(final_image, 0)
             final_mask = cv2.flip(final_mask, 0)
+        
+        # Convert mask to uint8 for display (0-255 grayscale)
+        final_mask = np.clip(final_mask, 0, 1)
+        final_mask = (final_mask * 255).astype(np.uint8)
         
         final_image = final_image.astype(np.float32)
         
@@ -331,11 +410,13 @@ class DataGenViewer:
         result = {'image': final_image, 'mask': final_mask}
         
         if include_visualization:
-            full_source_mask = np.zeros((h, w, 3), dtype=np.uint8)
-            for line in sample.lines:
-                p1 = (int(line.start[0]), int(line.start[1]))
-                p2 = (int(line.end[0]), int(line.end[1]))
-                cv2.line(full_source_mask, p1, p2, (255, 255, 255), thickness=1)
+            # Create visualization mask showing crossings as Gaussian blobs
+            full_source_mask = np.zeros((h, w), dtype=np.float32)
+            for ix, iy in intersections:
+                render_gaussian_blob(full_source_mask, ix, iy, sigma=3.5)
+            full_source_mask = np.clip(full_source_mask, 0, 1)
+            full_source_mask = (full_source_mask * 255).astype(np.uint8)
+            full_source_mask = cv2.cvtColor(full_source_mask, cv2.COLOR_GRAY2RGB)
             
             result.update({
                 'source_video': os.path.basename(sample.video_path),
@@ -343,6 +424,7 @@ class DataGenViewer:
                 'source_crop': sample.crop_rect,
                 'source_mask': full_source_mask,
                 'patch_offset': (patch_x, patch_y, patch_w, patch_h),
+                'num_crossings': len(intersections),
                 'step3_params': {
                     'rotation': rotation_angle,
                     'zoom': zoom_factor,
@@ -372,13 +454,15 @@ class DataGenViewer:
         self.generated_patches = []
         new_patches = []
         
-        labeled_samples = [s for s in self.db.samples if len(s.lines) > 0]
+        # Prefer samples with 2+ lines (can have crossings)
+        samples_with_crossings = [s for s in self.db.samples if len(s.lines) >= 2]
+        labeled_samples = samples_with_crossings if samples_with_crossings else [s for s in self.db.samples if len(s.lines) > 0]
         
         if not labeled_samples:
             self.root.after(0, lambda: messagebox.showwarning("No Labeled Data", "No labeled samples found."))
             return
         
-        print(f"Generating patches from {len(labeled_samples)} labeled samples...")
+        print(f"Generating patches from {len(labeled_samples)} samples ({len(samples_with_crossings)} with 2+ lines)...")
         
         frame_cache = {}
         selected_samples = [random.choice(labeled_samples) for _ in range(9)]
@@ -417,12 +501,13 @@ class DataGenViewer:
         if not self.generated_patches:
             return
         
-        self.lbl_gen_count.config(text=f"Patches: {len(self.generated_patches)}")
+        total_crossings = sum(p.get('num_crossings', 0) for p in self.generated_patches)
+        self.lbl_gen_count.config(text=f"Patches: {len(self.generated_patches)} | Crossings: {total_crossings}")
         
         if self.show_gen_mask:
-            self.btn_toggle_gen_view.config(text="Show: Masks")
+            self.btn_toggle_gen_view.config(text="Show: Crossing Masks")
         else:
-            self.btn_toggle_gen_view.config(text="Show: Step 5 Results")
+            self.btn_toggle_gen_view.config(text="Show: Images")
         
         num_rows = 3
         num_cols = 3
