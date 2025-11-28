@@ -167,6 +167,26 @@ def export_to_tflite(onnx_path, output_path):
     return True
 
 
+def convert_to_fp16(onnx_path, output_path):
+    """Convert ONNX model to FP16 (half precision)."""
+    try:
+        import onnx
+        from onnxconverter_common import float16
+    except ImportError:
+        print("\nTo export FP16, install dependencies:")
+        print("  pip install onnx onnxconverter-common")
+        return False
+    
+    print(f"\nConverting to FP16...")
+    model = onnx.load(onnx_path)
+    fp16_model = float16.convert_float_to_float16(model)
+    onnx.save(fp16_model, output_path)
+    
+    print(f"Exported FP16 ONNX model to: {output_path}")
+    print(f"  File size: {os.path.getsize(output_path) / 1024 / 1024:.2f} MB")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export crossing detector model")
     parser.add_argument("--model", required=True, help="Path to PyTorch model (.pth)")
@@ -174,6 +194,7 @@ def main():
     parser.add_argument("--height", type=int, default=480, help="Input height (default: 480)")
     parser.add_argument("--width", type=int, default=640, help="Input width (default: 640)")
     parser.add_argument("--tflite", action="store_true", help="Also export to TFLite")
+    parser.add_argument("--fp16", action="store_true", help="Also export to FP16 ONNX")
     
     args = parser.parse_args()
     
@@ -187,6 +208,11 @@ def main():
     # Export to ONNX
     onnx_path = f"{args.output}.onnx"
     export_to_onnx(model, onnx_path, input_size=(1, 3, args.height, args.width))
+    
+    # Convert to FP16 if requested
+    if args.fp16:
+        fp16_path = f"{args.output}_fp16.onnx"
+        convert_to_fp16(onnx_path, fp16_path)
     
     # Export to TFLite if requested
     if args.tflite:

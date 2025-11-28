@@ -15430,10 +15430,142 @@
       ],
       "crossings": [],
       "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251117_144554.mp4",
+      "frame_idx": 204,
+      "crop_rect": [
+        245,
+        218,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251127_195207.mp4",
+      "frame_idx": 1196,
+      "crop_rect": [
+        266,
+        554,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251127_194500.mp4",
+      "frame_idx": 436,
+      "crop_rect": [
+        160,
+        637,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251117_145515.mp4",
+      "frame_idx": 387,
+      "crop_rect": [
+        225,
+        477,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251128_121904.mp4",
+      "frame_idx": 31,
+      "crop_rect": [
+        209,
+        601,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251117_171014.mp4",
+      "frame_idx": 419,
+      "crop_rect": [
+        91,
+        747,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251117_145134.mp4",
+      "frame_idx": 807,
+      "crop_rect": [
+        188,
+        41,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251128_122209.mp4",
+      "frame_idx": 85,
+      "crop_rect": [
+        118,
+        743,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251128_122020.mp4",
+      "frame_idx": 46,
+      "crop_rect": [
+        32,
+        514,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251117_144512.mp4",
+      "frame_idx": 452,
+      "crop_rect": [
+        53,
+        714,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
+    },
+    {
+      "video_path": "videos/20251127_194500.mp4",
+      "frame_idx": 21,
+      "crop_rect": [
+        26,
+        213,
+        400,
+        400
+      ],
+      "crossings": [],
+      "num_lines": 0
     }
   ],
   "stats": {
-    "total_samples": 830,
+    "total_samples": 841,
     "samples_with_crossings": 567,
     "total_crossings": 1226
   }
