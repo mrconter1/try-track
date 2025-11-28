@@ -177,22 +177,20 @@ class CrossingDataset(Dataset):
         return image, mask
 
 
-def _generate_one_sample(args):
-    """Worker function for parallel sample generation."""
-    sample_data, cache_key, force_crossing = args
+def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_visualization=False):
+    """
+    Shared function for generating augmented 128x128 training patches.
     
-    global _worker_frame_cache
-    
-    frame = _worker_frame_cache.get(cache_key)
-    if frame is None:
-        return None
-    
-    crop_rect = sample_data['crop_rect']
-    crossings = sample_data['crossings']
-    
-    x, y, w, h = crop_rect
-    crop = frame[y:y+h, x:x+w]
-    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    Args:
+        crop_rgb: RGB image (numpy array)
+        crossings: List of (x, y) crossing coordinates in crop_rgb space
+        force_crossing: If True, retry until at least one crossing is in the patch
+        include_visualization: If True, include extra data for visualization
+        
+    Returns:
+        Dictionary with 'image', 'mask', 'has_crossing', 'num_crossings', etc.
+    """
+    h, w = crop_rgb.shape[:2]
     
     # Determine if we should center on a crossing
     center_on_crossing = force_crossing and len(crossings) > 0
@@ -220,13 +218,25 @@ def _generate_one_sample(args):
     
     edge_margin = 12
     max_attempts = 20 if center_on_crossing else 10
-    valid_crossings = []
-    final_image = None
     
-    for _ in range(max_attempts):
+    all_crossings_in_patch = []  # All crossings anywhere in 128x128
+    interior_crossings = []       # Only crossings >12px from edge (get blobs)
+    final_image = None
+    H = None
+    
+    # Store augmentation params for visualization
+    aug_params = {}
+    
+    for attempt in range(max_attempts):
         zoom = random.uniform(0.75, 2.0)
         angle = random.uniform(-180, 180)
         stretch_x, stretch_y = random.uniform(0.9, 1.1), random.uniform(0.9, 1.1)
+        
+        # Perspective
+        perspective_corners = [
+            (random.uniform(-0.15, 0.15), random.uniform(-0.15, 0.15))
+            for _ in range(4)
+        ]
         
         cx, cy = patch_w / 2, patch_h / 2
         rad = np.deg2rad(angle)
@@ -237,8 +247,8 @@ def _generate_one_sample(args):
         dst = []
         for i, (px, py) in enumerate(src):
             rx, ry = (px - cx) * cos_a - (py - cy) * sin_a, (px - cx) * sin_a + (py - cy) * cos_a
-            fx = rx * sx + cx + random.uniform(-0.15, 0.15) * patch_w
-            fy = ry * sy + cy + random.uniform(-0.15, 0.15) * patch_h
+            fx = rx * sx + cx + perspective_corners[i][0] * patch_w
+            fy = ry * sy + cy + perspective_corners[i][1] * patch_h
             dst.append([fx, fy])
         
         dst = np.array(dst, dtype=np.float32)
@@ -246,41 +256,85 @@ def _generate_one_sample(args):
         
         crop_off = (patch_w - 128) // 2
         
-        # Check crossings
-        valid_crossings = []
+        # Transform and classify crossings
+        all_crossings_in_patch = []
+        interior_crossings = []
+        
         if crossings_local:
             pts = np.array(crossings_local, dtype=np.float32).reshape(-1, 1, 2)
             tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
             for tx, ty in tpts:
                 fx, fy = tx - crop_off, ty - crop_off
-                if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
-                    valid_crossings.append((fx, fy))
+                # Check if anywhere in the 128x128 patch
+                if 0 <= fx <= 128 and 0 <= fy <= 128:
+                    all_crossings_in_patch.append((fx, fy))
+                    # Check if in interior (>12px from edge) - only these get blobs
+                    if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
+                        interior_crossings.append((fx, fy))
         
-        if center_on_crossing and not valid_crossings:
+        # For positive samples, require at least one crossing anywhere in patch
+        if center_on_crossing and not all_crossings_in_patch:
+            continue
+        
+        # Check transform validity
+        H_inverse = np.linalg.inv(H)
+        output_corners = np.array([
+            [crop_off, crop_off],
+            [crop_off + 128, crop_off],
+            [crop_off + 128, crop_off + 128],
+            [crop_off, crop_off + 128]
+        ], dtype=np.float32).reshape(-1, 1, 2)
+        source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+        
+        margin = 2
+        valid_transform = True
+        for scx, scy in source_corners_check:
+            if scx < margin or scx > patch_w - margin or scy < margin or scy > patch_h - margin:
+                valid_transform = False
+                break
+        
+        if not valid_transform:
             continue
         
         transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), borderMode=cv2.BORDER_CONSTANT)
         final_image = transformed[crop_off:crop_off+128, crop_off:crop_off+128]
+        
+        aug_params = {
+            'rotation': angle,
+            'zoom': zoom,
+            'stretch_x': stretch_x,
+            'stretch_y': stretch_y,
+            'perspective': perspective_corners
+        }
         break
     
     if final_image is None:
         final_image = cv2.resize(large_patch, (128, 128))
-        valid_crossings = []
-    
-    # Mask with Gaussian blobs
-    mask = np.zeros((128, 128), dtype=np.float32)
-    for ccx, ccy in valid_crossings:
-        render_gaussian_blob(mask, ccx, ccy, sigma=5.0)
+        all_crossings_in_patch = []
+        interior_crossings = []
     
     # Flips
-    if random.random() < 0.5:
-        final_image = cv2.flip(final_image, 1)
-        mask = cv2.flip(mask, 1)
-    if random.random() < 0.5:
-        final_image = cv2.flip(final_image, 0)
-        mask = cv2.flip(mask, 0)
+    flip_h = random.random() < 0.5
+    flip_v = random.random() < 0.5
     
-    # Photometric augmentations
+    if flip_h:
+        final_image = cv2.flip(final_image, 1)
+        all_crossings_in_patch = [(128 - x, y) for x, y in all_crossings_in_patch]
+        interior_crossings = [(128 - x, y) for x, y in interior_crossings]
+    if flip_v:
+        final_image = cv2.flip(final_image, 0)
+        all_crossings_in_patch = [(x, 128 - y) for x, y in all_crossings_in_patch]
+        interior_crossings = [(x, 128 - y) for x, y in interior_crossings]
+    
+    aug_params['flip_h'] = flip_h
+    aug_params['flip_v'] = flip_v
+    
+    # Create mask - only for INTERIOR crossings (>12px from edge)
+    mask = np.zeros((128, 128), dtype=np.float32)
+    for ccx, ccy in interior_crossings:
+        render_gaussian_blob(mask, ccx, ccy, sigma=5.0)
+    
+    # Photometric augmentations (image only)
     img = final_image.astype(np.float32)
     img = img + random.uniform(-0.3, 0.3) * 255
     img = (img - img.mean()) * random.uniform(0.7, 1.3) + img.mean()
@@ -289,12 +343,47 @@ def _generate_one_sample(args):
     if random.random() < 0.5:
         img = img + np.random.normal(0, random.uniform(0, 25), img.shape)
     
-    return {
-        'image': np.clip(img, 0, 255).astype(np.uint8),
-        'mask': (np.clip(mask, 0, 1) * 255).astype(np.uint8),
-        'has_crossing': len(valid_crossings) > 0,
-        'num_crossings': len(valid_crossings)
+    final_image = np.clip(img, 0, 255).astype(np.uint8)
+    mask_uint8 = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
+    
+    result = {
+        'image': final_image,
+        'mask': mask_uint8,
+        'has_crossing': len(all_crossings_in_patch) > 0,  # Valid if ANY crossing in patch
+        'num_crossings': len(interior_crossings),  # Count only interior (with blobs)
+        'all_crossings': all_crossings_in_patch,
+        'interior_crossings': interior_crossings
     }
+    
+    if include_visualization:
+        result.update({
+            'patch_offset': (patch_x, patch_y, patch_w, patch_h),
+            'homography': H,
+            'step3_params': aug_params,
+            'step5_final': final_image
+        })
+    
+    return result
+
+
+def _generate_one_sample(args):
+    """Worker function for parallel sample generation."""
+    sample_data, cache_key, force_crossing = args
+    
+    global _worker_frame_cache
+    
+    frame = _worker_frame_cache.get(cache_key)
+    if frame is None:
+        return None
+    
+    crop_rect = sample_data['crop_rect']
+    crossings = sample_data['crossings']
+    
+    x, y, w, h = crop_rect
+    crop = frame[y:y+h, x:x+w]
+    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    
+    return generate_augmented_patch(crop_rgb, crossings, force_crossing=force_crossing)
 
 
 def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5):
@@ -1440,6 +1529,7 @@ class CrossingAnnotator:
     def _generate_single_patch(self, sample, frame, include_visualization=False):
         """
         Generate a single augmented training patch + mask from a sample.
+        Uses the shared generate_augmented_patch function.
         
         Args:
             sample: Sample object with video_path, frame_idx, crop_rect, crossings
@@ -1454,182 +1544,20 @@ class CrossingAnnotator:
         crop = frame[y:y+h, x:x+w]
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         
-        # Random augmentation parameters
-        zoom_factor = random.uniform(0.75, 2.0)
-        rotation_angle = random.uniform(-180, 180)
-        stretch_x = random.uniform(0.9, 1.1)
-        stretch_y = random.uniform(0.9, 1.1)
+        # Use shared generation function
+        result = generate_augmented_patch(
+            crop_rgb, 
+            list(sample.crossings), 
+            force_crossing=False,
+            include_visualization=include_visualization
+        )
         
-        # Perspective augmentation
-        perspective_strength = 0.15
-        perspective_corners = [
-            (random.uniform(-perspective_strength, perspective_strength),
-             random.uniform(-perspective_strength, perspective_strength))
-            for _ in range(4)
-        ]
-        
-        # Flip augmentations
-        flip_horizontal = random.random() < 0.5
-        flip_vertical = random.random() < 0.5
-        
-        # Buffer factor
-        buffer_factor = 3.0
-        initial_size = int(128 * buffer_factor)
-        
-        # Random location for the larger initial patch
-        if w < initial_size or h < initial_size:
-            patch_x, patch_y = 0, 0
-            patch_w, patch_h = w, h
-        else:
-            patch_x = random.randint(0, w - initial_size)
-            patch_y = random.randint(0, h - initial_size)
-            patch_w, patch_h = initial_size, initial_size
-        
-        # Extract larger patch
-        large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-        
-        # Translate crossings to large patch coordinates
-        crossings_local = [(cx - patch_x, cy - patch_y) for cx, cy in sample.crossings]
-        
-        # Try to find a valid transformation
-        max_attempts = 10
-        edge_margin = 12
-        valid_crossings = []
-        final_image = None
-        H = None
-        
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                perspective_corners = [
-                    (random.uniform(-perspective_strength, perspective_strength),
-                     random.uniform(-perspective_strength, perspective_strength))
-                    for _ in range(4)
-                ]
-            
-            # Build transformation
-            center_x, center_y = patch_w / 2, patch_h / 2
-            
-            rad = np.deg2rad(rotation_angle)
-            cos_a = np.cos(rad)
-            sin_a = np.sin(rad)
-            
-            scale_x = zoom_factor * stretch_x
-            scale_y = zoom_factor * stretch_y
-            
-            src_corners = np.array([
-                [0, 0], [patch_w, 0], [patch_w, patch_h], [0, patch_h]
-            ], dtype=np.float32)
-            
-            dst_corners = []
-            for i, (sx, sy) in enumerate(src_corners):
-                rx = (sx - center_x) * cos_a - (sy - center_y) * sin_a
-                ry = (sx - center_x) * sin_a + (sy - center_y) * cos_a
-                fx = rx * scale_x + center_x + perspective_corners[i][0] * patch_w
-                fy = ry * scale_y + center_y + perspective_corners[i][1] * patch_h
-                dst_corners.append([fx, fy])
-            
-            dst_corners = np.array(dst_corners, dtype=np.float32)
-            H = cv2.getPerspectiveTransform(src_corners, dst_corners)
-            
-            crop_off = (patch_w - 128) // 2
-            
-            # Transform crossing points
-            valid_crossings = []
-            if crossings_local:
-                pts = np.array(crossings_local, dtype=np.float32).reshape(-1, 1, 2)
-                tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
-                for tx, ty in tpts:
-                    fx, fy = tx - crop_off, ty - crop_off
-                    if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
-                        valid_crossings.append((fx, fy))
-            
-            # Check if output region maps to valid source
-            H_inverse = np.linalg.inv(H)
-            output_corners = np.array([
-                [crop_off, crop_off],
-                [crop_off + 128, crop_off],
-                [crop_off + 128, crop_off + 128],
-                [crop_off, crop_off + 128]
-            ], dtype=np.float32).reshape(-1, 1, 2)
-            
-            source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
-            
-            margin = 2
-            valid = True
-            for sx, sy in source_corners_check:
-                if sx < margin or sx > patch_w - margin or sy < margin or sy > patch_h - margin:
-                    valid = False
-                    break
-            
-            if valid:
-                transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), 
-                                                   borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-                final_image = transformed[crop_off:crop_off+128, crop_off:crop_off+128]
-                break
-        
-        if final_image is None:
-            final_image = cv2.resize(large_patch, (128, 128))
-            valid_crossings = []
-        
-        # Create mask with Gaussian blobs
-        mask = np.zeros((128, 128), dtype=np.float32)
-        for cx, cy in valid_crossings:
-            render_gaussian_blob(mask, cx, cy, sigma=5.0)
-        
-        # Apply flips
-        if flip_horizontal:
-            final_image = cv2.flip(final_image, 1)
-            mask = cv2.flip(mask, 1)
-        if flip_vertical:
-            final_image = cv2.flip(final_image, 0)
-            mask = cv2.flip(mask, 0)
-        
-        # Apply photometric augmentations (to image only)
-        img = final_image.astype(np.float32)
-        
-        # Brightness
-        brightness = random.uniform(-0.3, 0.3)
-        img = img + brightness * 255
-        
-        # Contrast
-        contrast = random.uniform(0.7, 1.3)
-        mean = np.mean(img)
-        img = (img - mean) * contrast + mean
-        
-        # Gamma
-        gamma = random.uniform(0.7, 1.5)
-        img = np.clip(img, 0, 255)
-        img = 255.0 * np.power(img / 255.0, gamma)
-        
-        # Gaussian noise
-        noise_sigma = random.uniform(0, 25)
-        if noise_sigma > 0:
-            noise = np.random.normal(0, noise_sigma, img.shape)
-            img = img + noise
-        
-        final_image = np.clip(img, 0, 255).astype(np.uint8)
-        mask_uint8 = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
-        
-        result = {
-            'image': final_image,
-            'mask': mask_uint8,
-            'has_crossing': len(valid_crossings) > 0,
-            'num_crossings': len(valid_crossings)
-        }
-        
+        # Add sample metadata for visualization
         if include_visualization:
             result.update({
                 'source_video': os.path.basename(sample.video_path),
                 'source_frame': sample.frame_idx,
-                'source_crop': sample.crop_rect,
-                'patch_offset': (patch_x, patch_y, patch_w, patch_h),
-                'homography': H,
-                'step3_params': {
-                    'rotation': rotation_angle,
-                    'zoom': zoom_factor,
-                    'flip_h': flip_horizontal,
-                    'flip_v': flip_vertical
-                }
+                'source_crop': sample.crop_rect
             })
         
         return result
