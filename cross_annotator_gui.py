@@ -2035,12 +2035,11 @@ class CrossingAnnotator:
         thread.start()
     
     def _generate_inference_thread(self):
-        """Background thread for generating inference samples."""
+        """Background thread for generating inference samples with parallel loading and batch inference."""
         try:
             mode = self.inference_mode_var.get()
             num_samples = self.inference_samples_var.get()
             even_sampling = self.even_video_sampling_var.get()
-            samples = []
             
             self.model.eval()
             
@@ -2048,27 +2047,44 @@ class CrossingAnnotator:
             mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
             std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
             
-            for i in range(num_samples):
-                self.root.after(0, lambda i=i: self.lbl_inference_idx.config(
-                    text=f"Processing frame {i+1}/{num_samples}..."))
-                
+            # Step 1: Collect frame locations
+            self.root.after(0, lambda: self.lbl_inference_idx.config(text="Selecting frames..."))
+            frame_requests = []
+            for _ in range(num_samples):
                 video_path, frame_idx = self.get_random_frame_location_inference(even_sampling)
-                if not video_path:
-                    continue
-                
+                if video_path:
+                    frame_requests.append((video_path, frame_idx))
+            
+            # Step 2: Load frames in parallel
+            self.root.after(0, lambda: self.lbl_inference_idx.config(text=f"Loading {len(frame_requests)} frames..."))
+            
+            def load_frame(args):
+                video_path, frame_idx = args
                 cap = cv2.VideoCapture(video_path)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
                 cap.release()
-                
-                if not ret or frame is None:
-                    continue
-                
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w = frame_rgb.shape[:2]
-                
-                if mode == "Random Regions":
-                    patch_size = self.patch_size
+                if ret and frame is not None:
+                    return (video_path, frame_idx, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                return None
+            
+            loaded_frames = []
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(load_frame, frame_requests))
+                for r in results:
+                    if r:
+                        loaded_frames.append(r)
+            
+            self.root.after(0, lambda n=len(loaded_frames): self.lbl_inference_idx.config(
+                text=f"Loaded {n} frames, running inference..."))
+            
+            # Step 3: Prepare data for batch inference
+            samples_data = []  # Store metadata
+            
+            if mode == "Random Regions":
+                patch_size = self.patch_size
+                for video_path, frame_idx, frame_rgb in loaded_frames:
+                    h, w = frame_rgb.shape[:2]
                     if h < patch_size or w < patch_size:
                         continue
                     
@@ -2076,65 +2092,87 @@ class CrossingAnnotator:
                     y = random.randint(0, h - patch_size)
                     patch = frame_rgb[y:y+patch_size, x:x+patch_size]
                     
-                    # Pad to multiple of 32
-                    ph, pw = patch.shape[:2]
-                    pad_h = (32 - ph % 32) % 32
-                    pad_w = (32 - pw % 32) % 32
-                    
-                    if pad_h > 0 or pad_w > 0:
-                        patch_padded = np.pad(patch, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
-                    else:
-                        patch_padded = patch
-                    
-                    with torch.no_grad():
-                        input_tensor = torch.from_numpy(patch_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
-                        input_tensor = (input_tensor.to(self.device) - mean) / std
-                        prediction = self.model(input_tensor)
-                        pred_np = prediction.squeeze().cpu().numpy()
-                    
-                    pred_mask = pred_np[:ph, :pw]
-                    detected_crossings = self._detect_peaks(pred_mask)
-                    
-                    samples.append({
+                    samples_data.append({
                         'frame': patch,
-                        'prediction': pred_mask,
-                        'detected_crossings': detected_crossings,
-                        'source_video': os.path.basename(video_path),
-                        'source_frame': frame_idx,
+                        'video_path': video_path,
+                        'frame_idx': frame_idx,
                         'location': (x, y),
                         'size': (patch_size, patch_size),
                         'type': 'patch'
                     })
-                else:  # Full Frame
+            else:  # Full Frame
+                for video_path, frame_idx, frame_rgb in loaded_frames:
+                    h, w = frame_rgb.shape[:2]
                     if h < 128 or w < 128:
                         continue
                     
-                    pad_h = (32 - h % 32) % 32
-                    pad_w = (32 - w % 32) % 32
-                    
-                    if pad_h > 0 or pad_w > 0:
-                        frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
-                    else:
-                        frame_padded = frame_rgb
-                    
-                    with torch.no_grad():
-                        input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
-                        input_tensor = (input_tensor.to(self.device) - mean) / std
-                        prediction = self.model(input_tensor)
-                        pred_full = prediction.squeeze().cpu().numpy()
-                    
-                    pred_mask = pred_full[:h, :w]
-                    detected_crossings = self._detect_peaks(pred_mask)
-                    
-                    samples.append({
+                    samples_data.append({
                         'frame': frame_rgb,
-                        'prediction': pred_mask,
-                        'detected_crossings': detected_crossings,
-                        'source_video': os.path.basename(video_path),
-                        'source_frame': frame_idx,
+                        'video_path': video_path,
+                        'frame_idx': frame_idx,
                         'size': (w, h),
                         'type': 'full'
                     })
+            
+            # Step 4: Batch inference
+            samples = []
+            batch_size = 8 if mode == "Random Regions" else 2  # Smaller batch for full frames (more memory)
+            
+            with torch.no_grad():
+                for batch_start in range(0, len(samples_data), batch_size):
+                    batch_end = min(batch_start + batch_size, len(samples_data))
+                    batch = samples_data[batch_start:batch_end]
+                    
+                    self.root.after(0, lambda s=batch_start, e=len(samples_data): 
+                        self.lbl_inference_idx.config(text=f"Inference: {s}/{e}..."))
+                    
+                    # Prepare batch tensors
+                    batch_tensors = []
+                    batch_info = []
+                    
+                    for item in batch:
+                        img = item['frame']
+                        h, w = img.shape[:2]
+                        
+                        pad_h = (32 - h % 32) % 32
+                        pad_w = (32 - w % 32) % 32
+                        
+                        if pad_h > 0 or pad_w > 0:
+                            img_padded = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                        else:
+                            img_padded = img
+                        
+                        tensor = torch.from_numpy(img_padded.astype(np.float32) / 255.0).permute(2, 0, 1)
+                        batch_tensors.append(tensor)
+                        batch_info.append({'item': item, 'h': h, 'w': w})
+                    
+                    # Stack and run batch
+                    batch_input = torch.stack(batch_tensors).to(self.device)
+                    batch_input = (batch_input - mean) / std
+                    predictions = self.model(batch_input)
+                    
+                    # Process results
+                    for idx, (pred, info) in enumerate(zip(predictions, batch_info)):
+                        item = info['item']
+                        h, w = info['h'], info['w']
+                        
+                        pred_np = pred.squeeze().cpu().numpy()
+                        pred_mask = pred_np[:h, :w]
+                        detected_crossings = self._detect_peaks(pred_mask)
+                        
+                        result = {
+                            'frame': item['frame'],
+                            'prediction': pred_mask,
+                            'detected_crossings': detected_crossings,
+                            'source_video': os.path.basename(item['video_path']),
+                            'source_frame': item['frame_idx'],
+                            'size': item['size'],
+                            'type': item['type']
+                        }
+                        if 'location' in item:
+                            result['location'] = item['location']
+                        
+                        samples.append(result)
             
             self.inference_samples = samples
             self.inference_selected_indices = set()
@@ -2155,6 +2193,7 @@ class CrossingAnnotator:
             import traceback
             traceback.print_exc()
             self.root.after(0, lambda msg=error_msg: self.lbl_inference_idx.config(text=f"Error: {msg}"))
+            self.inference_running = False
             self.inference_running = False
     
     def get_random_frame_location_inference(self, even_across_videos=False):
