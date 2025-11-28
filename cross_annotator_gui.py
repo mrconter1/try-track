@@ -513,6 +513,9 @@ def train_crossing_detector(args):
     # Setup device
     if torch.cuda.is_available():
         device = torch.device('cuda')
+        # Enable cuDNN benchmark for faster convolutions (safe optimization)
+        torch.backends.cudnn.benchmark = True
+        print("cuDNN benchmark enabled")
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         device = torch.device('xpu')
     else:
@@ -537,14 +540,16 @@ def train_crossing_detector(args):
     val_samples = all_samples[:val_size]
     print(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
     
-    # Create datasets and loaders
+    # Create datasets and loaders (optimized settings)
     train_dataset = CrossingDataset(train_samples)
     val_dataset = CrossingDataset(val_samples)
     
+    num_workers = 8  # Increased for faster data loading
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
-                              num_workers=4, pin_memory=True)
+                              num_workers=num_workers, pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, 
-                            num_workers=4, pin_memory=True)
+                            num_workers=num_workers, pin_memory=True, persistent_workers=True)
+    print(f"DataLoader: {num_workers} workers, persistent_workers=True")
     
     # Create model
     print("\nInitializing MobileUNet model...")
@@ -561,9 +566,13 @@ def train_crossing_detector(args):
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
+    # Early stopping settings
+    early_stop_patience = 10
+    epochs_without_improvement = 0
+    
     # Training loop
     best_val_loss = float('inf')
-    print(f"\nStarting training for {args.epochs} epochs...")
+    print(f"\nStarting training for {args.epochs} epochs (early stopping patience={early_stop_patience})...")
     print("-" * 60)
     
     for epoch in range(args.epochs):
@@ -603,16 +612,23 @@ def train_crossing_detector(args):
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
         
-        # Save best model
+        # Save best model and track early stopping
         model_path = f"{args.model_name}_best.pth"
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), model_path)
             save_marker = " *"
+            epochs_without_improvement = 0
         else:
             save_marker = ""
+            epochs_without_improvement += 1
         
         print(f"Epoch {epoch+1:3d}/{args.epochs} | Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {current_lr:.6f}{save_marker}")
+        
+        # Early stopping check
+        if epochs_without_improvement >= early_stop_patience:
+            print(f"\nEarly stopping triggered after {epoch+1} epochs (no improvement for {early_stop_patience} epochs)")
+            break
     
     print("-" * 60)
     print(f"Training complete! Best val loss: {best_val_loss:.6f}")
