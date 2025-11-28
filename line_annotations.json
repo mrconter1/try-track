@@ -20635,6 +20635,380 @@
           ]
         }
       ]
+    },
+    {
+      "video_path": "videos/20251117_145925.mp4",
+      "frame_idx": 11493,
+      "crop_rect": [
+        85,
+        293,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_150803.mp4",
+      "frame_idx": 284,
+      "crop_rect": [
+        2,
+        686,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_170346.mp4",
+      "frame_idx": 3201,
+      "crop_rect": [
+        303,
+        133,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_193328.mp4",
+      "frame_idx": 2268,
+      "crop_rect": [
+        295,
+        617,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145925.mp4",
+      "frame_idx": 1480,
+      "crop_rect": [
+        92,
+        145,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145925.mp4",
+      "frame_idx": 1188,
+      "crop_rect": [
+        86,
+        663,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_171939.mp4",
+      "frame_idx": 8450,
+      "crop_rect": [
+        115,
+        8,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_170346.mp4",
+      "frame_idx": 2133,
+      "crop_rect": [
+        181,
+        778,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145925.mp4",
+      "frame_idx": 7588,
+      "crop_rect": [
+        276,
+        538,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/video.mp4",
+      "frame_idx": 1158,
+      "crop_rect": [
+        38,
+        844,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_170346.mp4",
+      "frame_idx": 5565,
+      "crop_rect": [
+        249,
+        155,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_170139.mp4",
+      "frame_idx": 1045,
+      "crop_rect": [
+        278,
+        770,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145925.mp4",
+      "frame_idx": 10767,
+      "crop_rect": [
+        312,
+        173,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_194500.mp4",
+      "frame_idx": 368,
+      "crop_rect": [
+        159,
+        779,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_171441.mp4",
+      "frame_idx": 7578,
+      "crop_rect": [
+        183,
+        556,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145106.mp4",
+      "frame_idx": 248,
+      "crop_rect": [
+        267,
+        128,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_193801.mp4",
+      "frame_idx": 1749,
+      "crop_rect": [
+        184,
+        370,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_194109.mp4",
+      "frame_idx": 50,
+      "crop_rect": [
+        255,
+        110,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_193328.mp4",
+      "frame_idx": 3019,
+      "crop_rect": [
+        96,
+        382,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145803.mp4",
+      "frame_idx": 511,
+      "crop_rect": [
+        62,
+        490,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_170346.mp4",
+      "frame_idx": 3145,
+      "crop_rect": [
+        26,
+        258,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_194109.mp4",
+      "frame_idx": 434,
+      "crop_rect": [
+        74,
+        18,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251128_100406.mp4",
+      "frame_idx": 130,
+      "crop_rect": [
+        69,
+        206,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_145402.mp4",
+      "frame_idx": 213,
+      "crop_rect": [
+        242,
+        222,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_192943.mp4",
+      "frame_idx": 1286,
+      "crop_rect": [
+        132,
+        382,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251128_100406.mp4",
+      "frame_idx": 124,
+      "crop_rect": [
+        212,
+        695,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251126_120142.mp4",
+      "frame_idx": 518,
+      "crop_rect": [
+        228,
+        409,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_192943.mp4",
+      "frame_idx": 1248,
+      "crop_rect": [
+        121,
+        642,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_193328.mp4",
+      "frame_idx": 3809,
+      "crop_rect": [
+        62,
+        359,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_194109.mp4",
+      "frame_idx": 173,
+      "crop_rect": [
+        254,
+        141,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_170139.mp4",
+      "frame_idx": 1607,
+      "crop_rect": [
+        202,
+        741,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_144726.mp4",
+      "frame_idx": 1026,
+      "crop_rect": [
+        224,
+        64,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251127_193801.mp4",
+      "frame_idx": 1898,
+      "crop_rect": [
+        158,
+        857,
+        400,
+        400
+      ],
+      "lines": []
+    },
+    {
+      "video_path": "videos/20251117_171939.mp4",
+      "frame_idx": 3860,
+      "crop_rect": [
+        312,
+        622,
+        400,
+        400
+      ],
+      "lines": []
     }
   ]
 }
