@@ -584,12 +584,11 @@ class CrossingAnnotator:
                 self.draw_image()
                 return
         
-        # Add new crossing
+        # Add new crossing and start dragging it
         self._push_undo_state("Add crossing")
         self.crossings.append((img_x, img_y))
         self.selected_crossing_idx = len(self.crossings) - 1
-        self.dragging_idx = None
-        self.save_annotations(show_message=False)
+        self.dragging_idx = len(self.crossings) - 1  # Start dragging the new dot
         self.update_statistics()
         self.update_crossings_list()
         self.draw_image()
