@@ -21,7 +21,40 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Tuple
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def render_gaussian_blob(mask: np.ndarray, cx: float, cy: float, sigma: float = 5.0):
+    """
+    Render a 2D Gaussian blob onto the mask at (cx, cy).
+    Uses maximum to avoid over-saturation with overlapping blobs.
+    """
+    h, w = mask.shape[:2]
+    
+    # Only render within a reasonable radius (3*sigma covers 99.7%)
+    radius = int(np.ceil(3 * sigma))
+    
+    x_min = max(0, int(cx - radius))
+    x_max = min(w, int(cx + radius) + 1)
+    y_min = max(0, int(cy - radius))
+    y_max = min(h, int(cy + radius) + 1)
+    
+    if x_min >= x_max or y_min >= y_max:
+        return
+    
+    # Create coordinate grids for the local region
+    y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
+    
+    # Compute Gaussian
+    dist_sq = (x_coords - cx) ** 2 + (y_coords - cy) ** 2
+    gaussian = np.exp(-dist_sq / (2 * sigma ** 2))
+    
+    # Add to mask (use maximum to avoid over-saturation with overlapping blobs)
+    mask[y_min:y_max, x_min:x_max] = np.maximum(
+        mask[y_min:y_max, x_min:x_max],
+        gaussian
+    )
 
 
 @dataclass
@@ -184,6 +217,11 @@ class CrossingAnnotator:
         # Undo stack
         self.undo_stack = []
         
+        # Data generation state
+        self.generated_patches = []
+        self.show_gen_mask = False
+        self.gen_photo_image = None
+        
         # UI Setup
         self.root.title("Crossing Point Annotator")
         self._build_ui()
@@ -196,7 +234,8 @@ class CrossingAnnotator:
         self.root.bind("<Right>", lambda e: self.next_patch())
         self.root.bind("<Delete>", lambda e: self.delete_selected_crossing())
         self.root.bind("<Control-z>", lambda e: self.undo_last_action())
-        self.root.bind("<r>", lambda e: self.resample_current_patch())
+        self.root.bind("<r>", lambda e: self.on_r_key())
+        self.root.bind("<m>", lambda e: self.toggle_generation_view())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.canvas.bind("<Button-1>", self.on_canvas_click)
@@ -261,8 +300,25 @@ class CrossingAnnotator:
         print(f"Loaded {len(self.history)} samples")
     
     def _build_ui(self):
-        """Build the UI."""
-        main_frame = ttk.Frame(self.root)
+        """Build the UI with tabs."""
+        # Create tab control
+        self.tab_control = ttk.Notebook(self.root)
+        self.tab_control.pack(fill=tk.BOTH, expand=True)
+        
+        # Create tabs
+        self.labelling_tab = ttk.Frame(self.tab_control)
+        self.data_gen_tab = ttk.Frame(self.tab_control)
+        
+        self.tab_control.add(self.labelling_tab, text="Labelling")
+        self.tab_control.add(self.data_gen_tab, text="Data Generation")
+        
+        # Build each tab
+        self._build_labelling_tab()
+        self._build_data_generation_tab()
+    
+    def _build_labelling_tab(self):
+        """Build the labelling tab UI."""
+        main_frame = ttk.Frame(self.labelling_tab)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Canvas
@@ -346,6 +402,69 @@ class CrossingAnnotator:
         ttk.Label(help_frame, text="Right click: Delete nearest").pack(anchor="w")
         ttk.Label(help_frame, text="Delete: Remove selected").pack(anchor="w")
         ttk.Label(help_frame, text="Ctrl+Z: Undo").pack(anchor="w")
+    
+    def _build_data_generation_tab(self):
+        """Build the UI for the data generation tab."""
+        main_frame = ttk.Frame(self.data_gen_tab)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Canvas Area (Left)
+        self.gen_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
+        self.gen_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Sidebar (Right)
+        sidebar = ttk.Frame(main_frame, width=300, padding=10)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        
+        # Generation controls
+        gen_frame = ttk.LabelFrame(sidebar, text="Generation Controls", padding=10)
+        gen_frame.pack(fill=tk.X, pady=(10, 10))
+        
+        ttk.Label(gen_frame, text="Patch size: 128x128").pack(anchor="w", pady=2)
+        ttk.Label(gen_frame, text="Grid: 3x3 (9 patches)").pack(anchor="w", pady=2)
+        
+        btn_generate = ttk.Button(gen_frame, text="Generate 9 Random Patches (R)", command=self.generate_training_patches)
+        btn_generate.pack(fill=tk.X, pady=5)
+        
+        self.btn_toggle_gen_view = ttk.Button(gen_frame, text="Show: Images (M)", command=self.toggle_generation_view)
+        self.btn_toggle_gen_view.pack(fill=tk.X, pady=5)
+        
+        # Generation info
+        info_frame = ttk.LabelFrame(sidebar, text="Grid Info", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.lbl_gen_count = ttk.Label(info_frame, text="Patches: 0")
+        self.lbl_gen_count.pack(anchor="w", pady=2)
+        
+        samples_with_crossings = sum(1 for s in self.db.samples if s.crossings)
+        self.lbl_gen_samples = ttk.Label(info_frame, text=f"Labeled samples: {samples_with_crossings}")
+        self.lbl_gen_samples.pack(anchor="w", pady=2)
+        
+        self.lbl_gen_videos = ttk.Label(info_frame, text=f"Videos: {len(self.video_paths)}")
+        self.lbl_gen_videos.pack(anchor="w", pady=2)
+        
+        # Augmentation info
+        aug_frame = ttk.LabelFrame(sidebar, text="Augmentations", padding=10)
+        aug_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(aug_frame, text="Geometric:").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Zoom: 0.75-2.0x").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Rotation: -180° to 180°").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Perspective warp").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • H/V flip: 50%").pack(anchor="w")
+        ttk.Label(aug_frame, text="Photometric:").pack(anchor="w", pady=(5, 0))
+        ttk.Label(aug_frame, text="  • Brightness: ±30%").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Contrast: 0.7-1.3x").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Gamma: 0.7-1.5").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Noise: σ 0-25").pack(anchor="w")
+        
+        # Keyboard shortcuts
+        help_frame = ttk.LabelFrame(sidebar, text="Keyboard Shortcuts", padding=10)
+        help_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(help_frame, text="R: Generate new patches").pack(anchor="w")
+        ttk.Label(help_frame, text="M: Toggle image/mask view").pack(anchor="w")
     
     def get_random_frame_location(self):
         """Select a video and frame proportionally."""
@@ -799,6 +918,462 @@ class CrossingAnnotator:
         """Handle window resize."""
         if self.current_patch_info:
             self.draw_image()
+    
+    # ========== Data Generation Methods ==========
+    
+    def on_r_key(self):
+        """Handle 'r' key press - resample in labelling tab, regenerate in data gen tab."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 0:  # Labelling tab
+            self.resample_current_patch()
+        elif current_tab == 1:  # Data Generation tab
+            self.generate_training_patches()
+    
+    def _generate_single_patch(self, sample, frame, include_visualization=False):
+        """
+        Generate a single augmented training patch + mask from a sample.
+        
+        Args:
+            sample: Sample object with video_path, frame_idx, crop_rect, crossings
+            frame: The video frame (BGR format)
+            include_visualization: If True, include extra data for visualization
+            
+        Returns:
+            Dictionary with 'image' (128x128 RGB), 'mask' (128x128 grayscale)
+        """
+        # Extract the original crop
+        x, y, w, h = sample.crop_rect
+        crop = frame[y:y+h, x:x+w]
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        
+        # Random augmentation parameters
+        zoom_factor = random.uniform(0.75, 2.0)
+        rotation_angle = random.uniform(-180, 180)
+        stretch_x = random.uniform(0.9, 1.1)
+        stretch_y = random.uniform(0.9, 1.1)
+        
+        # Perspective augmentation
+        perspective_strength = 0.15
+        perspective_corners = [
+            (random.uniform(-perspective_strength, perspective_strength),
+             random.uniform(-perspective_strength, perspective_strength))
+            for _ in range(4)
+        ]
+        
+        # Flip augmentations
+        flip_horizontal = random.random() < 0.5
+        flip_vertical = random.random() < 0.5
+        
+        # Buffer factor
+        buffer_factor = 3.0
+        initial_size = int(128 * buffer_factor)
+        
+        # Random location for the larger initial patch
+        if w < initial_size or h < initial_size:
+            patch_x, patch_y = 0, 0
+            patch_w, patch_h = w, h
+        else:
+            patch_x = random.randint(0, w - initial_size)
+            patch_y = random.randint(0, h - initial_size)
+            patch_w, patch_h = initial_size, initial_size
+        
+        # Extract larger patch
+        large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+        
+        # Translate crossings to large patch coordinates
+        crossings_local = [(cx - patch_x, cy - patch_y) for cx, cy in sample.crossings]
+        
+        # Try to find a valid transformation
+        max_attempts = 10
+        edge_margin = 12
+        valid_crossings = []
+        final_image = None
+        H = None
+        
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                perspective_corners = [
+                    (random.uniform(-perspective_strength, perspective_strength),
+                     random.uniform(-perspective_strength, perspective_strength))
+                    for _ in range(4)
+                ]
+            
+            # Build transformation
+            center_x, center_y = patch_w / 2, patch_h / 2
+            
+            rad = np.deg2rad(rotation_angle)
+            cos_a = np.cos(rad)
+            sin_a = np.sin(rad)
+            
+            scale_x = zoom_factor * stretch_x
+            scale_y = zoom_factor * stretch_y
+            
+            src_corners = np.array([
+                [0, 0], [patch_w, 0], [patch_w, patch_h], [0, patch_h]
+            ], dtype=np.float32)
+            
+            dst_corners = []
+            for i, (sx, sy) in enumerate(src_corners):
+                rx = (sx - center_x) * cos_a - (sy - center_y) * sin_a
+                ry = (sx - center_x) * sin_a + (sy - center_y) * cos_a
+                fx = rx * scale_x + center_x + perspective_corners[i][0] * patch_w
+                fy = ry * scale_y + center_y + perspective_corners[i][1] * patch_h
+                dst_corners.append([fx, fy])
+            
+            dst_corners = np.array(dst_corners, dtype=np.float32)
+            H = cv2.getPerspectiveTransform(src_corners, dst_corners)
+            
+            crop_off = (patch_w - 128) // 2
+            
+            # Transform crossing points
+            valid_crossings = []
+            if crossings_local:
+                pts = np.array(crossings_local, dtype=np.float32).reshape(-1, 1, 2)
+                tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+                for tx, ty in tpts:
+                    fx, fy = tx - crop_off, ty - crop_off
+                    if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
+                        valid_crossings.append((fx, fy))
+            
+            # Check if output region maps to valid source
+            H_inverse = np.linalg.inv(H)
+            output_corners = np.array([
+                [crop_off, crop_off],
+                [crop_off + 128, crop_off],
+                [crop_off + 128, crop_off + 128],
+                [crop_off, crop_off + 128]
+            ], dtype=np.float32).reshape(-1, 1, 2)
+            
+            source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+            
+            margin = 2
+            valid = True
+            for sx, sy in source_corners_check:
+                if sx < margin or sx > patch_w - margin or sy < margin or sy > patch_h - margin:
+                    valid = False
+                    break
+            
+            if valid:
+                transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), 
+                                                   borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                final_image = transformed[crop_off:crop_off+128, crop_off:crop_off+128]
+                break
+        
+        if final_image is None:
+            final_image = cv2.resize(large_patch, (128, 128))
+            valid_crossings = []
+        
+        # Create mask with Gaussian blobs
+        mask = np.zeros((128, 128), dtype=np.float32)
+        for cx, cy in valid_crossings:
+            render_gaussian_blob(mask, cx, cy, sigma=5.0)
+        
+        # Apply flips
+        if flip_horizontal:
+            final_image = cv2.flip(final_image, 1)
+            mask = cv2.flip(mask, 1)
+        if flip_vertical:
+            final_image = cv2.flip(final_image, 0)
+            mask = cv2.flip(mask, 0)
+        
+        # Apply photometric augmentations (to image only)
+        img = final_image.astype(np.float32)
+        
+        # Brightness
+        brightness = random.uniform(-0.3, 0.3)
+        img = img + brightness * 255
+        
+        # Contrast
+        contrast = random.uniform(0.7, 1.3)
+        mean = np.mean(img)
+        img = (img - mean) * contrast + mean
+        
+        # Gamma
+        gamma = random.uniform(0.7, 1.5)
+        img = np.clip(img, 0, 255)
+        img = 255.0 * np.power(img / 255.0, gamma)
+        
+        # Gaussian noise
+        noise_sigma = random.uniform(0, 25)
+        if noise_sigma > 0:
+            noise = np.random.normal(0, noise_sigma, img.shape)
+            img = img + noise
+        
+        final_image = np.clip(img, 0, 255).astype(np.uint8)
+        mask_uint8 = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
+        
+        result = {
+            'image': final_image,
+            'mask': mask_uint8,
+            'has_crossing': len(valid_crossings) > 0,
+            'num_crossings': len(valid_crossings)
+        }
+        
+        if include_visualization:
+            result.update({
+                'source_video': os.path.basename(sample.video_path),
+                'source_frame': sample.frame_idx,
+                'source_crop': sample.crop_rect,
+                'patch_offset': (patch_x, patch_y, patch_w, patch_h),
+                'homography': H,
+                'step3_params': {
+                    'rotation': rotation_angle,
+                    'zoom': zoom_factor,
+                    'flip_h': flip_horizontal,
+                    'flip_v': flip_vertical
+                }
+            })
+        
+        return result
+    
+    def _generate_initial_training_patches(self):
+        """Generate initial training patches automatically on app start."""
+        labeled_samples = [s for s in self.db.samples if len(s.crossings) > 0]
+        if not labeled_samples:
+            return
+        
+        threading.Thread(target=self.generate_training_patches, daemon=True).start()
+    
+    def generate_training_patches(self):
+        """Generate 9 random 128x128 patches from labeled samples for visualization."""
+        self.root.after(0, lambda: self.lbl_gen_count.config(text="Generating..."))
+        
+        self.generated_patches = []
+        new_patches = []
+        
+        labeled_samples = [s for s in self.db.samples if len(s.crossings) > 0]
+        
+        if not labeled_samples:
+            self.root.after(0, lambda: messagebox.showwarning("No Labeled Data", 
+                "No labeled samples found. Please label some crossings first."))
+            return
+        
+        print(f"Generating 9 patches from {len(labeled_samples)} labeled samples...")
+        
+        # Pre-load frames
+        frame_cache = {}
+        selected_samples = [random.choice(labeled_samples) for _ in range(9)]
+        
+        for sample in selected_samples:
+            cache_key = (sample.video_path, sample.frame_idx)
+            if cache_key not in frame_cache:
+                cap = cv2.VideoCapture(sample.video_path)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                if ret and frame is not None:
+                    frame_cache[cache_key] = frame
+        
+        for sample in selected_samples:
+            cache_key = (sample.video_path, sample.frame_idx)
+            if cache_key not in frame_cache:
+                continue
+            
+            frame = frame_cache[cache_key]
+            patch_data = self._generate_single_patch(sample, frame, include_visualization=True)
+            new_patches.append(patch_data)
+        
+        print(f"Generated {len(new_patches)} patches")
+        
+        def update_ui():
+            self.generated_patches = new_patches
+            if self.generated_patches:
+                self.show_gen_mask = False
+                self.display_gen_grid()
+        
+        self.root.after(0, update_ui)
+    
+    def display_gen_grid(self):
+        """Display 3x3 grid showing: Full region with green highlight | Final 128x128 patch."""
+        if not self.generated_patches:
+            return
+        
+        self.lbl_gen_count.config(text=f"Patches: {len(self.generated_patches)}")
+        
+        if self.show_gen_mask:
+            self.btn_toggle_gen_view.config(text="Show: Masks (M)")
+        else:
+            self.btn_toggle_gen_view.config(text="Show: Images (M)")
+        
+        # Layout: 3x3 grid
+        num_rows = 3
+        num_cols = 3
+        region_size = 180
+        patch_size = 128
+        padding = 6
+        cell_spacing = 12
+        
+        cell_width = region_size + padding + patch_size
+        cell_height = region_size
+        
+        grid_width = num_cols * cell_width + (num_cols - 1) * cell_spacing + 2 * padding
+        grid_height = num_rows * cell_height + (num_rows - 1) * cell_spacing + 2 * padding
+        
+        grid_img = np.full((grid_height, grid_width, 3), 32, dtype=np.uint8)
+        
+        patch_idx = 0
+        for row_idx in range(num_rows):
+            for col_idx in range(num_cols):
+                if patch_idx >= len(self.generated_patches):
+                    break
+                
+                patch = self.generated_patches[patch_idx]
+                patch_idx += 1
+                
+                cell_x = padding + col_idx * (cell_width + cell_spacing)
+                cell_y = padding + row_idx * (cell_height + cell_spacing)
+                
+                # LEFT: Source region
+                source_video = patch.get("source_video")
+                source_frame = patch.get("source_frame")
+                source_crop = patch.get("source_crop")
+                patch_offset = patch.get("patch_offset")
+                
+                left_img = None
+                if source_video and source_frame is not None and source_crop:
+                    video_path = None
+                    for vp in self.video_paths:
+                        if os.path.basename(vp) == source_video:
+                            video_path = vp
+                            break
+                    
+                    if video_path:
+                        cap = cv2.VideoCapture(video_path)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, source_frame)
+                        ret, frame = cap.read()
+                        cap.release()
+                        
+                        if ret and frame is not None:
+                            x, y, w, h = source_crop
+                            left_img = frame[y:y+h, x:x+w]
+                            left_img = cv2.cvtColor(left_img, cv2.COLOR_BGR2RGB)
+                
+                if left_img is None:
+                    left_img = np.full((region_size, region_size, 3), 64, dtype=np.uint8)
+                
+                left_img = cv2.resize(left_img, (region_size, region_size), interpolation=cv2.INTER_LINEAR)
+                left_img_display = left_img.copy()
+                
+                # Draw green polygon for source region
+                if patch_offset and source_crop:
+                    patch_x, patch_y, patch_w, patch_h = patch_offset
+                    H = patch.get("homography")
+                    
+                    if H is not None:
+                        H_inverse = np.linalg.inv(H)
+                        crop_x_offset = (patch_w - 128) // 2
+                        crop_y_offset = (patch_h - 128) // 2
+                        
+                        output_corners = np.array([
+                            [crop_x_offset, crop_y_offset],
+                            [crop_x_offset + 128, crop_y_offset],
+                            [crop_x_offset + 128, crop_y_offset + 128],
+                            [crop_x_offset, crop_y_offset + 128]
+                        ], dtype=np.float32).reshape(-1, 1, 2)
+                        
+                        source_corners = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+                        source_corners[:, 0] += patch_x
+                        source_corners[:, 1] += patch_y
+                        
+                        _, _, crop_w, crop_h = source_crop
+                        scale_x_display = region_size / crop_w
+                        scale_y_display = region_size / crop_h
+                        
+                        display_corners = source_corners.copy()
+                        display_corners[:, 0] *= scale_x_display
+                        display_corners[:, 1] *= scale_y_display
+                        display_corners = display_corners.astype(np.int32)
+                        
+                        cv2.polylines(left_img_display, [display_corners], isClosed=True, 
+                                      color=(0, 255, 0), thickness=2)
+                        
+                        # Draw flip indicators
+                        step3_params = patch.get("step3_params", {})
+                        flip_h = step3_params.get("flip_h", False)
+                        flip_v = step3_params.get("flip_v", False)
+                        
+                        if flip_h or flip_v:
+                            cx = int(np.mean(display_corners[:, 0]))
+                            cy = int(np.mean(display_corners[:, 1]))
+                            
+                            if flip_h:
+                                # Draw horizontal double arrow (↔)
+                                cv2.arrowedLine(left_img_display, (cx - 15, cy - 10), (cx + 15, cy - 10), 
+                                              (255, 255, 0), 2, tipLength=0.3)
+                                cv2.arrowedLine(left_img_display, (cx + 15, cy - 10), (cx - 15, cy - 10), 
+                                              (255, 255, 0), 2, tipLength=0.3)
+                            
+                            if flip_v:
+                                # Draw vertical double arrow (↕)
+                                y_off = 10 if flip_h else 0
+                                cv2.arrowedLine(left_img_display, (cx, cy - 15 + y_off), (cx, cy + 15 + y_off), 
+                                              (255, 0, 255), 2, tipLength=0.3)
+                                cv2.arrowedLine(left_img_display, (cx, cy + 15 + y_off), (cx, cy - 15 + y_off), 
+                                              (255, 0, 255), 2, tipLength=0.3)
+                
+                grid_img[cell_y:cell_y+region_size, cell_x:cell_x+region_size] = left_img_display
+                
+                # RIGHT: Final 128x128 patch
+                if self.show_gen_mask:
+                    right_img = patch.get("mask")
+                    if right_img is None:
+                        right_img = np.full((patch_size, patch_size), 64, dtype=np.uint8)
+                    if len(right_img.shape) == 2:
+                        right_img = cv2.cvtColor(right_img, cv2.COLOR_GRAY2RGB)
+                else:
+                    right_img = patch.get("image")
+                    if right_img is None:
+                        right_img = np.full((patch_size, patch_size, 3), 64, dtype=np.uint8)
+                
+                rh, rw = right_img.shape[:2]
+                if rh != patch_size or rw != patch_size:
+                    right_img = cv2.resize(right_img, (patch_size, patch_size), interpolation=cv2.INTER_LINEAR)
+                
+                right_x = cell_x + region_size + padding
+                right_y_offset = (region_size - patch_size) // 2
+                grid_img[cell_y + right_y_offset:cell_y + right_y_offset + patch_size,
+                         right_x:right_x + patch_size] = right_img
+        
+        self._draw_generated_image(grid_img)
+    
+    def _draw_generated_image(self, img_arr):
+        """Draw a generated patch on the generation canvas."""
+        img_h, img_w = img_arr.shape[:2]
+        
+        canvas_w = self.gen_canvas.winfo_width()
+        canvas_h = self.gen_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, lambda: self._draw_generated_image(img_arr))
+            return
+        
+        scale_w = canvas_w * 0.9 / img_w
+        scale_h = canvas_h * 0.9 / img_h
+        scale = min(scale_w, scale_h)
+        
+        new_w = int(img_w * scale)
+        new_h = int(img_h * scale)
+        
+        if scale > 1.5:
+            interp = cv2.INTER_NEAREST
+        else:
+            interp = cv2.INTER_LINEAR
+        
+        resized = cv2.resize(img_arr, (new_w, new_h), interpolation=interp)
+        
+        img_pil = Image.fromarray(resized)
+        self.gen_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        offset_x = (canvas_w - new_w) // 2
+        offset_y = (canvas_h - new_h) // 2
+        
+        self.gen_canvas.delete("all")
+        self.gen_canvas.create_image(offset_x, offset_y, anchor=tk.NW, image=self.gen_photo_image)
+    
+    def toggle_generation_view(self):
+        """Toggle between images and masks view in data generation."""
+        self.show_gen_mask = not self.show_gen_mask
+        self.display_gen_grid()
     
     def on_close(self):
         """Handle window close."""

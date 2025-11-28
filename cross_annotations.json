@@ -9666,8 +9666,8 @@
       ],
       "crossings": [
         [
-          253.68973741573222,
-          160.0988033135586
+          253.2520325203252,
+          159.34959349593495
         ]
       ],
       "num_lines": 2
@@ -9990,7 +9990,12 @@
         400,
         400
       ],
-      "crossings": [],
+      "crossings": [
+        [
+          312.1951219512195,
+          329.2682926829268
+        ]
+      ],
       "num_lines": 0
     },
     {
@@ -10255,7 +10260,7 @@
   ],
   "stats": {
     "total_samples": 534,
-    "samples_with_crossings": 396,
-    "total_crossings": 862
+    "samples_with_crossings": 397,
+    "total_crossings": 863
   }
 }
