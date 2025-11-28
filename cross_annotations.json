@@ -10546,7 +10546,12 @@
         400,
         400
       ],
-      "crossings": [],
+      "crossings": [
+        [
+          241.46341463414635,
+          157.72357723577235
+        ]
+      ],
       "num_lines": 0
     },
     {
@@ -10558,7 +10563,12 @@
         400,
         400
       ],
-      "crossings": [],
+      "crossings": [
+        [
+          235.3658536585366,
+          167.0731707317073
+        ]
+      ],
       "num_lines": 0
     },
     {
@@ -10582,13 +10592,22 @@
         400,
         400
       ],
-      "crossings": [],
+      "crossings": [
+        [
+          332.9268292682927,
+          260.9756097560976
+        ],
+        [
+          163.8211382113821,
+          78.04878048780488
+        ]
+      ],
       "num_lines": 0
     }
   ],
   "stats": {
     "total_samples": 534,
-    "samples_with_crossings": 389,
-    "total_crossings": 947
+    "samples_with_crossings": 392,
+    "total_crossings": 951
   }
 }

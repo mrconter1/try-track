@@ -175,6 +175,7 @@ class CrossingAnnotator:
         self.photo_image = None
         self.crossings = []  # List of (x, y) in image coords
         self.selected_crossing_idx = None
+        self.dragging_idx = None  # Index of crossing being dragged
         
         self.canvas_offset_x = 0
         self.canvas_offset_y = 0
@@ -199,6 +200,8 @@ class CrossingAnnotator:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
         
         # Load history from database
@@ -561,18 +564,21 @@ class CrossingAnnotator:
         return canvas_x, canvas_y
     
     def on_canvas_click(self, event):
-        """Handle left click - add crossing or select existing."""
+        """Handle left click - start dragging existing crossing or add new one."""
         if not self.current_patch_info:
             return
         
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         
-        # Check if clicking near existing crossing (to select it)
+        # Check if clicking near existing crossing (to start dragging)
         click_threshold = 15 / self.display_scale
         
         for idx, (x, y) in enumerate(self.crossings):
             dist = ((x - img_x)**2 + (y - img_y)**2)**0.5
             if dist < click_threshold:
+                # Start dragging this crossing
+                self._push_undo_state("Move crossing")
+                self.dragging_idx = idx
                 self.selected_crossing_idx = idx
                 self.update_crossings_list()
                 self.draw_image()
@@ -582,10 +588,38 @@ class CrossingAnnotator:
         self._push_undo_state("Add crossing")
         self.crossings.append((img_x, img_y))
         self.selected_crossing_idx = len(self.crossings) - 1
+        self.dragging_idx = None
         self.save_annotations(show_message=False)
         self.update_statistics()
         self.update_crossings_list()
         self.draw_image()
+    
+    def on_canvas_drag(self, event):
+        """Handle mouse drag - move crossing if dragging."""
+        if self.dragging_idx is None or not self.current_patch_info:
+            return
+        
+        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        
+        # Clamp to image bounds
+        if self.current_patch_info:
+            img_arr = self.current_patch_info['image']
+            img_h, img_w = img_arr.shape[:2]
+            img_x = max(0, min(img_x, img_w))
+            img_y = max(0, min(img_y, img_h))
+        
+        # Update crossing position
+        self.crossings[self.dragging_idx] = (img_x, img_y)
+        self.update_crossings_list()
+        self.draw_image()
+    
+    def on_canvas_release(self, event):
+        """Handle mouse release - finish dragging."""
+        if self.dragging_idx is not None:
+            # Save the new position
+            self.save_annotations(show_message=False)
+            self.update_statistics()
+            self.dragging_idx = None
     
     def on_canvas_right_click(self, event):
         """Handle right click - delete nearest crossing."""
