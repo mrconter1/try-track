@@ -249,12 +249,13 @@ def get_video_props(video_path):
     return total_frames
 
 class RandomPatchViewer:
-    def __init__(self, root, video_paths, patch_size=400, test_graph=False, default_train_samples=25000):
+    def __init__(self, root, video_paths, patch_size=400, test_graph=False, default_train_samples=25000, model_path="line_detector_unet_best.pth"):
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
         self.test_graph = test_graph
         self.default_train_samples = default_train_samples
+        self.model_path = model_path
         
         # Pre-calculate frame counts for proportional sampling (parallel)
         self.video_frame_counts = {}
@@ -3500,12 +3501,13 @@ class RandomPatchViewer:
             if self.model is None:
                 self.model = MobileUNet(pretrained=False).to(self.device)
             
-            self.model.load_state_dict(torch.load("line_detector_unet_best.pth", map_location=self.device))
+            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
             self.model.eval()
-            self.lbl_inference_model.config(text="Model: Loaded ✓", foreground="green")
-            messagebox.showinfo("Success", "Model loaded successfully!")
+            model_name = os.path.basename(self.model_path)
+            self.lbl_inference_model.config(text=f"Model: {model_name} ✓", foreground="green")
+            messagebox.showinfo("Success", f"Model '{model_name}' loaded successfully!")
         except FileNotFoundError:
-            messagebox.showerror("Error", "Model file 'line_detector_unet_best.pth' not found.\nPlease train and save a model first.")
+            messagebox.showerror("Error", f"Model file '{self.model_path}' not found.\nPlease train and save a model first.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load model: {str(e)}")
     
@@ -4233,13 +4235,13 @@ class RandomPatchViewer:
             if self.model is None:
                 self.model = MobileUNet(pretrained=False).to(self.device)
             
-            model_path = "line_detector_unet_best.pth"
-            if os.path.exists(model_path):
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            if os.path.exists(self.model_path):
+                self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
                 self.model.eval()
-                self.lbl_tile_model.config(text="Model: Loaded ✓", foreground="green")
+                model_name = os.path.basename(self.model_path)
+                self.lbl_tile_model.config(text=f"Model: {model_name} ✓", foreground="green")
             else:
-                self.lbl_tile_model.config(text="Model: Not found", foreground="red")
+                self.lbl_tile_model.config(text=f"Model: {self.model_path} not found", foreground="red")
         except Exception as e:
             self.lbl_tile_model.config(text=f"Model: Error - {str(e)[:20]}", foreground="red")
         
@@ -5559,6 +5561,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate (default: 0.001)")
     parser.add_argument("--model-name", type=str, default="line_detector_unet", help="Output model name (default: line_detector_unet)")
     parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision training (AMP)")
+    parser.add_argument("--model", type=str, default="line_detector_unet_best.pth", help="Model file for inference (default: line_detector_unet_best.pth)")
     
     args = parser.parse_args()
     
@@ -5601,7 +5604,8 @@ def main():
     root.state('zoomed')  # Fullscreen on Windows
     
     app = RandomPatchViewer(root, video_paths, test_graph=args.test_graph, 
-                           default_train_samples=args.train_samples)
+                           default_train_samples=args.train_samples,
+                           model_path=args.model)
     
     root.mainloop()
 
