@@ -258,46 +258,40 @@ class CrossingAnnotator:
         else:
             messagebox.showerror("Error", "No valid frames found in the provided videos.")
     
-    def _load_sample_image(self, sample):
-        """Load a single sample image."""
-        cap = cv2.VideoCapture(sample.video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, sample.frame_idx)
+    def _load_sample_image(self, patch_info):
+        """Load image for a patch_info dict (lazy loading)."""
+        if patch_info.get("image") is not None:
+            return True  # Already loaded
+        
+        cap = cv2.VideoCapture(patch_info["video_path"])
+        cap.set(cv2.CAP_PROP_POS_FRAMES, patch_info["frame_idx"])
         ret, frame = cap.read()
         cap.release()
         
         if ret and frame is not None:
-            x, y, w, h = sample.crop_rect
+            x, y, w, h = patch_info["crop_rect"]
             patch = frame[y:y+h, x:x+w]
-            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
-            
-            return {
-                "video_path": sample.video_path,
-                "frame_idx": sample.frame_idx,
-                "crop_rect": sample.crop_rect,
-                "image": patch_rgb
-            }
-        return None
+            patch_info["image"] = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+            return True
+        return False
     
     def _load_history_from_db(self):
-        """Load history from saved samples."""
+        """Load history metadata from saved samples (lazy - no images yet)."""
         if not self.db.samples:
             return
         
-        print(f"Loading {len(self.db.samples)} history samples...")
+        print(f"Loading {len(self.db.samples)} sample metadata (lazy)...")
         
-        max_workers = min(8, len(self.db.samples))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self._load_sample_image, sample) for sample in self.db.samples]
-            
-            for future in futures:
-                try:
-                    patch_info = future.result()
-                    if patch_info:
-                        self.history.append(patch_info)
-                except Exception as e:
-                    print(f"Warning: Error loading sample: {e}")
+        for sample in self.db.samples:
+            # Just store metadata, image will be loaded on-demand
+            self.history.append({
+                "video_path": sample.video_path,
+                "frame_idx": sample.frame_idx,
+                "crop_rect": sample.crop_rect,
+                "image": None  # Loaded lazily
+            })
         
-        print(f"Loaded {len(self.history)} samples")
+        print(f"Loaded {len(self.history)} sample entries")
     
     def _build_ui(self):
         """Build the UI with tabs."""
@@ -591,6 +585,12 @@ class CrossingAnnotator:
             return
         
         info = self.current_patch_info
+        
+        # Lazy load image if needed
+        if info.get("image") is None:
+            if not self._load_sample_image(info):
+                self.lbl_video.config(text="Error loading image")
+                return
         
         self.lbl_video.config(text=f"Video: {os.path.basename(info['video_path'])}")
         self.lbl_frame.config(text=f"Frame: {info['frame_idx']}")
