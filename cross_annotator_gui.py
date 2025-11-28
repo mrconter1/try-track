@@ -17,12 +17,18 @@ import os
 import random
 import bisect
 import argparse
+import math
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Tuple
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import torch
+import torch.nn as nn
+import torchvision.models as models
+from scipy.ndimage import maximum_filter
 
 
 def render_gaussian_blob(mask: np.ndarray, cx: float, cy: float, sigma: float = 5.0):
@@ -55,6 +61,83 @@ def render_gaussian_blob(mask: np.ndarray, cx: float, cy: float, sigma: float = 
         mask[y_min:y_max, x_min:x_max],
         gaussian
     )
+
+
+class MobileUNet(nn.Module):
+    """Mobile-optimized U-Net with MobileNetV2 backbone for crossing detection."""
+    
+    def __init__(self, pretrained=False):
+        super().__init__()
+        
+        if pretrained:
+            mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
+        else:
+            mobilenet = models.mobilenet_v2(weights=None)
+        self.encoder = mobilenet.features
+        
+        self.up1 = nn.ConvTranspose2d(1280, 96, 2, stride=2)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(96 + 96, 96, 3, padding=1),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up2 = nn.ConvTranspose2d(96, 32, 2, stride=2)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(32 + 32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up3 = nn.ConvTranspose2d(32, 24, 2, stride=2)
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(24 + 24, 24, 3, padding=1),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up4 = nn.ConvTranspose2d(24, 16, 2, stride=2)
+        self.dec4 = nn.Sequential(
+            nn.Conv2d(16 + 16, 16, 3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.final_up = nn.ConvTranspose2d(16, 16, 2, stride=2)
+        self.out = nn.Sequential(
+            nn.Conv2d(16, 1, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        skip_connections = []
+        skip_indices = [1, 3, 6, 13]
+        
+        for idx, layer in enumerate(self.encoder):
+            x = layer(x)
+            if idx in skip_indices:
+                skip_connections.append(x)
+        
+        x = self.up1(x)
+        x = torch.cat([x, skip_connections[3]], dim=1)
+        x = self.dec1(x)
+        
+        x = self.up2(x)
+        x = torch.cat([x, skip_connections[2]], dim=1)
+        x = self.dec2(x)
+        
+        x = self.up3(x)
+        x = torch.cat([x, skip_connections[1]], dim=1)
+        x = self.dec3(x)
+        
+        x = self.up4(x)
+        x = torch.cat([x, skip_connections[0]], dim=1)
+        x = self.dec4(x)
+        
+        x = self.final_up(x)
+        x = self.out(x)
+        
+        return x
 
 
 @dataclass
@@ -156,11 +239,18 @@ def get_video_props(video_path):
 
 
 class CrossingAnnotator:
-    def __init__(self, root, video_paths, annotations_file="cross_annotations.json", patch_size=400):
+    def __init__(self, root, video_paths, annotations_file="cross_annotations.json", patch_size=400, 
+                 model_path="cross_net_v1_best.pth"):
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
         self.patch_size = patch_size
         self.annotations_file = annotations_file
+        self.model_path = model_path
+        
+        # PyTorch setup
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Device: {self.device}")
+        self.model = None
         
         # Pre-calculate frame counts
         self.video_frame_counts = {}
@@ -222,6 +312,13 @@ class CrossingAnnotator:
         self.show_gen_mask = False
         self.gen_photo_image = None
         
+        # Inference state
+        self.inference_samples = []
+        self.inference_photo_image = None
+        self.show_inference_prediction = False
+        self.inference_running = False
+        self.inference_selected_indices = set()
+        
         # UI Setup
         self.root.title("Crossing Point Annotator")
         self._build_ui()
@@ -235,7 +332,8 @@ class CrossingAnnotator:
         self.root.bind("<Delete>", lambda e: self.delete_selected_crossing())
         self.root.bind("<Control-z>", lambda e: self.undo_last_action())
         self.root.bind("<r>", lambda e: self.on_r_key())
-        self.root.bind("<m>", lambda e: self.toggle_generation_view())
+        self.root.bind("<m>", lambda e: self.on_m_key())
+        self.root.bind("<g>", lambda e: self.on_g_key())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.canvas.bind("<Button-1>", self.on_canvas_click)
@@ -257,6 +355,23 @@ class CrossingAnnotator:
                 self.next_patch()
         else:
             messagebox.showerror("Error", "No valid frames found in the provided videos.")
+        
+        # Auto-load model for inference
+        self.root.after(100, self._auto_load_model)
+    
+    def _auto_load_model(self):
+        """Automatically load model on startup (silent, no messagebox)."""
+        try:
+            if os.path.exists(self.model_path):
+                if self.model is None:
+                    self.model = MobileUNet(pretrained=False).to(self.device)
+                self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+                self.model.eval()
+                model_name = os.path.basename(self.model_path)
+                self.lbl_inference_model.config(text=f"Model: {model_name} ✓", foreground="green")
+                print(f"Auto-loaded model: {model_name}")
+        except Exception as e:
+            print(f"Auto-load model failed: {e}")
     
     def _load_sample_image(self, patch_info):
         """Load image for a patch_info dict (lazy loading)."""
@@ -302,13 +417,16 @@ class CrossingAnnotator:
         # Create tabs
         self.labelling_tab = ttk.Frame(self.tab_control)
         self.data_gen_tab = ttk.Frame(self.tab_control)
+        self.inference_tab = ttk.Frame(self.tab_control)
         
         self.tab_control.add(self.labelling_tab, text="Labelling")
         self.tab_control.add(self.data_gen_tab, text="Data Generation")
+        self.tab_control.add(self.inference_tab, text="Inference")
         
         # Build each tab
         self._build_labelling_tab()
         self._build_data_generation_tab()
+        self._build_inference_tab()
     
     def _build_labelling_tab(self):
         """Build the labelling tab UI."""
@@ -1375,6 +1493,497 @@ class CrossingAnnotator:
         self.show_gen_mask = not self.show_gen_mask
         self.display_gen_grid()
     
+    def on_m_key(self):
+        """Handle 'm' key - toggle masks in data gen or inference tab."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 1:  # Data Generation tab
+            self.toggle_generation_view()
+        elif current_tab == 2:  # Inference tab
+            self.toggle_inference_view()
+    
+    # ========== Inference Tab ==========
+    
+    def _build_inference_tab(self):
+        """Build the UI for the inference tab."""
+        main_frame = ttk.Frame(self.inference_tab)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Canvas Area (Left)
+        self.inference_canvas = tk.Canvas(main_frame, bg="#222222", highlightthickness=0)
+        self.inference_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Bindings for selection
+        self.inference_canvas.bind("<Button-1>", self.on_inference_click)
+        self.inference_canvas.bind("<Button-3>", self.on_inference_right_click)
+        
+        # Context Menu
+        self.inference_context_menu = tk.Menu(self.root, tearoff=0)
+        self.inference_context_menu.add_command(label="Add selected to Labeling Queue", 
+                                                command=self.add_selected_to_labeling)
+        
+        # Sidebar (Right)
+        sidebar = ttk.Frame(main_frame, width=300, padding=10)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        
+        # Model controls
+        model_frame = ttk.LabelFrame(sidebar, text="Model", padding=10)
+        model_frame.pack(fill=tk.X, pady=(10, 10))
+        
+        self.lbl_inference_model = ttk.Label(model_frame, text="Model: Not loaded")
+        self.lbl_inference_model.pack(anchor="w", pady=5)
+        
+        btn_load_model = ttk.Button(model_frame, text="Load Model", command=self.load_model_for_inference)
+        btn_load_model.pack(fill=tk.X, pady=5)
+        
+        # Sample controls
+        sample_frame = ttk.LabelFrame(sidebar, text="Inference Settings", padding=10)
+        sample_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Mode selection
+        ttk.Label(sample_frame, text="Inference Mode:").pack(anchor="w", pady=2)
+        self.inference_mode_var = tk.StringVar(value="Random Regions")
+        mode_combo = ttk.Combobox(sample_frame, textvariable=self.inference_mode_var, 
+                                  values=["Random Regions", "Full Frame"], state="readonly")
+        mode_combo.pack(fill=tk.X, pady=5)
+        
+        # Even video sampling
+        self.even_video_sampling_var = tk.BooleanVar(value=False)
+        even_sampling_check = ttk.Checkbutton(sample_frame, text="Sample evenly across videos",
+                                               variable=self.even_video_sampling_var)
+        even_sampling_check.pack(anchor="w", pady=2)
+        
+        # Number of samples
+        ttk.Label(sample_frame, text="Number of frames:").pack(anchor="w", pady=2)
+        self.inference_samples_var = tk.IntVar(value=25)
+        samples_spinbox = ttk.Spinbox(sample_frame, from_=1, to=100, increment=1, 
+                                       textvariable=self.inference_samples_var, width=10)
+        samples_spinbox.pack(anchor="w", pady=5)
+        
+        btn_generate_inference = ttk.Button(sample_frame, text="Generate Predictions (G)", 
+                                           command=self.generate_inference_samples)
+        btn_generate_inference.pack(fill=tk.X, pady=5)
+        
+        # View controls
+        view_frame = ttk.LabelFrame(sidebar, text="View", padding=10)
+        view_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.btn_toggle_inference = ttk.Button(view_frame, text="Show: Image", 
+                                               command=self.toggle_inference_view)
+        self.btn_toggle_inference.pack(fill=tk.X, pady=5)
+        
+        # Show detected crossings toggle
+        self.show_detected_crossings_var = tk.BooleanVar(value=False)
+        show_crossings_check = ttk.Checkbutton(view_frame, text="Show detected crossings", 
+                                               variable=self.show_detected_crossings_var,
+                                               command=self.display_inference_sample)
+        show_crossings_check.pack(fill=tk.X, pady=5)
+        
+        # Peak Detection Settings
+        peak_frame = ttk.LabelFrame(sidebar, text="Peak Detection", padding=10)
+        peak_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(peak_frame, text="Threshold:").pack(anchor="w")
+        self.peak_threshold_var = tk.DoubleVar(value=0.3)
+        threshold_spinbox = ttk.Spinbox(peak_frame, from_=0.1, to=0.9, increment=0.05, 
+                                         textvariable=self.peak_threshold_var, width=10)
+        threshold_spinbox.pack(anchor="w", pady=2)
+        
+        ttk.Label(peak_frame, text="Min Distance:").pack(anchor="w")
+        self.peak_distance_var = tk.IntVar(value=10)
+        distance_spinbox = ttk.Spinbox(peak_frame, from_=3, to=50, increment=1, 
+                                        textvariable=self.peak_distance_var, width=10)
+        distance_spinbox.pack(anchor="w", pady=2)
+        
+        btn_redetect = ttk.Button(peak_frame, text="Re-detect Peaks", command=self.redetect_peaks)
+        btn_redetect.pack(fill=tk.X, pady=5)
+        
+        # Info
+        info_frame = ttk.LabelFrame(sidebar, text="Grid Info", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.lbl_inference_idx = ttk.Label(info_frame, text="Samples: 0")
+        self.lbl_inference_idx.pack(anchor="w", pady=5)
+        
+        # Keyboard shortcut help
+        help_frame = ttk.LabelFrame(sidebar, text="Shortcuts", padding=10)
+        help_frame.pack(fill=tk.X)
+        
+        ttk.Label(help_frame, text="G: Generate predictions").pack(anchor="w")
+        ttk.Label(help_frame, text="Click: Select sample").pack(anchor="w")
+        ttk.Label(help_frame, text="Right-click: Context menu").pack(anchor="w")
+    
+    def load_model_for_inference(self):
+        """Load a trained model for inference."""
+        try:
+            if self.model is None:
+                self.model = MobileUNet(pretrained=False).to(self.device)
+            
+            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+            self.model.eval()
+            model_name = os.path.basename(self.model_path)
+            self.lbl_inference_model.config(text=f"Model: {model_name} ✓", foreground="green")
+            messagebox.showinfo("Success", f"Model '{model_name}' loaded successfully!")
+        except FileNotFoundError:
+            messagebox.showerror("Error", f"Model file '{self.model_path}' not found.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load model: {str(e)}")
+    
+    def generate_inference_samples(self):
+        """Generate predictions."""
+        if self.model is None:
+            messagebox.showwarning("No Model", "Please load a model first.")
+            return
+        
+        if self.inference_running:
+            return
+        
+        self.inference_running = True
+        self.lbl_inference_idx.config(text="Generating predictions...")
+        
+        thread = threading.Thread(target=self._generate_inference_thread, daemon=True)
+        thread.start()
+    
+    def _generate_inference_thread(self):
+        """Background thread for generating inference samples."""
+        try:
+            mode = self.inference_mode_var.get()
+            num_samples = self.inference_samples_var.get()
+            even_sampling = self.even_video_sampling_var.get()
+            samples = []
+            
+            self.model.eval()
+            
+            # Normalization tensors
+            mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).reshape(1, 3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225], device=self.device).reshape(1, 3, 1, 1)
+            
+            for i in range(num_samples):
+                self.root.after(0, lambda i=i: self.lbl_inference_idx.config(
+                    text=f"Processing frame {i+1}/{num_samples}..."))
+                
+                video_path, frame_idx = self.get_random_frame_location_inference(even_sampling)
+                if not video_path:
+                    continue
+                
+                cap = cv2.VideoCapture(video_path)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                
+                if not ret or frame is None:
+                    continue
+                
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w = frame_rgb.shape[:2]
+                
+                if mode == "Random Regions":
+                    patch_size = self.patch_size
+                    if h < patch_size or w < patch_size:
+                        continue
+                    
+                    x = random.randint(0, w - patch_size)
+                    y = random.randint(0, h - patch_size)
+                    patch = frame_rgb[y:y+patch_size, x:x+patch_size]
+                    
+                    # Pad to multiple of 32
+                    ph, pw = patch.shape[:2]
+                    pad_h = (32 - ph % 32) % 32
+                    pad_w = (32 - pw % 32) % 32
+                    
+                    if pad_h > 0 or pad_w > 0:
+                        patch_padded = np.pad(patch, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                    else:
+                        patch_padded = patch
+                    
+                    with torch.no_grad():
+                        input_tensor = torch.from_numpy(patch_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                        input_tensor = (input_tensor.to(self.device) - mean) / std
+                        prediction = self.model(input_tensor)
+                        pred_np = prediction.squeeze().cpu().numpy()
+                    
+                    pred_mask = pred_np[:ph, :pw]
+                    detected_crossings = self._detect_peaks(pred_mask)
+                    
+                    samples.append({
+                        'frame': patch,
+                        'prediction': pred_mask,
+                        'detected_crossings': detected_crossings,
+                        'source_video': os.path.basename(video_path),
+                        'source_frame': frame_idx,
+                        'location': (x, y),
+                        'size': (patch_size, patch_size),
+                        'type': 'patch'
+                    })
+                else:  # Full Frame
+                    if h < 128 or w < 128:
+                        continue
+                    
+                    pad_h = (32 - h % 32) % 32
+                    pad_w = (32 - w % 32) % 32
+                    
+                    if pad_h > 0 or pad_w > 0:
+                        frame_padded = np.pad(frame_rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode='reflect')
+                    else:
+                        frame_padded = frame_rgb
+                    
+                    with torch.no_grad():
+                        input_tensor = torch.from_numpy(frame_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
+                        input_tensor = (input_tensor.to(self.device) - mean) / std
+                        prediction = self.model(input_tensor)
+                        pred_full = prediction.squeeze().cpu().numpy()
+                    
+                    pred_mask = pred_full[:h, :w]
+                    detected_crossings = self._detect_peaks(pred_mask)
+                    
+                    samples.append({
+                        'frame': frame_rgb,
+                        'prediction': pred_mask,
+                        'detected_crossings': detected_crossings,
+                        'source_video': os.path.basename(video_path),
+                        'source_frame': frame_idx,
+                        'size': (w, h),
+                        'type': 'full'
+                    })
+            
+            self.inference_samples = samples
+            self.inference_selected_indices = set()
+            
+            def finish_inference():
+                self.inference_running = False
+                if self.inference_samples:
+                    self.show_inference_prediction = False
+                    self.display_inference_sample()
+                else:
+                    self.lbl_inference_idx.config(text="No samples generated")
+            
+            self.root.after(0, finish_inference)
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Inference error: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda msg=error_msg: self.lbl_inference_idx.config(text=f"Error: {msg}"))
+            self.inference_running = False
+    
+    def get_random_frame_location_inference(self, even_across_videos=False):
+        """Select a video and frame for inference."""
+        if self.total_combined_frames == 0:
+            return None, None
+        
+        if even_across_videos and self.active_video_paths:
+            video_path = random.choice(self.active_video_paths)
+            frame_count = self.video_frame_counts.get(video_path, 1)
+            frame_idx = random.randint(0, frame_count - 1)
+            return video_path, frame_idx
+        else:
+            global_idx = random.randint(0, self.total_combined_frames - 1)
+            video_idx = bisect.bisect_left(self.cumulative_frames, global_idx)
+            
+            if video_idx >= len(self.active_video_paths):
+                video_idx = len(self.active_video_paths) - 1
+            
+            video_path = self.active_video_paths[video_idx]
+            prev_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
+            frame_idx = global_idx - prev_cumulative
+            
+            return video_path, frame_idx
+    
+    def _detect_peaks(self, heatmap):
+        """Detect crossing peaks in heatmap using local maxima."""
+        threshold = self.peak_threshold_var.get()
+        min_distance = self.peak_distance_var.get()
+        
+        # Find local maxima
+        local_max = maximum_filter(heatmap, size=min_distance * 2 + 1)
+        peaks = (heatmap == local_max) & (heatmap > threshold)
+        
+        # Get coordinates
+        coords = np.where(peaks)
+        crossings = list(zip(coords[1], coords[0]))  # (x, y) format
+        
+        return crossings
+    
+    def redetect_peaks(self):
+        """Re-detect peaks with current settings."""
+        if not self.inference_samples:
+            return
+        
+        for sample in self.inference_samples:
+            pred_mask = sample['prediction']
+            sample['detected_crossings'] = self._detect_peaks(pred_mask)
+        
+        self.display_inference_sample()
+    
+    def display_inference_sample(self):
+        """Display predictions in grid layout."""
+        if not self.inference_samples:
+            return
+        
+        num_samples = len(self.inference_samples)
+        mode = self.inference_mode_var.get()
+        self.lbl_inference_idx.config(text=f"{mode}: {num_samples}")
+        
+        if self.show_inference_prediction:
+            self.btn_toggle_inference.config(text="Show: Predictions")
+        else:
+            self.btn_toggle_inference.config(text="Show: Images")
+        
+        # Calculate grid
+        if mode == "Random Regions":
+            num_cols = max(1, int(math.ceil(math.sqrt(num_samples))))
+            num_rows = max(1, int(math.ceil(num_samples / num_cols)))
+        else:
+            num_cols = min(3, num_samples)
+            num_rows = (num_samples + num_cols - 1) // num_cols
+        
+        canvas_w = self.inference_canvas.winfo_width()
+        canvas_h = self.inference_canvas.winfo_height()
+        
+        if canvas_w < 10 or canvas_h < 10:
+            self.root.after(100, self.display_inference_sample)
+            return
+        
+        padding = 10
+        available_w = canvas_w - padding * (num_cols + 1)
+        available_h = canvas_h - padding * (num_rows + 1)
+        cell_w = available_w // num_cols
+        cell_h = available_h // num_rows
+        
+        self.inference_grid_geometry = {
+            'num_cols': num_cols,
+            'cell_w': cell_w,
+            'cell_h': cell_h,
+            'padding': padding
+        }
+        
+        grid_img = np.full((canvas_h, canvas_w, 3), 32, dtype=np.uint8)
+        
+        for idx, sample in enumerate(self.inference_samples):
+            row = idx // num_cols
+            col = idx % num_cols
+            
+            x_start = padding + col * (cell_w + padding)
+            y_start = padding + row * (cell_h + padding)
+            
+            # Selection highlight
+            if idx in self.inference_selected_indices:
+                cv2.rectangle(grid_img, 
+                             (x_start - 4, y_start - 4), 
+                             (x_start + cell_w + 4, y_start + cell_h + 4), 
+                             (0, 255, 0), 4)
+            
+            # Choose image or prediction
+            if self.show_inference_prediction:
+                pred = sample['prediction']
+                img_data = (np.clip(pred, 0, 1) * 255).astype(np.uint8)
+                img_data = cv2.cvtColor(img_data, cv2.COLOR_GRAY2RGB)
+            else:
+                img_data = sample['frame'].copy()
+            
+            # Draw detected crossings
+            if self.show_detected_crossings_var.get():
+                for cx, cy in sample.get('detected_crossings', []):
+                    cv2.circle(img_data, (int(cx), int(cy)), 5, (0, 255, 0), 2)
+                    cv2.drawMarker(img_data, (int(cx), int(cy)), (0, 255, 0), 
+                                   cv2.MARKER_CROSS, 10, 2)
+            
+            # Resize to fit cell
+            img_h, img_w = img_data.shape[:2]
+            scale = min(cell_w / img_w, cell_h / img_h)
+            new_w, new_h = int(img_w * scale), int(img_h * scale)
+            
+            if new_w > 0 and new_h > 0:
+                resized = cv2.resize(img_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                
+                x_off = (cell_w - new_w) // 2
+                y_off = (cell_h - new_h) // 2
+                
+                grid_img[y_start + y_off:y_start + y_off + new_h,
+                         x_start + x_off:x_start + x_off + new_w] = resized
+        
+        # Display
+        img_pil = Image.fromarray(grid_img)
+        self.inference_photo_image = ImageTk.PhotoImage(img_pil)
+        
+        self.inference_canvas.delete("all")
+        self.inference_canvas.create_image(0, 0, anchor=tk.NW, image=self.inference_photo_image)
+    
+    def toggle_inference_view(self):
+        """Toggle between image and prediction view."""
+        self.show_inference_prediction = not self.show_inference_prediction
+        self.display_inference_sample()
+    
+    def on_inference_click(self, event):
+        """Handle click on inference canvas."""
+        if not self.inference_samples or not hasattr(self, 'inference_grid_geometry'):
+            return
+        
+        geom = self.inference_grid_geometry
+        padding = geom['padding']
+        cell_w = geom['cell_w']
+        cell_h = geom['cell_h']
+        num_cols = geom['num_cols']
+        
+        # Calculate which cell was clicked
+        col = (event.x - padding) // (cell_w + padding)
+        row = (event.y - padding) // (cell_h + padding)
+        
+        idx = row * num_cols + col
+        
+        if 0 <= idx < len(self.inference_samples):
+            if idx in self.inference_selected_indices:
+                self.inference_selected_indices.remove(idx)
+            else:
+                self.inference_selected_indices.add(idx)
+            self.display_inference_sample()
+    
+    def on_inference_right_click(self, event):
+        """Show context menu."""
+        if self.inference_selected_indices:
+            self.inference_context_menu.post(event.x_root, event.y_root)
+    
+    def add_selected_to_labeling(self):
+        """Add selected inference samples to labeling queue."""
+        if not self.inference_selected_indices:
+            return
+        
+        added = 0
+        for idx in self.inference_selected_indices:
+            sample = self.inference_samples[idx]
+            
+            # Find video path
+            video_path = None
+            for vp in self.video_paths:
+                if os.path.basename(vp) == sample['source_video']:
+                    video_path = vp
+                    break
+            
+            if video_path:
+                # Add to history for labeling
+                patch_info = {
+                    'video_path': video_path,
+                    'frame_idx': sample['source_frame'],
+                    'crop_rect': (sample.get('location', (0, 0))[0], 
+                                  sample.get('location', (0, 0))[1],
+                                  sample['size'][0], sample['size'][1]),
+                    'image': sample['frame']
+                }
+                self.history.append(patch_info)
+                added += 1
+        
+        self.inference_selected_indices.clear()
+        self.display_inference_sample()
+        
+        messagebox.showinfo("Added", f"Added {added} samples to labeling queue.")
+    
+    def on_g_key(self):
+        """Handle 'g' key - generate inference samples."""
+        current_tab = self.tab_control.index(self.tab_control.select())
+        if current_tab == 2:  # Inference tab
+            self.generate_inference_samples()
+    
     def on_close(self):
         """Handle window close."""
         self.save_annotations(show_message=False)
@@ -1404,6 +2013,7 @@ def main():
     parser.add_argument("videos", nargs="*", help="Video files or directories")
     parser.add_argument("--annotations", "-a", default="cross_annotations.json", help="Annotations file")
     parser.add_argument("--patch-size", type=int, default=400, help="Patch size (default: 400)")
+    parser.add_argument("--model", default="cross_net_v1_best.pth", help="Model file for inference")
     
     args = parser.parse_args()
     
@@ -1426,7 +2036,8 @@ def main():
     root = tk.Tk()
     root.state('zoomed')
     
-    app = CrossingAnnotator(root, video_paths, annotations_file=args.annotations, patch_size=args.patch_size)
+    app = CrossingAnnotator(root, video_paths, annotations_file=args.annotations, 
+                            patch_size=args.patch_size, model_path=args.model)
     
     root.mainloop()
 
