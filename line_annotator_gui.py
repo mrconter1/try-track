@@ -874,6 +874,12 @@ class RandomPatchViewer:
         mode_combo.pack(fill=tk.X, pady=5)
         mode_combo.bind("<<ComboboxSelected>>", self._update_inference_controls)
         
+        # Even video sampling toggle
+        self.even_video_sampling_var = tk.BooleanVar(value=False)
+        even_sampling_check = ttk.Checkbutton(sample_frame, text="Sample evenly across videos",
+                                               variable=self.even_video_sampling_var)
+        even_sampling_check.pack(anchor="w", pady=2)
+        
         # Number of samples/frames
         self.lbl_num_samples = ttk.Label(sample_frame, text="Number of frames:")
         self.lbl_num_samples.pack(anchor="w", pady=2)
@@ -975,24 +981,37 @@ class RandomPatchViewer:
         self.lbl_inference_idx.pack(anchor="w", pady=5)
         
 
-    def get_random_frame_location(self):
-        """Select a video and frame index proportional to frame count."""
+    def get_random_frame_location(self, even_across_videos=False):
+        """Select a video and frame index.
+        
+        Args:
+            even_across_videos: If True, sample evenly among videos first, then random frame.
+                               If False, sample proportional to frame count (default).
+        """
         if self.total_combined_frames == 0:
             return None, None
+        
+        if even_across_videos and self.active_video_paths:
+            # Even sampling: pick random video first, then random frame within it
+            video_path = random.choice(self.active_video_paths)
+            frame_count = self.video_frame_counts.get(video_path, 1)
+            frame_idx = random.randint(0, frame_count - 1)
+            return video_path, frame_idx
+        else:
+            # Proportional sampling: weight by frame count
+            global_idx = random.randint(0, self.total_combined_frames - 1)
+            video_idx = bisect.bisect_left(self.cumulative_frames, global_idx)
             
-        global_idx = random.randint(0, self.total_combined_frames - 1)
-        video_idx = bisect.bisect_left(self.cumulative_frames, global_idx)
-        
-        # Safety check
-        if video_idx >= len(self.active_video_paths):
-            video_idx = len(self.active_video_paths) - 1
+            # Safety check
+            if video_idx >= len(self.active_video_paths):
+                video_idx = len(self.active_video_paths) - 1
+                
+            video_path = self.active_video_paths[video_idx]
             
-        video_path = self.active_video_paths[video_idx]
-        
-        prev_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
-        frame_idx = global_idx - prev_cumulative # Local frame index
-        
-        return video_path, frame_idx
+            prev_cumulative = self.cumulative_frames[video_idx - 1] if video_idx > 0 else 0
+            frame_idx = global_idx - prev_cumulative # Local frame index
+            
+            return video_path, frame_idx
 
     def generate_new_patch(self):
         if self.total_combined_frames == 0:
@@ -3511,6 +3530,7 @@ class RandomPatchViewer:
         try:
             mode = self.inference_mode_var.get()
             num_samples = self.inference_samples_var.get()
+            even_sampling = self.even_video_sampling_var.get()
             samples = []
             
             self.model.eval()
@@ -3525,7 +3545,7 @@ class RandomPatchViewer:
                 # First, collect all patches (fast)
                 patches_data = []
                 for i in range(num_samples):
-                    video_path, frame_idx = self.get_random_frame_location()
+                    video_path, frame_idx = self.get_random_frame_location(even_sampling)
                     if not video_path: continue
                     
                     cap = cv2.VideoCapture(video_path)
@@ -3621,7 +3641,7 @@ class RandomPatchViewer:
                     self.root.after(0, lambda i=i: self.lbl_inference_idx.config(
                         text=f"Processing frame {i+1}/{num_samples}..."))
                     
-                    video_path, frame_idx = self.get_random_frame_location()
+                    video_path, frame_idx = self.get_random_frame_location(even_sampling)
                     if not video_path: continue
                     
                     cap = cv2.VideoCapture(video_path)
