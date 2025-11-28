@@ -1945,38 +1945,75 @@ class CrossingAnnotator:
             self.inference_context_menu.post(event.x_root, event.y_root)
     
     def add_selected_to_labeling(self):
-        """Add selected inference samples to labeling queue."""
+        """Add selected inference samples to the labeling database."""
         if not self.inference_selected_indices:
+            messagebox.showinfo("No Selection", "No samples selected. Left-click samples to select them first.")
             return
         
-        added = 0
-        for idx in self.inference_selected_indices:
-            sample = self.inference_samples[idx]
-            
-            # Find video path
-            video_path = None
-            for vp in self.video_paths:
-                if os.path.basename(vp) == sample['source_video']:
-                    video_path = vp
-                    break
-            
-            if video_path:
-                # Add to history for labeling
-                patch_info = {
-                    'video_path': video_path,
-                    'frame_idx': sample['source_frame'],
-                    'crop_rect': (sample.get('location', (0, 0))[0], 
-                                  sample.get('location', (0, 0))[1],
-                                  sample['size'][0], sample['size'][1]),
-                    'image': sample['frame']
-                }
-                self.history.append(patch_info)
-                added += 1
+        num_selected = len(self.inference_selected_indices)
         
+        # Confirmation dialog
+        result = messagebox.askyesno(
+            "Add to Labeling Queue",
+            f"Add {num_selected} selected sample(s) to labeling queue?\n\nSelected indices: {sorted(self.inference_selected_indices)}",
+            icon='question'
+        )
+        if not result:
+            return
+        
+        count = 0
+        for idx in self.inference_selected_indices:
+            if idx < len(self.inference_samples):
+                sample_data = self.inference_samples[idx]
+                
+                # Find full path from basename
+                video_path = None
+                for vp in self.video_paths:
+                    if os.path.basename(vp) == sample_data['source_video']:
+                        video_path = vp
+                        break
+                
+                if not video_path:
+                    continue
+                
+                frame_idx = sample_data['source_frame']
+                w, h = sample_data['size']
+                
+                # Use stored location or default to 0,0
+                if 'location' in sample_data:
+                    x, y = sample_data['location']
+                    crop_rect = (x, y, w, h)
+                else:
+                    crop_rect = (0, 0, w, h)
+                
+                # Add to database
+                self.db.find_sample(video_path, frame_idx, crop_rect)
+                
+                # Also add to history so it shows up immediately in labelling tab
+                frame_rgb = sample_data['frame']
+                
+                history_entry = {
+                    "video_path": video_path,
+                    "frame_idx": frame_idx,
+                    "crop_rect": crop_rect,
+                    "image": frame_rgb
+                }
+                self.history.append(history_entry)
+                
+                count += 1
+        
+        # Save database
+        self.db.save(self.annotations_file)
+        
+        # Update statistics in labelling tab
+        self.update_statistics()
+        
+        # Clear selection
         self.inference_selected_indices.clear()
         self.display_inference_sample()
         
-        messagebox.showinfo("Added", f"Added {added} samples to labeling queue.")
+        # Notify user
+        messagebox.showinfo("Success", f"Added {count} of {num_selected} selected samples to labeling queue.\n\nGo to Labelling tab to see them (they're at the end).")
     
     def on_g_key(self):
         """Handle 'g' key - generate inference samples."""
