@@ -27,8 +27,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 from scipy.ndimage import maximum_filter
+import multiprocessing
+
+# Global frame cache for worker processes
+_worker_frame_cache = {}
+_worker_video_paths = []
 
 
 def render_gaussian_blob(mask: np.ndarray, cx: float, cy: float, sigma: float = 5.0):
@@ -138,6 +145,383 @@ class MobileUNet(nn.Module):
         x = self.out(x)
         
         return x
+
+
+class CrossingDataset(Dataset):
+    """Dataset for crossing detection training."""
+    
+    def __init__(self, samples):
+        self.samples = samples
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        image = sample['image'].astype(np.float32) / 255.0
+        mask = sample['mask'].astype(np.float32) / 255.0
+        
+        image = torch.from_numpy(image).permute(2, 0, 1)
+        
+        mean = torch.from_numpy(self.mean).reshape(3, 1, 1)
+        std = torch.from_numpy(self.std).reshape(3, 1, 1)
+        image = (image - mean) / std
+        
+        if len(mask.shape) == 2:
+            mask = torch.from_numpy(mask).unsqueeze(0)
+        else:
+            mask = torch.from_numpy(mask[:, :, 0]).unsqueeze(0)
+        
+        return image, mask
+
+
+def _generate_one_sample(args):
+    """Worker function for parallel sample generation."""
+    sample_data, cache_key, force_crossing = args
+    
+    global _worker_frame_cache
+    
+    frame = _worker_frame_cache.get(cache_key)
+    if frame is None:
+        return None
+    
+    crop_rect = sample_data['crop_rect']
+    crossings = sample_data['crossings']
+    
+    x, y, w, h = crop_rect
+    crop = frame[y:y+h, x:x+w]
+    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    
+    # Determine if we should center on a crossing
+    center_on_crossing = force_crossing and len(crossings) > 0
+    target_crossing = random.choice(crossings) if center_on_crossing else None
+    
+    buffer_factor = 3.0
+    initial_size = int(128 * buffer_factor)
+    
+    if center_on_crossing:
+        target_x, target_y = target_crossing
+        patch_x = max(0, min(w - initial_size, int(target_x - initial_size / 2)))
+        patch_y = max(0, min(h - initial_size, int(target_y - initial_size / 2)))
+        patch_w, patch_h = min(initial_size, w), min(initial_size, h)
+    else:
+        if w < initial_size or h < initial_size:
+            patch_x, patch_y = 0, 0
+            patch_w, patch_h = w, h
+        else:
+            patch_x = random.randint(0, w - initial_size)
+            patch_y = random.randint(0, h - initial_size)
+            patch_w, patch_h = initial_size, initial_size
+    
+    large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
+    crossings_local = [(cx - patch_x, cy - patch_y) for cx, cy in crossings]
+    
+    edge_margin = 12
+    max_attempts = 20 if center_on_crossing else 10
+    valid_crossings = []
+    final_image = None
+    
+    for _ in range(max_attempts):
+        zoom = random.uniform(0.75, 2.0)
+        angle = random.uniform(-180, 180)
+        stretch_x, stretch_y = random.uniform(0.9, 1.1), random.uniform(0.9, 1.1)
+        
+        cx, cy = patch_w / 2, patch_h / 2
+        rad = np.deg2rad(angle)
+        cos_a, sin_a = np.cos(rad), np.sin(rad)
+        sx, sy = zoom * stretch_x, zoom * stretch_y
+        
+        src = np.array([[0, 0], [patch_w, 0], [patch_w, patch_h], [0, patch_h]], dtype=np.float32)
+        dst = []
+        for i, (px, py) in enumerate(src):
+            rx, ry = (px - cx) * cos_a - (py - cy) * sin_a, (px - cx) * sin_a + (py - cy) * cos_a
+            fx = rx * sx + cx + random.uniform(-0.15, 0.15) * patch_w
+            fy = ry * sy + cy + random.uniform(-0.15, 0.15) * patch_h
+            dst.append([fx, fy])
+        
+        dst = np.array(dst, dtype=np.float32)
+        H = cv2.getPerspectiveTransform(src, dst)
+        
+        crop_off = (patch_w - 128) // 2
+        
+        # Check crossings
+        valid_crossings = []
+        if crossings_local:
+            pts = np.array(crossings_local, dtype=np.float32).reshape(-1, 1, 2)
+            tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+            for tx, ty in tpts:
+                fx, fy = tx - crop_off, ty - crop_off
+                if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
+                    valid_crossings.append((fx, fy))
+        
+        if center_on_crossing and not valid_crossings:
+            continue
+        
+        transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), borderMode=cv2.BORDER_CONSTANT)
+        final_image = transformed[crop_off:crop_off+128, crop_off:crop_off+128]
+        break
+    
+    if final_image is None:
+        final_image = cv2.resize(large_patch, (128, 128))
+        valid_crossings = []
+    
+    # Mask with Gaussian blobs
+    mask = np.zeros((128, 128), dtype=np.float32)
+    for ccx, ccy in valid_crossings:
+        render_gaussian_blob(mask, ccx, ccy, sigma=5.0)
+    
+    # Flips
+    if random.random() < 0.5:
+        final_image = cv2.flip(final_image, 1)
+        mask = cv2.flip(mask, 1)
+    if random.random() < 0.5:
+        final_image = cv2.flip(final_image, 0)
+        mask = cv2.flip(mask, 0)
+    
+    # Photometric augmentations
+    img = final_image.astype(np.float32)
+    img = img + random.uniform(-0.3, 0.3) * 255
+    img = (img - img.mean()) * random.uniform(0.7, 1.3) + img.mean()
+    img = np.clip(img, 0, 255)
+    img = 255.0 * np.power(img / 255.0, random.uniform(0.7, 1.5))
+    if random.random() < 0.5:
+        img = img + np.random.normal(0, random.uniform(0, 25), img.shape)
+    
+    return {
+        'image': np.clip(img, 0, 255).astype(np.uint8),
+        'mask': (np.clip(mask, 0, 1) * 255).astype(np.uint8),
+        'has_crossing': len(valid_crossings) > 0,
+        'num_crossings': len(valid_crossings)
+    }
+
+
+def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5):
+    """Generate training samples with positive/negative balance."""
+    global _worker_frame_cache
+    
+    samples_with_crossings = [s for s in db.samples if len(s.crossings) >= 1]
+    samples_for_negatives = [s for s in db.samples]
+    
+    if not db.samples:
+        raise ValueError("No samples found in database")
+    
+    print(f"Sample pool: {len(samples_with_crossings)} with crossings, {len(db.samples)} total")
+    
+    target_positive = int(num_samples * balance_ratio)
+    target_negative = num_samples - target_positive
+    
+    # Pre-cache frames
+    print("Pre-caching frames...")
+    unique_frames = list(set((s.video_path, s.frame_idx) for s in db.samples))
+    
+    def load_frame(args):
+        video_path, frame_idx = args
+        # Resolve relative path
+        if not os.path.isabs(video_path):
+            for vp in video_paths:
+                if os.path.basename(vp) == os.path.basename(video_path):
+                    video_path = vp
+                    break
+        cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        cap.release()
+        if ret and frame is not None:
+            return ((video_path, frame_idx), frame)
+        return None
+    
+    frame_cache = {}
+    num_workers = min(multiprocessing.cpu_count(), 8)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for i, result in enumerate(executor.map(load_frame, unique_frames)):
+            if result:
+                frame_cache[result[0]] = result[1]
+            if (i + 1) % 50 == 0:
+                print(f"  Cached {i + 1}/{len(unique_frames)} frames")
+    
+    print(f"  Cached {len(frame_cache)} frames total")
+    _worker_frame_cache = frame_cache
+    
+    # Create tasks
+    def sample_to_dict(s):
+        return {
+            'video_path': s.video_path,
+            'frame_idx': s.frame_idx,
+            'crop_rect': s.crop_rect,
+            'crossings': list(s.crossings)
+        }
+    
+    oversample_positive = 2.5
+    oversample_negative = 1.5
+    positive_tasks = []
+    negative_tasks = []
+    
+    for _ in range(int(target_positive * oversample_positive)):
+        if samples_with_crossings:
+            s = random.choice(samples_with_crossings)
+            cache_key = (s.video_path, s.frame_idx)
+            if cache_key in frame_cache:
+                positive_tasks.append((sample_to_dict(s), cache_key, True))
+    
+    for _ in range(int(target_negative * oversample_negative)):
+        s = random.choice(samples_for_negatives)
+        cache_key = (s.video_path, s.frame_idx)
+        if cache_key in frame_cache:
+            negative_tasks.append((sample_to_dict(s), cache_key, False))
+    
+    # Generate samples
+    print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
+    
+    positive_samples = []
+    negative_samples = []
+    chunk_size = 2500
+    
+    print("Generating positive samples...")
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for i in range(0, len(positive_tasks), chunk_size):
+            chunk = positive_tasks[i:i+chunk_size]
+            results = list(executor.map(_generate_one_sample, chunk))
+            for r in results:
+                if r and r['has_crossing'] and len(positive_samples) < target_positive:
+                    positive_samples.append(r)
+            print(f"  Positive: {len(positive_samples)}/{target_positive}")
+            if len(positive_samples) >= target_positive:
+                break
+    
+    print("Generating negative samples...")
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for i in range(0, len(negative_tasks), chunk_size):
+            chunk = negative_tasks[i:i+chunk_size]
+            results = list(executor.map(_generate_one_sample, chunk))
+            for r in results:
+                if r and not r['has_crossing'] and len(negative_samples) < target_negative:
+                    negative_samples.append(r)
+            print(f"  Negative: {len(negative_samples)}/{target_negative}")
+            if len(negative_samples) >= target_negative:
+                break
+    
+    all_samples = positive_samples + negative_samples
+    random.shuffle(all_samples)
+    
+    print(f"Generated {len(all_samples)} samples ({len(positive_samples)} pos, {len(negative_samples)} neg)")
+    return all_samples
+
+
+def train_crossing_detector(args):
+    """Train crossing detector from CLI."""
+    print("\n" + "=" * 60)
+    print("Crossing Detector Training")
+    print("=" * 60)
+    
+    # Setup device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        device = torch.device('xpu')
+    else:
+        device = torch.device('cpu')
+    print(f"Device: {device}")
+    
+    # Load annotations
+    db = CrossingDatabase.load(args.annotations)
+    print(f"Loaded {len(db.samples)} samples from {args.annotations}")
+    
+    # Find videos
+    video_paths = find_videos([args.videos] if os.path.exists(args.videos) else [])
+    print(f"Found {len(video_paths)} videos")
+    
+    # Generate training samples
+    print(f"\nGenerating {args.train} training samples...")
+    all_samples = generate_training_samples(db, video_paths, args.train, balance_ratio=0.5)
+    
+    # Split train/val (90/10)
+    val_size = max(1, len(all_samples) // 10)
+    train_samples = all_samples[val_size:]
+    val_samples = all_samples[:val_size]
+    print(f"Train: {len(train_samples)}, Val: {len(val_samples)}")
+    
+    # Create datasets and loaders
+    train_dataset = CrossingDataset(train_samples)
+    val_dataset = CrossingDataset(val_samples)
+    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, 
+                              num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, 
+                            num_workers=4, pin_memory=True)
+    
+    # Create model
+    print("\nInitializing MobileUNet model...")
+    model = MobileUNet(pretrained=True).to(device)
+    
+    # Weighted MSE loss
+    def weighted_mse_loss(pred, target, pos_weight=20.0):
+        weights = torch.ones_like(target)
+        weights[target > 0.1] = pos_weight
+        loss = weights * (pred - target) ** 2
+        return loss.mean()
+    
+    # Optimizer
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    
+    # Training loop
+    best_val_loss = float('inf')
+    print(f"\nStarting training for {args.epochs} epochs...")
+    print("-" * 60)
+    
+    for epoch in range(args.epochs):
+        # Training
+        model.train()
+        train_loss = 0.0
+        
+        for batch_idx, (images, masks) in enumerate(train_loader):
+            images = images.to(device)
+            masks = masks.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = weighted_mse_loss(outputs, masks)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+        
+        train_loss /= len(train_loader)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images = images.to(device)
+                masks = masks.to(device)
+                outputs = model(images)
+                loss = weighted_mse_loss(outputs, masks)
+                val_loss += loss.item()
+        
+        val_loss /= len(val_loader)
+        
+        # Update scheduler
+        scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Save best model
+        model_path = f"{args.model_name}_best.pth"
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), model_path)
+            save_marker = " *"
+        else:
+            save_marker = ""
+        
+        print(f"Epoch {epoch+1:3d}/{args.epochs} | Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {current_lr:.6f}{save_marker}")
+    
+    print("-" * 60)
+    print(f"Training complete! Best val loss: {best_val_loss:.6f}")
+    print(f"Model saved to: {model_path}")
 
 
 @dataclass
@@ -2046,14 +2430,30 @@ def find_videos(input_paths):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Crossing point annotation tool")
+    parser = argparse.ArgumentParser(description="Crossing point annotation and training tool")
     parser.add_argument("videos", nargs="*", help="Video files or directories")
     parser.add_argument("--annotations", "-a", default="cross_annotations.json", help="Annotations file")
     parser.add_argument("--patch-size", type=int, default=400, help="Patch size (default: 400)")
     parser.add_argument("--model", default="cross_net_v1_best.pth", help="Model file for inference")
     
+    # Training arguments
+    parser.add_argument("--train", type=int, default=None, 
+                        help="Number of samples to generate for training (enables training mode)")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--model-name", default="cross_net", help="Model name (saves as {name}_best.pth)")
+    parser.add_argument("--videos-dir", default="videos", help="Videos directory for training")
+    
     args = parser.parse_args()
     
+    # Training mode
+    if args.train is not None:
+        args.videos = args.videos_dir
+        train_crossing_detector(args)
+        return
+    
+    # GUI mode
     video_inputs = args.videos
     if not video_inputs:
         if os.path.exists("videos"):
