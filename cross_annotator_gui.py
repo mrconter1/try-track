@@ -228,7 +228,7 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
     aug_params = {}
     
     for attempt in range(max_attempts):
-        zoom = random.uniform(0.75, 2.0)
+        zoom = random.uniform(0.5, 2.0)
         angle = random.uniform(-180, 180)
         stretch_x, stretch_y = random.uniform(0.9, 1.1), random.uniform(0.9, 1.1)
         
@@ -1056,7 +1056,7 @@ class CrossingAnnotator:
         aug_frame.pack(fill=tk.X, pady=(0, 10))
         
         ttk.Label(aug_frame, text="Geometric:").pack(anchor="w")
-        ttk.Label(aug_frame, text="  • Zoom: 0.75-2.0x").pack(anchor="w")
+        ttk.Label(aug_frame, text="  • Zoom: 0.5-2.0x").pack(anchor="w")
         ttk.Label(aug_frame, text="  • Rotation: -180° to 180°").pack(anchor="w")
         ttk.Label(aug_frame, text="  • Perspective warp").pack(anchor="w")
         ttk.Label(aug_frame, text="  • H/V flip: 50%").pack(anchor="w")
