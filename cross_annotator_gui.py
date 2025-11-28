@@ -318,6 +318,7 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5):
     
     def load_frame(args):
         video_path, frame_idx = args
+        original_path = video_path
         # Resolve relative path
         if not os.path.isabs(video_path):
             for vp in video_paths:
@@ -325,12 +326,17 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5):
                     video_path = vp
                     break
         cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"  Warning: Could not open video: {os.path.basename(video_path)}")
+            return None
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         cap.release()
         if ret and frame is not None:
-            return ((video_path, frame_idx), frame)
-        return None
+            return ((original_path, frame_idx), frame)
+        else:
+            print(f"  Warning: Could not read frame {frame_idx} from: {os.path.basename(video_path)}")
+            return None
     
     frame_cache = {}
     num_workers = min(multiprocessing.cpu_count(), 8)
