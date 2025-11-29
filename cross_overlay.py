@@ -15,15 +15,17 @@ from cross_annotator_gui import MobileUNet, MobileUNetV3Small, MobileUNetV3Large
 
 
 class CrossingOverlay:
-    def __init__(self, model_path, window_size=480, opacity=0.5):
+    def __init__(self, model_path, window_size=480, opacity=0.5, scale=0.5):
         self.window_size = window_size
         self.opacity = opacity
+        self.scale = scale  # Downscale factor for faster inference
         self.running = True
         self.paused = False
         
         # Load model
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
+        print(f"Inference scale: {scale} ({int(window_size*scale)}x{int(window_size*scale)})")
         self.model = self._load_model(model_path)
         
         # Screen capture
@@ -171,6 +173,13 @@ class CrossingOverlay:
     
     def _run_inference(self, img):
         """Run model inference."""
+        orig_h, orig_w = img.shape[:2]
+        
+        # Downscale for faster inference
+        if self.scale < 1.0:
+            new_h, new_w = int(orig_h * self.scale), int(orig_w * self.scale)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
         h, w = img.shape[:2]
         
         pad_h = (32 - h % 32) % 32
@@ -192,6 +201,10 @@ class CrossingOverlay:
         
         if pad_h > 0 or pad_w > 0:
             heatmap = heatmap[:h, :w]
+        
+        # Upscale heatmap back to original size
+        if self.scale < 1.0:
+            heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
             
         return heatmap
     
@@ -274,12 +287,14 @@ def main():
     parser.add_argument('--model', type=str, required=True, help='Path to model .pth file')
     parser.add_argument('--size', type=int, default=480, help='Window size (default: 480)')
     parser.add_argument('--opacity', type=float, default=0.5, help='Overlay opacity (default: 0.5)')
+    parser.add_argument('--scale', type=float, default=0.5, help='Inference scale factor for speed (default: 0.5)')
     args = parser.parse_args()
     
     overlay = CrossingOverlay(
         model_path=args.model,
         window_size=args.size,
-        opacity=args.opacity
+        opacity=args.opacity,
+        scale=args.scale
     )
     overlay.run()
 
