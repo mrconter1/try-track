@@ -24,11 +24,12 @@ class CrossingOverlayClient:
         self.scale = scale
         self.running = True
         
+        # New settings
+        self.mode = "heatmap"  # or "points"
+        self.threshold = 0.5
+        
         print(f"Server URL: {self.server_url}")
         print(f"Capture: {width}x{height}")
-        
-        # Screen capture (created per-thread)
-        self.sct = None
         
         # Persistent Session for Keep-Alive
         self.session = requests.Session()
@@ -98,10 +99,22 @@ class CrossingOverlayClient:
         # Bindings
         self.capture_frame.bind('<Escape>', lambda e: self._quit())
         self.result_window.bind('<Escape>', lambda e: self._quit())
+        
+        # Opacity
         self.capture_frame.bind('<Up>', lambda e: self._adjust_opacity(0.1))
         self.capture_frame.bind('<Down>', lambda e: self._adjust_opacity(-0.1))
         self.result_window.bind('<Up>', lambda e: self._adjust_opacity(0.1))
         self.result_window.bind('<Down>', lambda e: self._adjust_opacity(-0.1))
+        
+        # Threshold (Left/Right)
+        self.capture_frame.bind('<Left>', lambda e: self._adjust_threshold(-0.05))
+        self.capture_frame.bind('<Right>', lambda e: self._adjust_threshold(0.05))
+        self.result_window.bind('<Left>', lambda e: self._adjust_threshold(-0.05))
+        self.result_window.bind('<Right>', lambda e: self._adjust_threshold(0.05))
+        
+        # Mode switch (M)
+        self.capture_frame.bind('<m>', lambda e: self._toggle_mode())
+        self.result_window.bind('<m>', lambda e: self._toggle_mode())
         
         # Handle window close
         self.capture_frame.protocol("WM_DELETE_WINDOW", self._quit)
@@ -112,31 +125,71 @@ class CrossingOverlayClient:
     def _adjust_opacity(self, delta):
         self.opacity = max(0.1, min(1.0, self.opacity + delta))
         self._update_status()
+        
+    def _adjust_threshold(self, delta):
+        self.threshold = max(0.0, min(1.0, self.threshold + delta))
+        self._update_status()
+        
+    def _toggle_mode(self):
+        self.mode = "points" if self.mode == "heatmap" else "heatmap"
+        self._update_status()
     
     def _update_status(self):
-        self.status_var.set(f"FPS: {self.fps:.1f} | Latency: {self.latency:.0f}ms | Opacity: {self.opacity:.1f}")
+        self.status_var.set(f"FPS: {self.fps:.1f} | Lat: {self.latency:.0f}ms | Mode: {self.mode} | Thresh: {self.threshold:.2f}")
     
     def _quit(self):
         self.running = False
         self.root.destroy()
+        
+    def _find_peaks(self, heatmap, threshold):
+        """Find local maxima above threshold."""
+        # Simple thresholding + contours for blob centers
+        # Convert heatmap (0-255) to binary mask
+        thresh_val = int(threshold * 255)
+        _, binary = cv2.threshold(heatmap, thresh_val, 255, cv2.THRESH_BINARY)
+        
+        points = []
+        if cv2.countNonZero(binary) > 0:
+            # Find contours
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours:
+                M = cv2.moments(cnt)
+                if M["m00"] > 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    points.append((cx, cy))
+        return points
     
     def _create_overlay_image(self, img, heatmap):
-        """Blend original image with green heatmap overlay."""
+        """Blend original image with overlay based on mode."""
         h, w = img.shape[:2]
-        
         if heatmap.shape != (h, w):
             heatmap = cv2.resize(heatmap, (w, h))
         
-        # Heatmap is now uint8 (0-255)
-        intensity = heatmap.astype(float) / 255.0
+        result = img.copy()
         
-        overlay = np.zeros_like(img)
-        overlay[:, :, 1] = 255  # Green channel
-        
-        blend_factor = (intensity * self.opacity)[:, :, np.newaxis]
-        result = img * (1 - blend_factor) + overlay * blend_factor
-        result = np.clip(result, 0, 255).astype(np.uint8)
-        
+        if self.mode == "heatmap":
+            # Heatmap is uint8 (0-255)
+            intensity = heatmap.astype(float) / 255.0
+            
+            overlay = np.zeros_like(img)
+            overlay[:, :, 1] = 255  # Green channel
+            
+            blend_factor = (intensity * self.opacity)[:, :, np.newaxis]
+            result = img * (1 - blend_factor) + overlay * blend_factor
+            result = np.clip(result, 0, 255).astype(np.uint8)
+            
+        else: # Points mode
+            points = self._find_peaks(heatmap, self.threshold)
+            
+            # Darken background slightly to make points pop
+            result = cv2.addWeighted(result, 0.7, np.zeros_like(result), 0.3, 0)
+            
+            for (cx, cy) in points:
+                # Draw red circle with crosshair
+                cv2.circle(result, (cx, cy), 10, (0, 0, 255), 2)
+                cv2.drawMarker(result, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
+                
         return result
 
     def _process_loop(self):
@@ -144,7 +197,7 @@ class CrossingOverlayClient:
         sct = mss.mss()
         frame_count = 0
         
-        # Pre-allocate monitoring dict to avoid dict creation overhead
+        # Pre-allocate monitoring dict
         monitor = {"left": 0, "top": 0, "width": self.width - 2, "height": self.height - 2}
         
         while self.running:
@@ -164,14 +217,13 @@ class CrossingOverlayClient:
                 img_bgra = np.array(screenshot)
                 img_rgb = cv2.cvtColor(img_bgra[:, :, :3], cv2.COLOR_BGR2RGB)
                 
-                # Encode to JPG for sending (Compress input too!)
-                # Quality 75 is a good tradeoff
+                # Encode to JPG for sending
                 _, img_encoded = cv2.imencode('.jpg', img_rgb, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 img_bytes = img_encoded.tobytes()
                 
                 t1 = time.time()
                 
-                # Send to server using Session for Keep-Alive
+                # Send to server using Session
                 files = {'file': ('image.jpg', img_bytes, 'image/jpeg')}
                 try:
                     response = self.session.post(self.server_url, files=files, timeout=2.0)
@@ -179,7 +231,7 @@ class CrossingOverlayClient:
                     if response.status_code == 200:
                         t2 = time.time()
                         
-                        # Decode response (heatmap is now a JPG image, not npy bytes)
+                        # Decode response
                         heatmap_arr = np.frombuffer(response.content, np.uint8)
                         heatmap = cv2.imdecode(heatmap_arr, cv2.IMREAD_GRAYSCALE)
                         
@@ -187,7 +239,7 @@ class CrossingOverlayClient:
                             print("Error decoding heatmap")
                             continue
 
-                        # Create overlay
+                        # Create overlay (uses current self.mode/threshold)
                         result = self._create_overlay_image(img_rgb, heatmap)
                         
                         t3 = time.time()
@@ -254,6 +306,8 @@ class CrossingOverlayClient:
     def run(self):
         print("\nControls:")
         print("  Up/Down   - Adjust opacity")
+        print("  Left/Right- Adjust threshold")
+        print("  M         - Toggle mode (Heatmap/Points)")
         print("  Escape    - Quit")
         self.root.mainloop()
 
