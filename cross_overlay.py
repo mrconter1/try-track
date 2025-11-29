@@ -69,6 +69,7 @@ class CrossingOverlay:
         self.capture_frame.title("Capture Region (drag me)")
         self.capture_frame.geometry(f"{self.window_size}x{self.window_size}+100+100")
         self.capture_frame.attributes('-topmost', True)
+        self.capture_frame.resizable(False, False)
         
         # Make window transparent
         self.capture_frame.attributes('-transparentcolor', 'magenta')
@@ -85,40 +86,35 @@ class CrossingOverlay:
         # Right border
         tk.Frame(self.capture_frame, bg='lime', width=border).place(relx=1, x=-border, y=0, relheight=1)
         
-        # Small label in corner
-        self.capture_label = tk.Label(self.capture_frame, text="SPACE=capture C=continuous", 
-                                       bg='lime', fg='black', font=('Consolas', 9))
-        self.capture_label.place(x=border, y=border)
-        
         # Result window
         self.result_window = tk.Toplevel(self.root)
         self.result_window.title("Detection Result")
         self.result_window.geometry(f"{self.window_size}x{self.window_size}+{100 + self.window_size + 20}+100")
+        self.result_window.attributes('-topmost', True)
+        self.result_window.resizable(False, False)
         
         self.result_canvas = tk.Canvas(self.result_window, width=self.window_size, height=self.window_size, bg='black')
         self.result_canvas.pack(fill=tk.BOTH, expand=True)
         self.result_image = None
         
         # Status
-        self.status_var = tk.StringVar(value="Ready | Opacity: 0.5")
+        self.status_var = tk.StringVar(value="FPS: 0.0 | Opacity: 0.5")
         self.status_label = tk.Label(self.result_window, textvariable=self.status_var,
                                       bg='black', fg='lime', font=('Consolas', 9))
         self.status_label.place(x=5, y=5)
         
         # Bindings
-        self.capture_frame.bind('<space>', lambda e: self._capture_and_process())
-        self.result_window.bind('<space>', lambda e: self._capture_and_process())
         self.capture_frame.bind('<Escape>', lambda e: self._quit())
         self.result_window.bind('<Escape>', lambda e: self._quit())
         self.capture_frame.bind('<Up>', lambda e: self._adjust_opacity(0.1))
         self.capture_frame.bind('<Down>', lambda e: self._adjust_opacity(-0.1))
         self.result_window.bind('<Up>', lambda e: self._adjust_opacity(0.1))
         self.result_window.bind('<Down>', lambda e: self._adjust_opacity(-0.1))
-        self.capture_frame.bind('<c>', lambda e: self._toggle_continuous())
-        self.result_window.bind('<c>', lambda e: self._toggle_continuous())
         
-        # Continuous mode
-        self.continuous = False
+        # Continuous mode (default on)
+        self.continuous = True
+        self.last_time = None
+        self.fps = 0
         self.root.after(100, self._update_loop)
         
         # Handle window close
@@ -128,18 +124,9 @@ class CrossingOverlay:
     def _adjust_opacity(self, delta):
         self.opacity = max(0.1, min(1.0, self.opacity + delta))
         self._update_status()
-        
-    def _toggle_continuous(self):
-        self.continuous = not self.continuous
-        self._update_status()
-        if self.continuous:
-            self.capture_label.config(text="[CONTINUOUS] C=stop")
-        else:
-            self.capture_label.config(text="SPACE=capture C=continuous")
     
     def _update_status(self):
-        mode = "Continuous" if self.continuous else "Ready"
-        self.status_var.set(f"{mode} | Opacity: {self.opacity:.1f}")
+        self.status_var.set(f"FPS: {self.fps:.1f} | Opacity: {self.opacity:.1f}")
     
     def _quit(self):
         self.running = False
@@ -210,7 +197,10 @@ class CrossingOverlay:
     
     def _capture_and_process(self):
         """Capture screen and run detection."""
+        import time
         try:
+            start_time = time.time()
+            
             img = self._capture_screen()
             heatmap = self._run_inference(img)
             result = self._create_overlay_image(img, heatmap)
@@ -224,6 +214,12 @@ class CrossingOverlay:
                 self.result_image = self.result_canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
             else:
                 self.result_canvas.itemconfig(self.result_image, image=self.photo)
+            
+            # Calculate FPS
+            elapsed = time.time() - start_time
+            if elapsed > 0:
+                self.fps = 1.0 / elapsed
+                self._update_status()
                 
         except Exception as e:
             print(f"Error: {e}")
@@ -235,19 +231,16 @@ class CrossingOverlay:
         if not self.running:
             return
         
-        if self.continuous:
-            self._capture_and_process()
+        self._capture_and_process()
         
-        self.root.after(100, self._update_loop)
+        self.root.after(10, self._update_loop)
     
     def run(self):
         """Start the application."""
         print("\nControls:")
-        print("  Space     - Capture & detect")
-        print("  C         - Toggle continuous mode")
         print("  Up/Down   - Adjust opacity")
         print("  Escape    - Quit")
-        print("\nDrag the green frame over content, press SPACE to capture.")
+        print("\nDrag the green frame over content to analyze.")
         print()
         self.root.mainloop()
 
