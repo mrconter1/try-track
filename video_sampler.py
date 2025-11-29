@@ -156,6 +156,10 @@ def main():
     print("\nControls: R = new random frames, ESC = quit")
     
     while True:
+        # Check if window is still open
+        if cv2.getWindowProperty("Video Sampler", cv2.WND_PROP_VISIBLE) < 1:
+            break
+
         # Check for updates
         try:
             sampler.queue.get_nowait()
@@ -165,10 +169,6 @@ def main():
             
         grid = sampler.get_display_image()
         cv2.imshow("Video Sampler", grid)
-        
-        # Check if window was closed by user
-        if cv2.getWindowProperty("Video Sampler", cv2.WND_PROP_VISIBLE) < 1:
-            break
         
         key = cv2.waitKey(50) & 0xFF
         
