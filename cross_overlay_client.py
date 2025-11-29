@@ -26,7 +26,7 @@ class CrossingOverlayClient:
         self.running = True
         
         # Settings
-        self.mode = "quads"  # "heatmap", "points", "quads", "topdown"
+        self.mode = "grid"  # "heatmap", "points", "quads", "topdown", "grid"
         self.threshold = 0.1
         
         print(f"Server URL: {self.server_url}")
@@ -115,7 +115,7 @@ class CrossingOverlayClient:
         self._update_status()
         
     def _toggle_mode(self):
-        modes = ["heatmap", "points", "quads", "topdown"]
+        modes = ["heatmap", "points", "quads", "topdown", "grid"]
         current_idx = modes.index(self.mode)
         self.mode = modes[(current_idx + 1) % len(modes)]
         self._update_status()
@@ -126,6 +126,87 @@ class CrossingOverlayClient:
     def _quit(self):
         self.running = False
         self.root.destroy()
+
+    def _compute_robust_homography(self, quads):
+        """Compute H using aggregated vanishing points from all quads."""
+        if not quads: return None
+        
+        lines_h = [] 
+        lines_v = [] 
+        
+        for q in quads:
+            pts = np.array(q, dtype=np.float32)
+            lines_h.append((pts[0], pts[1]))
+            lines_h.append((pts[3], pts[2]))
+            lines_v.append((pts[0], pts[3]))
+            lines_v.append((pts[1], pts[2]))
+            
+        def intersect(l1, l2):
+            p1, p2 = l1
+            p3, p4 = l2
+            x1, y1 = p1
+            x2, y2 = p2
+            x3, y3 = p3
+            x4, y4 = p4
+            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(denom) < 1e-6: return None 
+            px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
+            py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
+            return np.array([px, py], dtype=np.float32)
+
+        def get_vp_center(lines):
+            intersections = []
+            if len(lines) < 2: return None
+            for _ in range(20): 
+                idx1, idx2 = np.random.choice(len(lines), 2, replace=False)
+                vp = intersect(lines[idx1], lines[idx2])
+                if vp is not None:
+                    if np.linalg.norm(vp) > 1e6: continue 
+                    intersections.append(vp)
+            
+            if not intersections: return None
+            pts = np.array(intersections)
+            median = np.median(pts, axis=0)
+            dists = np.linalg.norm(pts - median, axis=1)
+            valid_pts = pts[dists < np.median(dists) * 2 + 100] 
+            if len(valid_pts) == 0: return median
+            return np.mean(valid_pts, axis=0)
+
+        vp_h = get_vp_center(lines_h)
+        vp_v = get_vp_center(lines_v)
+        
+        if vp_h is None or vp_v is None: return None
+
+        vh = np.append(vp_h, 1)
+        vv = np.append(vp_v, 1)
+        l_inf = np.cross(vh, vv)
+        l_inf = l_inf / l_inf[2] 
+        
+        H_rect = np.array([
+            [1, 0, 0],
+            [0, 1, 0],
+            [l_inf[0], l_inf[1], l_inf[2]]
+        ], dtype=np.float32)
+        
+        # Find best quad to fix affine scale
+        best_quad = None
+        max_area = 0
+        for q in quads:
+            pts = np.array(q, np.float32)
+            area = cv2.contourArea(pts)
+            if area > max_area:
+                max_area = area
+                best_quad = pts
+                
+        if best_quad is None: return None
+        
+        rect_quad = cv2.perspectiveTransform(best_quad.reshape(1, -1, 2), H_rect).reshape(-1, 2)
+        # Map best quad to standard square 100x100
+        dst_sq = np.array([[0,0], [100,0], [100,100], [0,100]], dtype=np.float32)
+        H_affine, _ = cv2.findHomography(rect_quad, dst_sq)
+        
+        H_full = np.dot(H_affine, H_rect)
+        return H_full, best_quad
 
     def _create_overlay_image(self, img, response_data, request_mode):
         """Blend original image with overlay based on mode and server response."""
@@ -149,12 +230,11 @@ class CrossingOverlayClient:
                 result = img * (1 - blend_factor) + overlay * blend_factor
                 result = np.clip(result, 0, 255).astype(np.uint8)
                 
-        elif request_mode in ["points", "quads", "topdown"]:
+        elif request_mode in ["points", "quads", "topdown", "grid"]:
             try:
                 data = json.loads(response_data)
                 
-                # Draw points/quads if available
-                if request_mode != "topdown":
+                if request_mode not in ["topdown", "grid"]:
                     points = data.get("points", [])
                     result = cv2.addWeighted(result, 0.7, np.zeros_like(result), 0.3, 0)
                     for p in points:
@@ -173,33 +253,76 @@ class CrossingOverlayClient:
                     cv2.addWeighted(overlay, 0.3, result, 0.7, 0, result)
                 
                 elif request_mode == "topdown":
-                    # Use Server-computed Homography
                     h_list = data.get("h")
-                    
                     if h_list is not None:
                         H = np.array(h_list, dtype=np.float32)
                         h, w = img.shape[:2]
-                        
-                        # Center the view based on SCREEN center
                         screen_center = np.array([[[w/2, h/2]]], dtype=np.float32)
                         center_transformed = cv2.perspectiveTransform(screen_center, H)
                         cx, cy = center_transformed[0][0]
-                        
                         tx = w/2 - cx
                         ty = h/2 - cy
                         T = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]], dtype=np.float32)
                         H_final = np.dot(T, H)
-                        
                         result = cv2.warpPerspective(img, H_final, (w, h))
                         cv2.circle(result, (w//2, h//2), 5, (0, 255, 0), -1)
-                    
+                
+                elif request_mode == "grid":
+                    quads = data.get("quads", [])
+                    if quads:
+                        # Calculate locally
+                        res = self._compute_robust_homography(quads)
+                        
+                        if res is not None:
+                            H, best_quad = res
+                            H_inv = np.linalg.inv(H)
+                            
+                            # Draw projected grid
+                            grid_sz = 8
+                            overlay = result.copy()
+                            
+                            # Find anchor center in world space (should be roughly 50,50 in unit square terms)
+                            # Actually best_quad was mapped to 0,0 -> 100,100
+                            # So grid should be aligned to 100s
+                            
+                            # Draw vertical lines
+                            for i in range(-grid_sz, grid_sz+2):
+                                x = i * 100
+                                pt1 = np.array([x, -grid_sz*100, 1]).reshape(3, 1)
+                                pt2 = np.array([x, (grid_sz+1)*100, 1]).reshape(3, 1)
+                                
+                                p1_t = np.dot(H_inv, pt1)
+                                p1_t = (p1_t / p1_t[2])[:2].flatten().astype(int)
+                                p2_t = np.dot(H_inv, pt2)
+                                p2_t = (p2_t / p2_t[2])[:2].flatten().astype(int)
+                                cv2.line(overlay, tuple(p1_t), tuple(p2_t), (255, 0, 255), 2)
+                                
+                            # Draw horizontal lines
+                            for i in range(-grid_sz, grid_sz+2):
+                                y = i * 100
+                                pt1 = np.array([-grid_sz*100, y, 1]).reshape(3, 1)
+                                pt2 = np.array([(grid_sz+1)*100, y, 1]).reshape(3, 1)
+                                
+                                p1_t = np.dot(H_inv, pt1)
+                                p1_t = (p1_t / p1_t[2])[:2].flatten().astype(int)
+                                p2_t = np.dot(H_inv, pt2)
+                                p2_t = (p2_t / p2_t[2])[:2].flatten().astype(int)
+                                cv2.line(overlay, tuple(p1_t), tuple(p2_t), (255, 0, 255), 2)
+                                
+                            cv2.addWeighted(overlay, 0.5, result, 0.5, 0, result)
+                            
+                            # Highlight Anchor
+                            cv2.polylines(result, [np.int32(best_quad)], True, (0, 255, 0), 3)
+
             except Exception as e:
+                print(e)
                 pass
 
         return result
 
     def _process_loop(self):
         """Background thread for capture and server request."""
+        print("Process loop started!")
         sct = mss.mss()
         frame_count = 0
         monitor = {"left": 0, "top": 0, "width": self.width - 2, "height": self.height - 2}
@@ -223,14 +346,21 @@ class CrossingOverlayClient:
                 t1 = time.time()
                 
                 request_mode = self.mode
-                # Map 'topdown' to 'homography' for server
-                server_mode = "homography" if request_mode == "topdown" else request_mode
+                # Map local modes to server modes
+                if request_mode == "topdown":
+                    server_mode = "homography"
+                elif request_mode == "grid":
+                    server_mode = "quads" # We need quads to compute grid locally
+                else:
+                    server_mode = request_mode
                 
                 files = {'file': ('image.jpg', img_bytes, 'image/jpeg')}
                 data = {'mode': server_mode, 'threshold': self.threshold}
                 
+                print(f"Sending request... mode={server_mode}")
                 try:
-                    response = self.session.post(self.server_url, files=files, data=data, timeout=2.0)
+                    response = self.session.post(self.server_url, files=files, data=data, timeout=10.0)
+                    print(f"Response: {response.status_code}")
                     
                     if response.status_code == 200:
                         t2 = time.time()
@@ -242,9 +372,7 @@ class CrossingOverlayClient:
                         net_ms = (t2 - t1) * 1000
                         fps = 1000.0 / total_ms if total_ms > 0 else 0
                         
-                        if frame_count % 60 == 0:
-                            print(f"FPS: {fps:.1f} | Net: {net_ms:.0f}ms")
-                        frame_count += 1
+                        print(f"Putting in queue... fps={fps:.1f}")
                         
                         try:
                             self.result_queue.put_nowait((result, fps, total_ms))
@@ -252,9 +380,11 @@ class CrossingOverlayClient:
                             pass
                     else:
                         time.sleep(0.5)
-                except requests.exceptions.RequestException:
+                except requests.exceptions.RequestException as e:
+                    print(f"Request error: {e}")
                     time.sleep(1.0)
-            except Exception:
+            except Exception as e:
+                print(f"Loop error: {e}")
                 time.sleep(0.5)
     
     def _update_loop(self):
@@ -264,6 +394,7 @@ class CrossingOverlayClient:
             self.last_capture_pos = (self.capture_frame.winfo_x(), self.capture_frame.winfo_y())
         try:
             result, fps, latency = self.result_queue.get_nowait()
+            print(f"UI Update: Got frame, FPS={fps:.1f}")
             pil_img = Image.fromarray(result)
             pil_img = pil_img.resize((self.width, self.height), Image.Resampling.LANCZOS)
             self.photo = ImageTk.PhotoImage(pil_img)
@@ -275,13 +406,15 @@ class CrossingOverlayClient:
             self.latency = latency
             self._update_status()
         except queue.Empty: pass
+        except Exception as e:
+            print(f"UI Error: {e}")
         self.root.after(10, self._update_loop)
     
     def run(self):
         print("\nControls:")
         print("  Up/Down   - Adjust opacity")
         print("  Left/Right- Adjust threshold")
-        print("  M         - Toggle mode (Heatmap/Points/Quads/TopDown)")
+        print("  M         - Toggle mode (Heatmap/Points/Quads/TopDown/Grid)")
         print("  Escape    - Quit")
         self.root.mainloop()
 
@@ -291,15 +424,22 @@ def main():
     parser.add_argument('--width', type=int, default=480, help='Capture width (default: 480)')
     parser.add_argument('--height', type=int, default=640, help='Capture height (default: 640)')
     parser.add_argument('--opacity', type=float, default=1.0, help='Overlay opacity')
+    parser.add_argument('--scale', type=float, default=1.0, help='Capture scale (default: 1.0)')
     args = parser.parse_args()
     
     client = CrossingOverlayClient(
         server_url=args.server,
         width=args.width,
         height=args.height,
-        opacity=args.opacity
+        opacity=args.opacity,
+        scale=args.scale
     )
     client.run()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"Fatal Error: {e}")
+        import traceback
+        traceback.print_exc()

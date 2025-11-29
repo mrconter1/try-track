@@ -9,6 +9,8 @@ import torchvision.models as models
 import time
 import json
 import itertools
+import argparse
+import os
 
 # Define the model class (must match your trained model)
 class MobileUNet(nn.Module):
@@ -257,25 +259,11 @@ def compute_robust_homography(quads):
 # --- Server Setup ---
 
 app = FastAPI()
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
-
-model_path = "cross_net_224_best.pth"
-try:
-    model = MobileUNet(pretrained=False).to(device)
-    checkpoint = torch.load(model_path, map_location=device)
-    state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
-    model.load_state_dict(state_dict)
-    model.eval()
-    dummy = torch.zeros(1, 3, 480, 640).to(device)
-    model(dummy)
-    print(f"Model {model_path} loaded and warmed up!")
-except Exception as e:
-    print(f"Error loading model: {e}")
-
-mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
-std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
 request_count = 0
+model = None
+mean = None
+std = None
+device = None
 
 @app.get("/")
 def read_root():
@@ -362,4 +350,37 @@ async def predict(
     return Response(content=data, media_type=media_type)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=1111)
+    parser = argparse.ArgumentParser(description="Crossing Detector Server")
+    parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    parser.add_argument("--device", type=str, default="auto", help="Device to use (cuda/cpu)")
+    parser.add_argument("--model", type=str, default="cross_net_224_best.pth", help="Path to model checkpoint")
+    args = parser.parse_args()
+    
+    if args.device == "auto":
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(args.device)
+        
+    print(f"Using device: {device}")
+    
+    if not os.path.exists(args.model):
+        print(f"Error: Model file '{args.model}' not found.")
+        exit(1)
+        
+    try:
+        model = MobileUNet(pretrained=False).to(device)
+        checkpoint = torch.load(args.model, map_location=device)
+        state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
+        model.load_state_dict(state_dict)
+        model.eval()
+        dummy = torch.zeros(1, 3, 480, 640).to(device)
+        model(dummy)
+        print(f"Model {args.model} loaded and warmed up!")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        exit(1)
+        
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
+    
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
