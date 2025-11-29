@@ -55,39 +55,9 @@ class CrossingOverlay:
     def _load_model(self, model_path):
         """Load the trained model."""
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
-        
-        # Debug: show checkpoint structure
-        print(f"Checkpoint type: {type(checkpoint)}")
-        if isinstance(checkpoint, dict):
-            print(f"Checkpoint keys: {list(checkpoint.keys())}")
-        
         state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
         
-        # Debug: print first 10 keys
-        print(f"State dict keys (first 10):")
-        for i, k in enumerate(list(state_dict.keys())[:10]):
-            print(f"  {k}")
-        
-        # Count parameters
-        num_params = sum(p.numel() for p in state_dict.values())
-        print(f"Total parameters: {num_params:,}")
-        
-        # Create model
-        print("Using: MobileNetV2")
         model = MobileUNet(pretrained=False)
-        
-        # Check for key mismatches
-        model_keys = set(model.state_dict().keys())
-        loaded_keys = set(state_dict.keys())
-        missing = model_keys - loaded_keys
-        extra = loaded_keys - model_keys
-        if missing:
-            print(f"Missing keys ({len(missing)}): {list(missing)[:3]}...")
-        if extra:
-            print(f"Extra keys ({len(extra)}): {list(extra)[:3]}...")
-        if not missing and not extra:
-            print("All keys match!")
-        
         model.load_state_dict(state_dict)
         model.to(self.device)
         model.eval()
@@ -179,6 +149,8 @@ class CrossingOverlay:
         """Run model inference."""
         orig_h, orig_w = img.shape[:2]
         
+        t0 = time.time()
+        
         # Downscale for faster inference
         if self.scale < 1.0:
             new_h, new_w = int(orig_h * self.scale), int(orig_w * self.scale)
@@ -194,14 +166,21 @@ class CrossingOverlay:
         else:
             img_padded = img
         
+        t1 = time.time()
+        
         tensor = torch.from_numpy(img_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
         tensor = tensor.to(self.device)
         tensor = (tensor - self.mean) / self.std
         
+        t2 = time.time()
+        
         with torch.no_grad():
             output = self.model(tensor)
-            # Model uses MSE loss, outputs 0-1 directly, no sigmoid needed
-            heatmap = output.squeeze().cpu().numpy()
+        
+        t3 = time.time()
+        
+        # Model uses MSE loss, outputs 0-1 directly, no sigmoid needed
+        heatmap = output.squeeze().cpu().numpy()
         
         if pad_h > 0 or pad_w > 0:
             heatmap = heatmap[:h, :w]
@@ -209,6 +188,11 @@ class CrossingOverlay:
         # Upscale heatmap back to original size
         if self.scale < 1.0:
             heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        
+        t4 = time.time()
+        
+        # Print inference breakdown
+        print(f"  [Infer] Prep: {(t1-t0)*1000:.1f}ms | ToTensor: {(t2-t1)*1000:.1f}ms | Forward: {(t3-t2)*1000:.1f}ms | Post: {(t4-t3)*1000:.1f}ms")
             
         return heatmap
     
@@ -240,7 +224,7 @@ class CrossingOverlay:
         
         while self.running:
             try:
-                start_time = time.time()
+                t0 = time.time()
                 
                 # Get current capture position
                 with self.capture_lock:
@@ -252,16 +236,29 @@ class CrossingOverlay:
                 h = self.height - 2 * border
                 monitor = {"left": x + border, "top": y + 30, "width": w, "height": h}
                 screenshot = sct.grab(monitor)
+                t1 = time.time()
+                
                 img = np.array(screenshot)[:, :, :3]
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                t2 = time.time()
                 
                 # Run inference
                 heatmap = self._run_inference(img)
-                result = self._create_overlay_image(img, heatmap)
+                t3 = time.time()
                 
-                # Calculate FPS
-                elapsed = time.time() - start_time
-                fps = 1.0 / elapsed if elapsed > 0 else 0
+                result = self._create_overlay_image(img, heatmap)
+                t4 = time.time()
+                
+                # Calculate times
+                capture_ms = (t1 - t0) * 1000
+                convert_ms = (t2 - t1) * 1000
+                infer_ms = (t3 - t2) * 1000
+                overlay_ms = (t4 - t3) * 1000
+                total_ms = (t4 - t0) * 1000
+                fps = 1000.0 / total_ms if total_ms > 0 else 0
+                
+                # Print profiling every frame
+                print(f"Capture: {capture_ms:.1f}ms | Convert: {convert_ms:.1f}ms | Infer: {infer_ms:.1f}ms | Overlay: {overlay_ms:.1f}ms | Total: {total_ms:.1f}ms ({fps:.1f} FPS)")
                 
                 # Put result in queue (non-blocking, drop old frames)
                 try:
