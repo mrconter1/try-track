@@ -14,6 +14,7 @@ import queue
 import time
 import requests
 import io
+import itertools
 
 class CrossingOverlayClient:
     def __init__(self, server_url, width=480, height=640, opacity=1.0, scale=1.0):
@@ -25,7 +26,7 @@ class CrossingOverlayClient:
         self.running = True
         
         # New settings
-        self.mode = "heatmap"  # or "points"
+        self.mode = "heatmap"  # "heatmap", "points", "quads"
         self.threshold = 0.5
         
         print(f"Server URL: {self.server_url}")
@@ -131,7 +132,9 @@ class CrossingOverlayClient:
         self._update_status()
         
     def _toggle_mode(self):
-        self.mode = "points" if self.mode == "heatmap" else "heatmap"
+        modes = ["heatmap", "points", "quads"]
+        current_idx = modes.index(self.mode)
+        self.mode = modes[(current_idx + 1) % len(modes)]
         self._update_status()
     
     def _update_status(self):
@@ -143,14 +146,11 @@ class CrossingOverlayClient:
         
     def _find_peaks(self, heatmap, threshold):
         """Find local maxima above threshold."""
-        # Simple thresholding + contours for blob centers
-        # Convert heatmap (0-255) to binary mask
         thresh_val = int(threshold * 255)
         _, binary = cv2.threshold(heatmap, thresh_val, 255, cv2.THRESH_BINARY)
         
         points = []
         if cv2.countNonZero(binary) > 0:
-            # Find contours
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
                 M = cv2.moments(cnt)
@@ -159,7 +159,96 @@ class CrossingOverlayClient:
                     cy = int(M["m01"] / M["m00"])
                     points.append((cx, cy))
         return points
-    
+
+    def _is_convex(self, pts):
+        """Check if 4 points form a convex polygon."""
+        # Must be ordered first (e.g., clockwise)
+        # 1. Compute centroid
+        center = np.mean(pts, axis=0)
+        # 2. Sort by angle from centroid
+        sorted_pts = sorted(pts, key=lambda p: np.arctan2(p[1]-center[1], p[0]-center[0]))
+        
+        # 3. Check cross products
+        def cross_product(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+        cp_signs = []
+        for i in range(4):
+            p1 = sorted_pts[i]
+            p2 = sorted_pts[(i + 1) % 4]
+            p3 = sorted_pts[(i + 2) % 4]
+            cp = cross_product(p1, p2, p3)
+            cp_signs.append(np.sign(cp))
+            
+        # If all cross products have same sign (and not 0), it's convex
+        return all(s > 0 for s in cp_signs) or all(s < 0 for s in cp_signs), sorted_pts
+
+    def _check_quad_constraints(self, quad_pts, all_points, margin=5):
+        """
+        Check:
+        1. Convexity
+        2. Corner angles >= 60 degrees
+        3. No other points inside/near border
+        """
+        is_conv, ordered_pts = self._is_convex(quad_pts)
+        if not is_conv:
+            return False, []
+            
+        # Check angles
+        for i in range(4):
+            p1 = np.array(ordered_pts[i-1])
+            p2 = np.array(ordered_pts[i])
+            p3 = np.array(ordered_pts[(i+1)%4])
+            
+            v1 = p1 - p2
+            v2 = p3 - p2
+            
+            # Normalize
+            l1 = np.linalg.norm(v1)
+            l2 = np.linalg.norm(v2)
+            if l1 == 0 or l2 == 0: return False, []
+            
+            angle = np.degrees(np.arccos(np.clip(np.dot(v1, v2) / (l1 * l2), -1.0, 1.0)))
+            if angle < 75 or angle > 105: # Strict "squarish" check
+                return False, []
+
+        # Check for points inside
+        # Create a slightly smaller polygon for "inside" check to allow points ON corners
+        poly_contour = np.array(ordered_pts, dtype=np.int32)
+        
+        # Margin check: Points shouldn't be too close to edges unless they are the corners
+        # This is expensive, so simplified: Check if any other point is inside
+        
+        for p in all_points:
+            # Skip if point is one of the corners
+            if any(np.array_equal(p, c) for c in quad_pts):
+                continue
+                
+            dist = cv2.pointPolygonTest(poly_contour, (float(p[0]), float(p[1])), True)
+            if dist > -margin: # Inside or within margin distance outside
+                return False, []
+                
+        return True, ordered_pts
+
+    def _find_quads(self, points):
+        """Find valid quads from points."""
+        if len(points) < 4:
+            return []
+            
+        # Limit points to avoid explosion (max 20 strongest/detected)
+        # Since we don't have strength here easily without re-parsing heatmap, 
+        # we just take first 25 found.
+        search_points = points[:25] 
+        
+        valid_quads = []
+        
+        for quad_combo in itertools.combinations(search_points, 4):
+            is_valid, ordered_pts = self._check_quad_constraints(quad_combo, points)
+            if is_valid:
+                valid_quads.append(ordered_pts)
+                
+        return valid_quads
+
     def _create_overlay_image(self, img, heatmap):
         """Blend original image with overlay based on mode."""
         h, w = img.shape[:2]
@@ -169,61 +258,64 @@ class CrossingOverlayClient:
         result = img.copy()
         
         if self.mode == "heatmap":
-            # Heatmap is uint8 (0-255)
             intensity = heatmap.astype(float) / 255.0
-            
             overlay = np.zeros_like(img)
-            overlay[:, :, 1] = 255  # Green channel
-            
+            overlay[:, :, 1] = 255
             blend_factor = (intensity * self.opacity)[:, :, np.newaxis]
             result = img * (1 - blend_factor) + overlay * blend_factor
             result = np.clip(result, 0, 255).astype(np.uint8)
             
-        else: # Points mode
+        elif self.mode == "points":
             points = self._find_peaks(heatmap, self.threshold)
-            
-            # Darken background slightly to make points pop
             result = cv2.addWeighted(result, 0.7, np.zeros_like(result), 0.3, 0)
-            
             for (cx, cy) in points:
-                # Draw red circle with crosshair
-                cv2.circle(result, (cx, cy), 10, (0, 0, 255), 2)
-                cv2.drawMarker(result, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
+                cv2.circle(result, (cx, cy), 8, (0, 0, 255), 2)
+                cv2.drawMarker(result, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 8, 2)
                 
+        elif self.mode == "quads":
+            points = self._find_peaks(heatmap, self.threshold)
+            quads = self._find_quads(points)
+            
+            # Draw quads
+            overlay = result.copy()
+            for q in quads:
+                pts = np.array(q, np.int32).reshape((-1, 1, 2))
+                cv2.fillPoly(overlay, [pts], (255, 255, 0)) # Cyan filled
+                cv2.polylines(result, [pts], True, (0, 255, 255), 2) # Yellow border
+                
+            # Blend fill
+            cv2.addWeighted(overlay, 0.3, result, 0.7, 0, result)
+            
+            # Draw corner points too for reference
+            for (cx, cy) in points:
+                cv2.circle(result, (cx, cy), 4, (0, 0, 255), -1)
+
         return result
 
     def _process_loop(self):
         """Background thread for capture and server request."""
         sct = mss.mss()
         frame_count = 0
-        
-        # Pre-allocate monitoring dict
         monitor = {"left": 0, "top": 0, "width": self.width - 2, "height": self.height - 2}
         
         while self.running:
             try:
                 t0 = time.time()
                 
-                # Get position
                 with self.capture_lock:
                     x, y = self.last_capture_pos
-                
-                # Update monitor position
                 monitor["left"] = x + 1
                 monitor["top"] = y + 30
                 
-                # Capture
                 screenshot = sct.grab(monitor)
                 img_bgra = np.array(screenshot)
                 img_rgb = cv2.cvtColor(img_bgra[:, :, :3], cv2.COLOR_BGR2RGB)
                 
-                # Encode to JPG for sending
                 _, img_encoded = cv2.imencode('.jpg', img_rgb, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 img_bytes = img_encoded.tobytes()
                 
                 t1 = time.time()
                 
-                # Send to server using Session
                 files = {'file': ('image.jpg', img_bytes, 'image/jpeg')}
                 try:
                     response = self.session.post(self.server_url, files=files, timeout=2.0)
@@ -231,83 +323,58 @@ class CrossingOverlayClient:
                     if response.status_code == 200:
                         t2 = time.time()
                         
-                        # Decode response
                         heatmap_arr = np.frombuffer(response.content, np.uint8)
                         heatmap = cv2.imdecode(heatmap_arr, cv2.IMREAD_GRAYSCALE)
                         
-                        if heatmap is None:
-                            print("Error decoding heatmap")
-                            continue
+                        if heatmap is None: continue
 
-                        # Create overlay (uses current self.mode/threshold)
                         result = self._create_overlay_image(img_rgb, heatmap)
                         
                         t3 = time.time()
-                        
-                        # Metrics
                         total_ms = (t3 - t0) * 1000
                         net_ms = (t2 - t1) * 1000
                         fps = 1000.0 / total_ms if total_ms > 0 else 0
                         
-                        # Log occasionally
-                        frame_count += 1
                         if frame_count % 30 == 0:
                             print(f"Net: {net_ms:.0f}ms | Total: {total_ms:.0f}ms | FPS: {fps:.1f}")
+                        frame_count += 1
                         
                         try:
                             self.result_queue.put_nowait((result, fps, total_ms))
                         except queue.Full:
                             pass
-                            
                     else:
-                        print(f"Server error: {response.status_code}")
                         time.sleep(0.5)
-                        
-                except requests.exceptions.RequestException as e:
-                    print(f"Connection error: {e}")
+                except requests.exceptions.RequestException:
                     time.sleep(1.0)
-                    
-            except Exception as e:
-                print(f"Client error: {e}")
+            except Exception:
                 time.sleep(0.5)
     
     def _update_loop(self):
         """Main thread UI update."""
-        if not self.running:
-            return
-        
-        # Update capture position
+        if not self.running: return
         with self.capture_lock:
             self.last_capture_pos = (self.capture_frame.winfo_x(), self.capture_frame.winfo_y())
-        
-        # Check queue
         try:
             result, fps, latency = self.result_queue.get_nowait()
-            
             pil_img = Image.fromarray(result)
-            # Ensure it fits result window
             pil_img = pil_img.resize((self.width, self.height), Image.Resampling.LANCZOS)
             self.photo = ImageTk.PhotoImage(pil_img)
-            
             if self.result_image is None:
                 self.result_image = self.result_canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
             else:
                 self.result_canvas.itemconfig(self.result_image, image=self.photo)
-            
             self.fps = fps
             self.latency = latency
             self._update_status()
-            
-        except queue.Empty:
-            pass
-        
+        except queue.Empty: pass
         self.root.after(10, self._update_loop)
     
     def run(self):
         print("\nControls:")
         print("  Up/Down   - Adjust opacity")
         print("  Left/Right- Adjust threshold")
-        print("  M         - Toggle mode (Heatmap/Points)")
+        print("  M         - Toggle mode (Heatmap/Points/Quads)")
         print("  Escape    - Quit")
         self.root.mainloop()
 
