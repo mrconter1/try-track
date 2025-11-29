@@ -212,11 +212,10 @@ def check_quad_constraints(quad_pts, all_points, margin=5):
     
     # NEW: Parallelogram check - opposite angles should be similar
     # cos^2 values should be close for opposite corners
-    # |cos_sq_0 - cos_sq_2| should be small, same for 1 and 3
-    # Threshold: 0.1 (roughly 15-20 degree difference allowed)
-    if abs(cos_sq_0 - cos_sq_2) > 0.1:
+    # Threshold: 0.05 (roughly 10-15 degree difference allowed)
+    if abs(cos_sq_0 - cos_sq_2) > 0.05:
         return False, []
-    if abs(cos_sq_1 - cos_sq_3) > 0.1:
+    if abs(cos_sq_1 - cos_sq_3) > 0.05:
         return False, []
 
     # Check for points inside
