@@ -10,6 +10,9 @@ import cv2
 from PIL import Image, ImageTk
 import mss
 import argparse
+import threading
+import queue
+import time
 
 from cross_annotator_gui import MobileUNet, MobileUNetV3Small, MobileUNetV3Large
 
@@ -29,15 +32,25 @@ class CrossingOverlay:
         print(f"Capture: {width}x{height}, Inference: {int(width*scale)}x{int(height*scale)}")
         self.model = self._load_model(model_path)
         
-        # Screen capture
-        self.sct = mss.mss()
+        # Screen capture (created per-thread)
+        self.sct = None
         
         # Normalization
         self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
         self.std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
         
+        # Async processing
+        self.result_queue = queue.Queue(maxsize=1)
+        self.capture_lock = threading.Lock()
+        self.last_capture_pos = (0, 0)
+        self.processing = False
+        
         # Setup GUI
         self._setup_gui()
+        
+        # Start processing thread
+        self.process_thread = threading.Thread(target=self._process_loop, daemon=True)
+        self.process_thread.start()
         
     def _load_model(self, model_path):
         """Load the trained model."""
@@ -161,22 +174,6 @@ class CrossingOverlay:
         self.running = False
         self.root.destroy()
     
-    def _capture_screen(self):
-        """Capture the region under the capture frame (transparent, no hide needed)."""
-        # Get frame position (inside the borders)
-        border = 4
-        x = self.capture_frame.winfo_x() + border
-        y = self.capture_frame.winfo_y() + 30  # Title bar offset
-        w = self.width - 2 * border
-        h = self.height - 2 * border
-        
-        # Capture directly - frame is transparent
-        monitor = {"left": x, "top": y, "width": w, "height": h}
-        screenshot = self.sct.grab(monitor)
-        img = np.array(screenshot)[:, :, :3]
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        return img
     
     def _run_inference(self, img):
         """Run model inference."""
@@ -236,15 +233,58 @@ class CrossingOverlay:
         
         return result
     
-    def _capture_and_process(self):
-        """Capture screen and run detection."""
-        import time
+    def _process_loop(self):
+        """Background thread for capture and inference."""
+        # Create mss instance in this thread (not thread-safe across threads)
+        sct = mss.mss()
+        
+        while self.running:
+            try:
+                start_time = time.time()
+                
+                # Get current capture position
+                with self.capture_lock:
+                    x, y = self.last_capture_pos
+                
+                # Capture screen
+                border = 4
+                w = self.width - 2 * border
+                h = self.height - 2 * border
+                monitor = {"left": x + border, "top": y + 30, "width": w, "height": h}
+                screenshot = sct.grab(monitor)
+                img = np.array(screenshot)[:, :, :3]
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                
+                # Run inference
+                heatmap = self._run_inference(img)
+                result = self._create_overlay_image(img, heatmap)
+                
+                # Calculate FPS
+                elapsed = time.time() - start_time
+                fps = 1.0 / elapsed if elapsed > 0 else 0
+                
+                # Put result in queue (non-blocking, drop old frames)
+                try:
+                    self.result_queue.put_nowait((result, fps, heatmap))
+                except queue.Full:
+                    pass
+                    
+            except Exception as e:
+                print(f"Process error: {e}")
+                time.sleep(0.1)
+    
+    def _update_loop(self):
+        """Main thread UI update loop."""
+        if not self.running:
+            return
+        
+        # Update capture position
+        with self.capture_lock:
+            self.last_capture_pos = (self.capture_frame.winfo_x(), self.capture_frame.winfo_y())
+        
+        # Check for new results
         try:
-            start_time = time.time()
-            
-            img = self._capture_screen()
-            heatmap = self._run_inference(img)
-            result = self._create_overlay_image(img, heatmap)
+            result, fps, heatmap = self.result_queue.get_nowait()
             
             # Display in result window
             pil_img = Image.fromarray(result)
@@ -256,28 +296,13 @@ class CrossingOverlay:
             else:
                 self.result_canvas.itemconfig(self.result_image, image=self.photo)
             
-            # Calculate FPS
-            elapsed = time.time() - start_time
-            if elapsed > 0:
-                self.fps = 1.0 / elapsed
-            
-            # Debug: print heatmap statistics
-            print(f"Heatmap - min: {heatmap.min():.3f}, max: {heatmap.max():.3f}, mean: {heatmap.mean():.3f}")
+            self.fps = fps
             self._update_status()
-                
-        except Exception as e:
-            print(f"Error: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _update_loop(self):
-        """Continuous capture loop."""
-        if not self.running:
-            return
+            
+        except queue.Empty:
+            pass
         
-        self._capture_and_process()
-        
-        self.root.after(10, self._update_loop)
+        self.root.after(16, self._update_loop)  # ~60fps UI update
     
     def run(self):
         """Start the application."""
