@@ -39,23 +39,43 @@ class CrossingOverlay:
     def _load_model(self, model_path):
         """Load the trained model."""
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
-        state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
         
-        if 'backbone.0.0' in list(state_dict.keys())[0] or any('backbone.0.0' in k for k in state_dict.keys()):
-            model = MobileUNet()
-        elif any('backbone.0.block.0' in k for k in state_dict.keys()):
-            num_params = sum(p.numel() for p in state_dict.values())
-            if num_params > 5_000_000:
-                model = MobileUNetV3Large()
-            else:
-                model = MobileUNetV3Small()
-        else:
-            model = MobileUNet()
+        # Debug: show checkpoint structure
+        print(f"Checkpoint type: {type(checkpoint)}")
+        if isinstance(checkpoint, dict):
+            print(f"Checkpoint keys: {list(checkpoint.keys())}")
+        
+        state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
+        
+        # Debug: print first 10 keys
+        print(f"State dict keys (first 10):")
+        for i, k in enumerate(list(state_dict.keys())[:10]):
+            print(f"  {k}")
+        
+        # Count parameters
+        num_params = sum(p.numel() for p in state_dict.values())
+        print(f"Total parameters: {num_params:,}")
+        
+        # Create model
+        print("Using: MobileNetV2")
+        model = MobileUNet(pretrained=False)
+        
+        # Check for key mismatches
+        model_keys = set(model.state_dict().keys())
+        loaded_keys = set(state_dict.keys())
+        missing = model_keys - loaded_keys
+        extra = loaded_keys - model_keys
+        if missing:
+            print(f"Missing keys ({len(missing)}): {list(missing)[:3]}...")
+        if extra:
+            print(f"Extra keys ({len(extra)}): {list(extra)[:3]}...")
+        if not missing and not extra:
+            print("All keys match!")
         
         model.load_state_dict(state_dict)
         model.to(self.device)
         model.eval()
-        print(f"Model loaded from {model_path}")
+        print(f"Model loaded successfully from {model_path}")
         return model
     
     def _setup_gui(self):
@@ -167,7 +187,8 @@ class CrossingOverlay:
         
         with torch.no_grad():
             output = self.model(tensor)
-            heatmap = torch.sigmoid(output).squeeze().cpu().numpy()
+            # Model uses MSE loss, outputs 0-1 directly, no sigmoid needed
+            heatmap = output.squeeze().cpu().numpy()
         
         if pad_h > 0 or pad_w > 0:
             heatmap = heatmap[:h, :w]
@@ -219,7 +240,10 @@ class CrossingOverlay:
             elapsed = time.time() - start_time
             if elapsed > 0:
                 self.fps = 1.0 / elapsed
-                self._update_status()
+            
+            # Debug: print heatmap statistics
+            print(f"Heatmap - min: {heatmap.min():.3f}, max: {heatmap.max():.3f}, mean: {heatmap.mean():.3f}")
+            self._update_status()
                 
         except Exception as e:
             print(f"Error: {e}")
