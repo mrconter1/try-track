@@ -568,20 +568,17 @@ def _generate_one_sample(args):
     return generate_augmented_patch(crop_rgb, crossings, force_crossing=force_crossing, patch_size=patch_size)
 
 
-def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, patch_size=224):
-    """Generate training samples with positive/negative balance."""
+def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, patch_size=224, balanced=True):
+    """Generate training samples with optional positive/negative balance."""
     global _worker_frame_cache
     
     samples_with_crossings = [s for s in db.samples if len(s.crossings) >= 1]
-    samples_for_negatives = [s for s in db.samples]
+    all_samples = list(db.samples)
     
     if not db.samples:
         raise ValueError("No samples found in database")
     
     print(f"Sample pool: {len(samples_with_crossings)} with crossings, {len(db.samples)} total")
-    
-    target_positive = int(num_samples * balance_ratio)
-    target_negative = num_samples - target_positive
     
     # Pre-cache frames
     print("Pre-caching frames...")
@@ -630,6 +627,38 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, p
             'crossings': list(s.crossings)
         }
     
+    # FAST MODE: No balancing, just generate N samples
+    if not balanced:
+        print(f"Generating {num_samples} samples (natural distribution)...")
+        tasks = []
+        for _ in range(num_samples):
+            s = random.choice(all_samples)
+            cache_key = (s.video_path, s.frame_idx)
+            if cache_key in frame_cache:
+                tasks.append((sample_to_dict(s), cache_key, False, patch_size))
+        
+        all_samples_out = []
+        chunk_size = 2500
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            for i in range(0, len(tasks), chunk_size):
+                chunk = tasks[i:i+chunk_size]
+                results = list(executor.map(_generate_one_sample, chunk))
+                for r in results:
+                    if r:
+                        all_samples_out.append(r)
+                print(f"  Generated: {len(all_samples_out)}/{num_samples}")
+        
+        # Count distribution
+        pos_count = sum(1 for s in all_samples_out if s['has_crossing'])
+        neg_count = len(all_samples_out) - pos_count
+        print(f"Generated {len(all_samples_out)} samples ({pos_count} pos, {neg_count} neg)")
+        random.shuffle(all_samples_out)
+        return all_samples_out
+    
+    # BALANCED MODE: Enforce 50/50 split
+    target_positive = int(num_samples * balance_ratio)
+    target_negative = num_samples - target_positive
+    
     oversample_positive = 2.5
     oversample_negative = 1.5
     positive_tasks = []
@@ -643,7 +672,7 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, p
                 positive_tasks.append((sample_to_dict(s), cache_key, True, patch_size))
     
     for _ in range(int(target_negative * oversample_negative)):
-        s = random.choice(samples_for_negatives)
+        s = random.choice(all_samples)
         cache_key = (s.video_path, s.frame_idx)
         if cache_key in frame_cache:
             negative_tasks.append((sample_to_dict(s), cache_key, False, patch_size))
@@ -714,8 +743,9 @@ def train_crossing_detector(args):
     
     # Generate training samples
     patch_size = getattr(args, 'patch_size', 224)
+    balanced = not getattr(args, 'no_balance', False)
     print(f"\nGenerating {args.train} training samples (patch size: {patch_size}x{patch_size})...")
-    all_samples = generate_training_samples(db, video_paths, args.train, balance_ratio=0.5, patch_size=patch_size)
+    all_samples = generate_training_samples(db, video_paths, args.train, balance_ratio=0.5, patch_size=patch_size, balanced=balanced)
     
     # Split train/val (90/10)
     val_size = max(1, len(all_samples) // 10)
@@ -2626,6 +2656,7 @@ def main():
     parser.add_argument("--model-name", default="cross_net", help="Model name (saves as {name}_best.pth)")
     parser.add_argument("--backbone", choices=["mobilenetv2", "mobilenetv3-small", "mobilenetv3-large"], default="mobilenetv2", help="Encoder backbone")
     parser.add_argument("--patch-size", type=int, default=224, help="Training patch size (default 224 to match ImageNet)")
+    parser.add_argument("--no-balance", action="store_true", help="Fast mode: natural distribution instead of 50/50 split")
     parser.add_argument("--videos-dir", default="videos", help="Videos directory for training")
     
     args = parser.parse_args()
