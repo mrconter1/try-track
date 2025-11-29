@@ -199,13 +199,13 @@ class CrossingOverlayClient:
                             H, mask = cv2.findHomography(src_pts, dst_pts)
                             
                             if H is not None:
-                                # 3. Center the view
-                                # Find center of source quad
-                                quad_center = np.mean(src_pts, axis=0).reshape(1, 1, 2)
-                                center_transformed = cv2.perspectiveTransform(quad_center, H)
-                                cx, cy = center_transformed[0][0]
+                                # 3. Center the view based on SCREEN center, not TILE center
+                                # Project the screen center to find where it lands
+                                screen_center = np.array([[[w/2, h/2]]], dtype=np.float32)
+                                screen_center_transformed = cv2.perspectiveTransform(screen_center, H)
+                                cx, cy = screen_center_transformed[0][0]
                                 
-                                # Shift center to image center
+                                # Shift so the screen center stays at the screen center
                                 tx = w/2 - cx
                                 ty = h/2 - cy
                                 T = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]], dtype=np.float32)
