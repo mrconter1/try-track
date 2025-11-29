@@ -12,6 +12,7 @@ import json
 import threading
 import queue
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 class FrameSampler:
     def __init__(self, video_path, server_url, scale=0.5, threshold=0.1, count=4):
@@ -50,43 +51,51 @@ class FrameSampler:
         with self.lock:
             self.current_frames = new_frames
             
-        # Start background processing
-        threading.Thread(target=self._process_frames, args=(new_frames,), daemon=True).start()
+        # Start background processing for ALL frames in parallel
+        threading.Thread(target=self._process_frames_parallel, args=(new_frames,), daemon=True).start()
 
-    def _process_frames(self, frames):
-        for i, item in enumerate(frames):
-            idx = item['idx']
-            frame = item['img']
+    def _process_single_frame(self, item):
+        idx = item['idx']
+        frame = item['img']
+        
+        # Encode
+        _, img_encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        img_bytes = img_encoded.tobytes()
+        
+        files = {'file': ('image.jpg', img_bytes, 'image/jpeg')}
+        data = {'mode': 'quads', 'threshold': self.threshold}
+        
+        try:
+            print(f"Requesting frame {idx}...")
+            t0 = time.time()
+            response = requests.post(self.server_url, files=files, data=data, timeout=60.0)
+            dt = (time.time() - t0) * 1000
             
-            # Encode
-            _, img_encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            img_bytes = img_encoded.tobytes()
-            
-            files = {'file': ('image.jpg', img_bytes, 'image/jpeg')}
-            data = {'mode': 'quads', 'threshold': self.threshold}
-            
-            try:
-                print(f"Requesting frame {idx}...")
-                t0 = time.time()
-                response = requests.post(self.server_url, files=files, data=data, timeout=30.0)
-                dt = (time.time() - t0) * 1000
-                if response.status_code == 200:
-                    result = json.loads(response.content)
-                    quads = len(result.get('quads', []))
-                    points = len(result.get('points', []))
-                    print(f"  -> Frame {idx}: {quads} quads, {points} points ({dt:.0f}ms)")
-                    with self.lock:
-                        # Update the result for this specific frame index in the main list
-                        # We match by index to ensure we're updating the right set if user spammed R
-                        for cf in self.current_frames:
-                            if cf['idx'] == idx:
-                                cf['result'] = result
-                                break
-            except Exception as e:
-                print(f"Request error for frame {idx}: {e}")
-            
-            # Notify UI to redraw
-            self.queue.put("update")
+            if response.status_code == 200:
+                result = json.loads(response.content)
+                quads = len(result.get('quads', []))
+                points = len(result.get('points', []))
+                print(f"  -> Frame {idx}: {quads} quads, {points} points ({dt:.0f}ms)")
+                
+                with self.lock:
+                    # Update result
+                    for cf in self.current_frames:
+                        if cf['idx'] == idx:
+                            cf['result'] = result
+                            break
+            else:
+                print(f"  -> Frame {idx}: Failed with status {response.status_code}")
+                
+        except Exception as e:
+            print(f"Request error for frame {idx}: {e}")
+        
+        # Notify UI to redraw
+        self.queue.put("update")
+
+    def _process_frames_parallel(self, frames):
+        # Use a ThreadPoolExecutor to send all requests at once
+        with ThreadPoolExecutor(max_workers=len(frames)) as executor:
+            executor.map(self._process_single_frame, frames)
             
         self.loading = False
         self.queue.put("done")
@@ -162,8 +171,8 @@ def main():
 
         # Check for updates
         try:
-            sampler.queue.get_nowait()
-            # If we got a message, redraw
+            while True: # Drain queue
+                sampler.queue.get_nowait()
         except queue.Empty:
             pass
             

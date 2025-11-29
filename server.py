@@ -270,7 +270,7 @@ def read_root():
     return {"status": "running"}
 
 @app.post("/predict")
-async def predict(
+def predict(
     file: UploadFile = File(...), 
     mode: str = Form("heatmap"), 
     threshold: float = Form(0.5)
@@ -278,7 +278,7 @@ async def predict(
     global request_count
     t0 = time.time()
     
-    contents = await file.read()
+    contents = file.file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
