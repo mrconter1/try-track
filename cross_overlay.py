@@ -117,7 +117,7 @@ class CrossingOverlay:
         self.capture_frame.configure(bg='magenta')
         
         # Create border using 4 thin frames on edges
-        border = 4
+        border = 1
         # Top border
         tk.Frame(self.capture_frame, bg='lime', height=border).place(x=0, y=0, relwidth=1)
         # Bottom border  
@@ -247,7 +247,7 @@ class CrossingOverlay:
                     x, y = self.last_capture_pos
                 
                 # Capture screen
-                border = 4
+                border = 1
                 w = self.width - 2 * border
                 h = self.height - 2 * border
                 monitor = {"left": x + border, "top": y + 30, "width": w, "height": h}
