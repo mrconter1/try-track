@@ -15,7 +15,7 @@ from cross_annotator_gui import MobileUNet, MobileUNetV3Small, MobileUNetV3Large
 
 
 class CrossingOverlay:
-    def __init__(self, model_path, width=480, height=640, opacity=0.5, scale=1.0):
+    def __init__(self, model_path, width=480, height=640, opacity=1.0, scale=1.0):
         self.width = width
         self.height = height
         self.opacity = opacity
@@ -294,7 +294,7 @@ def main():
     parser.add_argument('--model', type=str, required=True, help='Path to model .pth file')
     parser.add_argument('--width', type=int, default=480, help='Capture width (default: 480)')
     parser.add_argument('--height', type=int, default=640, help='Capture height (default: 640)')
-    parser.add_argument('--opacity', type=float, default=0.5, help='Overlay opacity (default: 0.5)')
+    parser.add_argument('--opacity', type=float, default=1.0, help='Overlay opacity (default: 1.0)')
     parser.add_argument('--scale', type=float, default=1.0, help='Inference scale factor for speed (default: 1.0 = full res)')
     args = parser.parse_args()
     
