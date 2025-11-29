@@ -190,48 +190,39 @@ def check_quad_constraints(quad_pts, all_points, margin=5):
     # 1.75^2 = 3.0625
     if max_s > 3.1 * min_s:
         return False, []
+    
+    # Calculate all 4 angles (cos^2 values)
+    def get_cos_sq(a, b, c):
+        dp, l1_sq, l2_sq = dot(a, b, c)
+        if l1_sq == 0 or l2_sq == 0: return None
+        return (dp * dp) / (l1_sq * l2_sq)
+    
+    cos_sq_0 = get_cos_sq(p3, p0, p1)
+    cos_sq_1 = get_cos_sq(p0, p1, p2)
+    cos_sq_2 = get_cos_sq(p1, p2, p3)
+    cos_sq_3 = get_cos_sq(p2, p3, p0)
+    
+    if None in [cos_sq_0, cos_sq_1, cos_sq_2, cos_sq_3]:
+        return False, []
         
-    # Check angles
-    # We need cos(angle). cos(theta) = dot / (mag1 * mag2)
-    # range 60-120 degrees -> cos(60)=0.5, cos(120)=-0.5
-    # So we need |cos(theta)| <= 0.5
+    # Check angles: all should be 60-120 degrees (cos^2 < 0.25)
+    for cs in [cos_sq_0, cos_sq_1, cos_sq_2, cos_sq_3]:
+        if cs > 0.25:
+            return False, []
     
-    # Corner 0 (p3-p0-p1)
-    dp, l1_sq, l2_sq = dot(p3, p0, p1)
-    if l1_sq == 0 or l2_sq == 0: return False, []
-    cos_sq = (dp * dp) / (l1_sq * l2_sq)
-    # if cos_theta > 0.5 or cos_theta < -0.5 -> cos_sq > 0.25
-    # Wait, 60-120 deg means the angle is "not too sharp, not too flat"
-    # cos(60) = 0.5, cos(120) = -0.5.
-    # So we strictly want values between -0.5 and 0.5
-    # So cos^2 < 0.25
-    if cos_sq > 0.25: return False, []
-    
-    # Corner 1 (p0-p1-p2)
-    dp, l1_sq, l2_sq = dot(p0, p1, p2)
-    if l1_sq == 0 or l2_sq == 0: return False, []
-    cos_sq = (dp * dp) / (l1_sq * l2_sq)
-    if cos_sq > 0.25: return False, []
-    
-    # Corner 2 (p1-p2-p3)
-    dp, l1_sq, l2_sq = dot(p1, p2, p3)
-    if l1_sq == 0 or l2_sq == 0: return False, []
-    cos_sq = (dp * dp) / (l1_sq * l2_sq)
-    if cos_sq > 0.25: return False, []
-    
-    # Corner 3 (p2-p3-p0)
-    dp, l1_sq, l2_sq = dot(p2, p3, p0)
-    if l1_sq == 0 or l2_sq == 0: return False, []
-    cos_sq = (dp * dp) / (l1_sq * l2_sq)
-    if cos_sq > 0.25: return False, []
+    # NEW: Parallelogram check - opposite angles should be similar
+    # cos^2 values should be close for opposite corners
+    # |cos_sq_0 - cos_sq_2| should be small, same for 1 and 3
+    # Threshold: 0.1 (roughly 15-20 degree difference allowed)
+    if abs(cos_sq_0 - cos_sq_2) > 0.1:
+        return False, []
+    if abs(cos_sq_1 - cos_sq_3) > 0.1:
+        return False, []
 
     # Check for points inside
-    # Use OpenCV for this part as it's optimized C++
     poly_contour = np.array(ordered_pts, dtype=np.int32)
     for p in all_points:
         if p in quad_pts: continue
-        # Simple bounding box check first?
-        # Maybe not worth overhead
         dist = cv2.pointPolygonTest(poly_contour, (float(p[0]), float(p[1])), True)
         if dist > -margin:
             return False, []
