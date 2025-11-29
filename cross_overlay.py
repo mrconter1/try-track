@@ -15,8 +15,9 @@ from cross_annotator_gui import MobileUNet, MobileUNetV3Small, MobileUNetV3Large
 
 
 class CrossingOverlay:
-    def __init__(self, model_path, window_size=480, opacity=0.5, scale=0.5):
-        self.window_size = window_size
+    def __init__(self, model_path, width=480, height=640, opacity=0.5, scale=1.0):
+        self.width = width
+        self.height = height
         self.opacity = opacity
         self.scale = scale  # Downscale factor for faster inference
         self.running = True
@@ -25,7 +26,7 @@ class CrossingOverlay:
         # Load model
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
-        print(f"Inference scale: {scale} ({int(window_size*scale)}x{int(window_size*scale)})")
+        print(f"Capture: {width}x{height}, Inference: {int(width*scale)}x{int(height*scale)}")
         self.model = self._load_model(model_path)
         
         # Screen capture
@@ -89,7 +90,7 @@ class CrossingOverlay:
         # Capture frame window - transparent with colored border
         self.capture_frame = tk.Toplevel(self.root)
         self.capture_frame.title("Capture Region (drag me)")
-        self.capture_frame.geometry(f"{self.window_size}x{self.window_size}+100+100")
+        self.capture_frame.geometry(f"{self.width}x{self.height}+100+100")
         self.capture_frame.attributes('-topmost', True)
         self.capture_frame.resizable(False, False)
         
@@ -111,11 +112,11 @@ class CrossingOverlay:
         # Result window
         self.result_window = tk.Toplevel(self.root)
         self.result_window.title("Detection Result")
-        self.result_window.geometry(f"{self.window_size}x{self.window_size}+{100 + self.window_size + 20}+100")
+        self.result_window.geometry(f"{self.width}x{self.height}+{100 + self.width + 20}+100")
         self.result_window.attributes('-topmost', True)
         self.result_window.resizable(False, False)
         
-        self.result_canvas = tk.Canvas(self.result_window, width=self.window_size, height=self.window_size, bg='black')
+        self.result_canvas = tk.Canvas(self.result_window, width=self.width, height=self.height, bg='black')
         self.result_canvas.pack(fill=tk.BOTH, expand=True)
         self.result_image = None
         
@@ -160,8 +161,8 @@ class CrossingOverlay:
         border = 4
         x = self.capture_frame.winfo_x() + border
         y = self.capture_frame.winfo_y() + 30  # Title bar offset
-        w = self.window_size - 2 * border
-        h = self.window_size - 2 * border
+        w = self.width - 2 * border
+        h = self.height - 2 * border
         
         # Capture directly - frame is transparent
         monitor = {"left": x, "top": y, "width": w, "height": h}
@@ -241,7 +242,7 @@ class CrossingOverlay:
             
             # Display in result window
             pil_img = Image.fromarray(result)
-            pil_img = pil_img.resize((self.window_size, self.window_size), Image.Resampling.LANCZOS)
+            pil_img = pil_img.resize((self.width, self.height), Image.Resampling.LANCZOS)
             self.photo = ImageTk.PhotoImage(pil_img)
             
             if self.result_image is None:
@@ -285,14 +286,16 @@ class CrossingOverlay:
 def main():
     parser = argparse.ArgumentParser(description="Crossing detector overlay")
     parser.add_argument('--model', type=str, required=True, help='Path to model .pth file')
-    parser.add_argument('--size', type=int, default=480, help='Window size (default: 480)')
+    parser.add_argument('--width', type=int, default=480, help='Capture width (default: 480)')
+    parser.add_argument('--height', type=int, default=640, help='Capture height (default: 640)')
     parser.add_argument('--opacity', type=float, default=0.5, help='Overlay opacity (default: 0.5)')
-    parser.add_argument('--scale', type=float, default=0.5, help='Inference scale factor for speed (default: 0.5)')
+    parser.add_argument('--scale', type=float, default=1.0, help='Inference scale factor for speed (default: 1.0 = full res)')
     args = parser.parse_args()
     
     overlay = CrossingOverlay(
         model_path=args.model,
-        window_size=args.size,
+        width=args.width,
+        height=args.height,
         opacity=args.opacity,
         scale=args.scale
     )
