@@ -638,7 +638,7 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, p
                 tasks.append((sample_to_dict(s), cache_key, False, patch_size))
         
         all_samples_out = []
-        chunk_size = 2500
+        chunk_size = 500
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for i in range(0, len(tasks), chunk_size):
                 chunk = tasks[i:i+chunk_size]
