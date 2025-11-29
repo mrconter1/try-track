@@ -264,9 +264,84 @@ def find_quads(points):
             
     t_fq_end = time.time()
     # Debug print
-    if count > 1000:
-        print(f"FindQuads: {count} checks. Total: {(t_fq_end - t_combo_gen)*1000:.1f}ms")
+    # if count > 1000:
+    #     print(f"FindQuads: {count} checks. Total: {(t_fq_end - t_combo_gen)*1000:.1f}ms")
     
+    # --- Outlier Rejection based on Area ---
+    if len(valid_quads) > 2:
+        areas = []
+        for q in valid_quads:
+            arr = np.array(q, dtype=np.float32)
+            areas.append(cv2.contourArea(arr))
+            
+        median_area = np.median(areas)
+        
+        # Filter: Keep quads within 0.5x to 2.0x of median area
+        area_filtered_quads = []
+        area_filtered_indices = []
+        for i, area in enumerate(areas):
+            if 0.5 * median_area <= area <= 2.0 * median_area:
+                area_filtered_quads.append(valid_quads[i])
+                area_filtered_indices.append(i)
+        
+        # --- Outlier Rejection based on Vanishing Points ---
+        if len(area_filtered_quads) > 2:
+            def get_line_intersection(p1, p2, p3, p4):
+                x1, y1 = p1
+                x2, y2 = p2
+                x3, y3 = p3
+                x4, y4 = p4
+                denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+                if abs(denom) < 1e-6: return None
+                px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
+                py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
+                return (px, py)
+            
+            vp1_list = []
+            vp2_list = []
+            for q in area_filtered_quads:
+                pts = np.array(q, dtype=np.float32)
+                vp1 = get_line_intersection(pts[0], pts[1], pts[3], pts[2])
+                vp2 = get_line_intersection(pts[0], pts[3], pts[1], pts[2])
+                vp1_list.append(vp1)
+                vp2_list.append(vp2)
+            
+            # Filter out None VPs
+            valid_vp1 = [v for v in vp1_list if v is not None]
+            valid_vp2 = [v for v in vp2_list if v is not None]
+            
+            if len(valid_vp1) > 2 and len(valid_vp2) > 2:
+                # Compute median VP
+                median_vp1 = (np.median([v[0] for v in valid_vp1]), np.median([v[1] for v in valid_vp1]))
+                median_vp2 = (np.median([v[0] for v in valid_vp2]), np.median([v[1] for v in valid_vp2]))
+                
+                # Compute distances from median
+                def vp_dist(vp, median):
+                    if vp is None: return float('inf')
+                    return math.sqrt((vp[0] - median[0])**2 + (vp[1] - median[1])**2)
+                
+                # Find median distance to use as threshold
+                dists1 = [vp_dist(v, median_vp1) for v in vp1_list]
+                dists2 = [vp_dist(v, median_vp2) for v in vp2_list]
+                
+                median_dist1 = np.median([d for d in dists1 if d < float('inf')])
+                median_dist2 = np.median([d for d in dists2 if d < float('inf')])
+                
+                # Threshold: 3x median distance (generous)
+                thresh1 = max(median_dist1 * 3, 1000)  # Min 1000px to avoid overly strict
+                thresh2 = max(median_dist2 * 3, 500)
+                
+                vp_filtered_quads = []
+                for i, q in enumerate(area_filtered_quads):
+                    d1 = dists1[i]
+                    d2 = dists2[i]
+                    if d1 <= thresh1 and d2 <= thresh2:
+                        vp_filtered_quads.append(q)
+                
+                return vp_filtered_quads
+        
+        return area_filtered_quads
+        
     return valid_quads
 
 # --- Homography Logic ---
@@ -457,11 +532,11 @@ def predict(
     t_end = time.time()
     
     # Print timing for every request to debug
-    print(f"[{mode}] Total: {(t_end - t_start)*1000:.1f}ms | "
-          f"Read: {(t_read - t_start)*1000:.1f}ms | "
-          f"Pre: {(t_preprocess - t_read)*1000:.1f}ms | "
-          f"Infer: {(t_inference - t_preprocess)*1000:.1f}ms | "
-          f"Post: {(t_end - t_inference)*1000:.1f}ms")
+    # print(f"[{mode}] Total: {(t_end - t_start)*1000:.1f}ms | "
+    #       f"Read: {(t_read - t_start)*1000:.1f}ms | "
+    #       f"Pre: {(t_preprocess - t_read)*1000:.1f}ms | "
+    #       f"Infer: {(t_inference - t_preprocess)*1000:.1f}ms | "
+    #       f"Post: {(t_end - t_inference)*1000:.1f}ms")
           
     return Response(content=data, media_type=media_type)
 
