@@ -226,6 +226,85 @@ class MobileUNetV3Small(nn.Module):
         return x
 
 
+class MobileUNetV3Large(nn.Module):
+    """U-Net with MobileNetV3-Large backbone (more capacity than V3-Small)."""
+    
+    def __init__(self, pretrained=False):
+        super().__init__()
+        
+        if pretrained:
+            mobilenet = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.IMAGENET1K_V1)
+        else:
+            mobilenet = models.mobilenet_v3_large(weights=None)
+        self.encoder = mobilenet.features
+        
+        # MobileNetV3-Large: 960 final channels, skip channels at [16, 24, 40, 112]
+        self.up1 = nn.ConvTranspose2d(960, 112, 2, stride=2)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(112 + 112, 112, 3, padding=1),
+            nn.BatchNorm2d(112),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up2 = nn.ConvTranspose2d(112, 40, 2, stride=2)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(40 + 40, 40, 3, padding=1),
+            nn.BatchNorm2d(40),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up3 = nn.ConvTranspose2d(40, 24, 2, stride=2)
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(24 + 24, 24, 3, padding=1),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.up4 = nn.ConvTranspose2d(24, 16, 2, stride=2)
+        self.dec4 = nn.Sequential(
+            nn.Conv2d(16 + 16, 16, 3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.final_up = nn.ConvTranspose2d(16, 16, 2, stride=2)
+        self.out = nn.Sequential(
+            nn.Conv2d(16, 1, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        skip_connections = []
+        # MobileNetV3-Large skip indices: [0, 2, 4, 11] for resolutions H/2, H/4, H/8, H/16
+        skip_indices = [0, 2, 4, 11]
+        
+        for idx, layer in enumerate(self.encoder):
+            x = layer(x)
+            if idx in skip_indices:
+                skip_connections.append(x)
+        
+        x = self.up1(x)
+        x = torch.cat([x, skip_connections[3]], dim=1)
+        x = self.dec1(x)
+        
+        x = self.up2(x)
+        x = torch.cat([x, skip_connections[2]], dim=1)
+        x = self.dec2(x)
+        
+        x = self.up3(x)
+        x = torch.cat([x, skip_connections[1]], dim=1)
+        x = self.dec3(x)
+        
+        x = self.up4(x)
+        x = torch.cat([x, skip_connections[0]], dim=1)
+        x = self.dec4(x)
+        
+        x = self.final_up(x)
+        x = self.out(x)
+        
+        return x
+
+
 class CrossingDataset(Dataset):
     """Dataset for crossing detection training."""
     
@@ -634,6 +713,9 @@ def train_crossing_detector(args):
     if args.backbone == "mobilenetv3-small":
         print("\nInitializing MobileUNetV3Small model...")
         model = MobileUNetV3Small(pretrained=True).to(device)
+    elif args.backbone == "mobilenetv3-large":
+        print("\nInitializing MobileUNetV3Large model...")
+        model = MobileUNetV3Large(pretrained=True).to(device)
     else:
         print("\nInitializing MobileUNet model...")
         model = MobileUNet(pretrained=True).to(device)
@@ -2515,7 +2597,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--model-name", default="cross_net", help="Model name (saves as {name}_best.pth)")
-    parser.add_argument("--backbone", choices=["mobilenetv2", "mobilenetv3-small"], default="mobilenetv2", help="Encoder backbone")
+    parser.add_argument("--backbone", choices=["mobilenetv2", "mobilenetv3-small", "mobilenetv3-large"], default="mobilenetv2", help="Encoder backbone")
     parser.add_argument("--videos-dir", default="videos", help="Videos directory for training")
     
     args = parser.parse_args()
