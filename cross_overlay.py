@@ -90,7 +90,12 @@ class CrossingOverlay:
         # Capture frame window - transparent with colored border
         self.capture_frame = tk.Toplevel(self.root)
         self.capture_frame.title("Capture Region (drag me)")
-        self.capture_frame.geometry(f"{self.width}x{self.height}+100+100")
+        # Center on screen
+        screen_w = self.capture_frame.winfo_screenwidth()
+        screen_h = self.capture_frame.winfo_screenheight()
+        center_x = (screen_w - self.width) // 2
+        center_y = (screen_h - self.height) // 2
+        self.capture_frame.geometry(f"{self.width}x{self.height}+{center_x}+{center_y}")
         self.capture_frame.attributes('-topmost', True)
         self.capture_frame.resizable(False, False)
         
@@ -109,10 +114,11 @@ class CrossingOverlay:
         # Right border
         tk.Frame(self.capture_frame, bg='lime', width=border).place(relx=1, x=-border, y=0, relheight=1)
         
-        # Result window
+        # Result window - vertically centered, at left edge
         self.result_window = tk.Toplevel(self.root)
         self.result_window.title("Detection Result")
-        self.result_window.geometry(f"{self.width}x{self.height}+{100 + self.width + 20}+100")
+        result_y = (screen_h - self.height) // 2
+        self.result_window.geometry(f"{self.width}x{self.height}+0+{result_y}")
         self.result_window.attributes('-topmost', True)
         self.result_window.resizable(False, False)
         
