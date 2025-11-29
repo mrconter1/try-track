@@ -664,12 +664,8 @@ def generate_augmented_patch_from_cache(crop_rgb, mask_full, has_crossings, forc
     final_image = np.clip(img, 0, 255).astype(np.uint8)
     mask_uint8 = np.clip(final_mask, 0, 255).astype(np.uint8)
     
-    # Add 30px black border on inside to avoid edge predictions
+    # Add 30px black border on mask only to avoid edge predictions
     border = 30
-    final_image[:border, :] = 0
-    final_image[-border:, :] = 0
-    final_image[:, :border] = 0
-    final_image[:, -border:] = 0
     mask_uint8[:border, :] = 0
     mask_uint8[-border:, :] = 0
     mask_uint8[:, :border] = 0
