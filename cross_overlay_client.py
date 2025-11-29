@@ -127,6 +127,129 @@ class CrossingOverlayClient:
         self.running = False
         self.root.destroy()
 
+    def _compute_robust_homography(self, quads, h, w):
+        """Compute H using aggregated vanishing points from all quads."""
+        if not quads: return None
+        
+        lines_h = [] # Horizontal-ish lines
+        lines_v = [] # Vertical-ish lines
+        
+        # 1. Extract lines from all quads
+        for q in quads:
+            pts = np.array(q, dtype=np.float32)
+            # Quad order: 0-1 (Top), 1-2 (Right), 2-3 (Bottom), 3-0 (Left)
+            # Horizontal pair: (0,1) and (3,2)
+            lines_h.append((pts[0], pts[1]))
+            lines_h.append((pts[3], pts[2]))
+            # Vertical pair: (0,3) and (1,2)
+            lines_v.append((pts[0], pts[3]))
+            lines_v.append((pts[1], pts[2]))
+            
+        # 2. Find Vanishing Points (Intersection of line pairs)
+        def intersect(l1, l2):
+            p1, p2 = l1
+            p3, p4 = l2
+            x1, y1 = p1
+            x2, y2 = p2
+            x3, y3 = p3
+            x4, y4 = p4
+            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+            if abs(denom) < 1e-6: return None # Parallel lines
+            px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
+            py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
+            return np.array([px, py], dtype=np.float32)
+
+        def get_vp_center(lines):
+            intersections = []
+            # Sample random pairs to find VPs
+            # Since all 'h' lines should converge to VP_h, any pair gives a candidate
+            # We take pairs that are far apart (from different quads) for stability
+            if len(lines) < 2: return None
+            
+            # Try a few pairs
+            for _ in range(20): 
+                idx1, idx2 = np.random.choice(len(lines), 2, replace=False)
+                vp = intersect(lines[idx1], lines[idx2])
+                if vp is not None:
+                    # Check if point is reasonable (not at infinity inside image)
+                    # VP is usually far outside image
+                    if np.linalg.norm(vp) > 1e6: continue # Too far/parallel
+                    intersections.append(vp)
+            
+            if not intersections: return None
+            
+            # Filter outliers (Median geometric filter)
+            pts = np.array(intersections)
+            median = np.median(pts, axis=0)
+            dists = np.linalg.norm(pts - median, axis=1)
+            # Keep points within reasonable distance of median
+            valid_pts = pts[dists < np.median(dists) * 2 + 100] 
+            
+            if len(valid_pts) == 0: return median
+            return np.mean(valid_pts, axis=0)
+
+        vp_h = get_vp_center(lines_h)
+        vp_v = get_vp_center(lines_v)
+        
+        if vp_h is None or vp_v is None:
+            # Fallback: Use single best quad logic if robust fails
+            return None
+
+        # 3. Construct Homography from VPs
+        # The Horizon Line connects vp_h and vp_v.
+        # H = K * R * K_inv. We don't know K.
+        # Simpler: Use the VPs to define the rectification.
+        
+        # Projective transform part [h31, h32, h33] comes from the line at infinity.
+        # The line at infinity l_inf in the image connects VP_h and VP_v.
+        # l_inf = VP_h x VP_v (cross product)
+        
+        vh = np.append(vp_h, 1)
+        vv = np.append(vp_v, 1)
+        l_inf = np.cross(vh, vv)
+        l_inf = l_inf / l_inf[2] # Normalize
+        
+        # H = [[1, 0, 0], [0, 1, 0], [l1, l2, 1]] roughly rectifies projective distortion
+        H_rect = np.array([
+            [1, 0, 0],
+            [0, 1, 0],
+            [l_inf[0], l_inf[1], l_inf[2]]
+        ], dtype=np.float32)
+        
+        # Note: This H rectifies metric properties but might shear/scale/rotate heavily.
+        # We need to align it to a square.
+        # Apply H_rect to the Best Quad, measure distortion, and correct affine.
+        
+        # Find best quad (largest)
+        best_quad = None
+        max_area = 0
+        for q in quads:
+            pts = np.array(q, np.float32)
+            area = cv2.contourArea(pts)
+            if area > max_area:
+                max_area = area
+                best_quad = pts
+                
+        if best_quad is None: return None
+        
+        # Transform best quad by H_rect
+        rect_quad = cv2.perspectiveTransform(best_quad.reshape(1, -1, 2), H_rect).reshape(-1, 2)
+        
+        # Now we have a parallelogram (affine distorted). We want to map it to a square.
+        # Source: rect_quad
+        # Dest: Perfect Square with same Area/Centroid?
+        # Simpler: Just solve H_affine from rect_quad -> Unit Square
+        dst_sq = np.array([[0,0], [100,0], [100,100], [0,100]], dtype=np.float32)
+        
+        # H_affine: Affine map (3 points is enough, 4 is robust)
+        # We can use findHomography because it generalizes
+        H_affine, _ = cv2.findHomography(rect_quad, dst_sq)
+        
+        # Full H = H_affine * H_rect
+        H_full = np.dot(H_affine, H_rect)
+        
+        return H_full
+
     def _create_overlay_image(self, img, response_data, request_mode):
         """Blend original image with overlay based on mode and server response."""
         result = img.copy()
@@ -175,50 +298,34 @@ class CrossingOverlayClient:
                 
                 elif request_mode == "topdown":
                     quads = data.get("quads", [])
-                    if quads:
-                        # 1. Find best quad
-                        best_quad = None
-                        max_area = 0
+                    h, w = img.shape[:2]
+                    
+                    # Try Robust Averaging First
+                    H = self._compute_robust_homography(quads, h, w)
+                    
+                    # Fallback to Single Best Quad if Robust fails (e.g. < 2 lines)
+                    if H is None and quads:
+                        best_quad = max(quads, key=lambda q: cv2.contourArea(np.array(q, np.float32)))
+                        src_pts = np.array(best_quad, np.float32)
+                        dst_pts = np.array([[0,0], [100,0], [100,100], [0,100]], dtype=np.float32)
+                        H, _ = cv2.findHomography(src_pts, dst_pts)
+
+                    if H is not None:
+                        # 3. Center the view based on SCREEN center
+                        screen_center = np.array([[[w/2, h/2]]], dtype=np.float32)
+                        center_transformed = cv2.perspectiveTransform(screen_center, H)
+                        cx, cy = center_transformed[0][0]
                         
-                        for q in quads:
-                            pts = np.array(q, np.float32)
-                            area = cv2.contourArea(pts)
-                            if area > max_area:
-                                max_area = area
-                                best_quad = pts
-                                
-                        if best_quad is not None:
-                            h, w = img.shape[:2]
-                            
-                            # 2. Compute Homography
-                            src_pts = best_quad
-                            # Map to a square 100x100 pixels
-                            tile_size = 100
-                            dst_pts = np.array([[0,0], [tile_size,0], [tile_size,tile_size], [0,tile_size]], dtype=np.float32)
-                            
-                            H, mask = cv2.findHomography(src_pts, dst_pts)
-                            
-                            if H is not None:
-                                # 3. Center the view based on SCREEN center, not TILE center
-                                # Project the screen center to find where it lands
-                                screen_center = np.array([[[w/2, h/2]]], dtype=np.float32)
-                                screen_center_transformed = cv2.perspectiveTransform(screen_center, H)
-                                cx, cy = screen_center_transformed[0][0]
-                                
-                                # Shift so the screen center stays at the screen center
-                                tx = w/2 - cx
-                                ty = h/2 - cy
-                                T = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]], dtype=np.float32)
-                                
-                                H_final = np.dot(T, H)
-                                
-                                # 4. Warp Image
-                                result = cv2.warpPerspective(img, H_final, (w, h))
-                                
-                                # Draw center reference
-                                cv2.circle(result, (w//2, h//2), 5, (0, 255, 0), -1)
+                        tx = w/2 - cx
+                        ty = h/2 - cy
+                        T = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]], dtype=np.float32)
+                        H_final = np.dot(T, H)
+                        
+                        result = cv2.warpPerspective(img, H_final, (w, h))
+                        cv2.circle(result, (w//2, h//2), 5, (0, 255, 0), -1)
                     
             except Exception as e:
+                print(f"Err: {e}")
                 pass
 
         return result
