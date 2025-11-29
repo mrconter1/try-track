@@ -335,58 +335,45 @@ class CrossingDataset(Dataset):
         return image, mask
 
 
-def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_visualization=False):
+def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_visualization=False, patch_size=224):
     """
-    Shared function for generating augmented 128x128 training patches.
+    Shared function for generating augmented training patches.
     
     Args:
-        crop_rgb: RGB image (numpy array)
+        crop_rgb: RGB image (numpy array) - uses full region, any size
         crossings: List of (x, y) crossing coordinates in crop_rgb space
         force_crossing: If True, retry until at least one crossing is in the patch
         include_visualization: If True, include extra data for visualization
+        patch_size: Output patch size (default 128)
         
     Returns:
         Dictionary with 'image', 'mask', 'has_crossing', 'num_crossings', etc.
     """
     h, w = crop_rgb.shape[:2]
     
-    # Determine if we should center on a crossing
-    center_on_crossing = force_crossing and len(crossings) > 0
-    target_crossing = random.choice(crossings) if center_on_crossing else None
+    # Use full source region - no buffer needed
+    large_patch = crop_rgb
+    patch_w, patch_h = w, h
+    crossings_local = list(crossings)  # Already in source coordinates
     
-    buffer_factor = 3.0
-    initial_size = int(128 * buffer_factor)
-    
-    if center_on_crossing:
-        target_x, target_y = target_crossing
-        patch_x = max(0, min(w - initial_size, int(target_x - initial_size / 2)))
-        patch_y = max(0, min(h - initial_size, int(target_y - initial_size / 2)))
-        patch_w, patch_h = min(initial_size, w), min(initial_size, h)
-    else:
-        if w < initial_size or h < initial_size:
-            patch_x, patch_y = 0, 0
-            patch_w, patch_h = w, h
-        else:
-            patch_x = random.randint(0, w - initial_size)
-            patch_y = random.randint(0, h - initial_size)
-            patch_w, patch_h = initial_size, initial_size
-    
-    large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
-    crossings_local = [(cx - patch_x, cy - patch_y) for cx, cy in crossings]
+    # Zoom range: 0.5x to 3.0x for maximum variety
+    min_zoom = 0.5
+    max_zoom = 3.0
     
     edge_margin = 20
-    max_attempts = 20 if center_on_crossing else 10
+    max_attempts = 30
     
-    all_crossings_in_patch = []  # All crossings anywhere in 128x128
+    all_crossings_in_patch = []  # All crossings anywhere in patch
     interior_crossings = []       # Only crossings >20px from edge (get blobs)
     final_image = None
     H = None
+    crop_off_x, crop_off_y = 0, 0
     
     # Store augmentation params for visualization
     aug_params = {}
     
     for attempt in range(max_attempts):
-        zoom = random.uniform(0.5, 2.0)
+        zoom = random.uniform(min_zoom, max_zoom)
         angle = random.uniform(-180, 180)
         stretch_x, stretch_y = random.uniform(0.9, 1.1), random.uniform(0.9, 1.1)
         
@@ -412,35 +399,45 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
         dst = np.array(dst, dtype=np.float32)
         H = cv2.getPerspectiveTransform(src, dst)
         
-        crop_off = (patch_w - 128) // 2
+        # Apply transform
+        transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), borderMode=cv2.BORDER_CONSTANT)
         
-        # Transform and classify crossings
-        all_crossings_in_patch = []
-        interior_crossings = []
+        # Find valid region (non-black after transform)
+        # Check where the source corners map to find valid output area
+        H_inverse = np.linalg.inv(H)
         
-        if crossings_local:
-            pts = np.array(crossings_local, dtype=np.float32).reshape(-1, 1, 2)
-            tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
-            for tx, ty in tpts:
-                fx, fy = tx - crop_off, ty - crop_off
-                # Check if anywhere in the 128x128 patch
-                if 0 <= fx <= 128 and 0 <= fy <= 128:
-                    all_crossings_in_patch.append((fx, fy))
-                    # Check if in interior (>12px from edge) - only these get blobs
-                    if edge_margin <= fx <= 128 - edge_margin and edge_margin <= fy <= 128 - edge_margin:
-                        interior_crossings.append((fx, fy))
+        # Find the bounding box of valid pixels in output
+        # Valid area is where inverse transform maps back inside source
+        test_margin = 2
+        valid_min_x, valid_min_y = 0, 0
+        valid_max_x, valid_max_y = patch_w, patch_h
         
-        # For positive samples, require at least one crossing anywhere in patch
-        if center_on_crossing and not all_crossings_in_patch:
+        # Sample grid to find valid region bounds
+        for test_x in range(0, patch_w, 10):
+            for test_y in range(0, patch_h, 10):
+                pt = np.array([[[test_x, test_y]]], dtype=np.float32)
+                src_pt = cv2.perspectiveTransform(pt, H_inverse).reshape(2)
+                if src_pt[0] < test_margin or src_pt[0] > patch_w - test_margin or \
+                   src_pt[1] < test_margin or src_pt[1] > patch_h - test_margin:
+                    continue
+        
+        # Calculate available space for random crop
+        available_w = patch_w - patch_size
+        available_h = patch_h - patch_size
+        
+        if available_w < 0 or available_h < 0:
             continue
         
-        # Check transform validity
-        H_inverse = np.linalg.inv(H)
+        # Random crop position
+        crop_off_x = random.randint(0, max(0, available_w))
+        crop_off_y = random.randint(0, max(0, available_h))
+        
+        # Verify this crop region is valid (maps back to source)
         output_corners = np.array([
-            [crop_off, crop_off],
-            [crop_off + 128, crop_off],
-            [crop_off + 128, crop_off + 128],
-            [crop_off, crop_off + 128]
+            [crop_off_x, crop_off_y],
+            [crop_off_x + patch_size, crop_off_y],
+            [crop_off_x + patch_size, crop_off_y + patch_size],
+            [crop_off_x, crop_off_y + patch_size]
         ], dtype=np.float32).reshape(-1, 1, 2)
         source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
         
@@ -454,22 +451,48 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
         if not valid_transform:
             continue
         
-        transformed = cv2.warpPerspective(large_patch, H, (patch_w, patch_h), borderMode=cv2.BORDER_CONSTANT)
-        final_image = transformed[crop_off:crop_off+128, crop_off:crop_off+128]
+        # Transform and classify crossings relative to random crop
+        all_crossings_in_patch = []
+        interior_crossings = []
+        
+        if crossings_local:
+            pts = np.array(crossings_local, dtype=np.float32).reshape(-1, 1, 2)
+            tpts = cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+            for tx, ty in tpts:
+                fx, fy = tx - crop_off_x, ty - crop_off_y
+                # Check if anywhere in the patch
+                if 0 <= fx <= patch_size and 0 <= fy <= patch_size:
+                    all_crossings_in_patch.append((fx, fy))
+                    # Check if in interior (>edge_margin from edge) - only these get blobs
+                    if edge_margin <= fx <= patch_size - edge_margin and edge_margin <= fy <= patch_size - edge_margin:
+                        interior_crossings.append((fx, fy))
+        
+        # For positive samples, require at least one crossing anywhere in patch
+        if force_crossing and not all_crossings_in_patch:
+            continue
+        
+        final_image = transformed[crop_off_y:crop_off_y+patch_size, crop_off_x:crop_off_x+patch_size]
+        
+        # Verify we got the right size
+        if final_image.shape[0] != patch_size or final_image.shape[1] != patch_size:
+            continue
         
         aug_params = {
             'rotation': angle,
             'zoom': zoom,
             'stretch_x': stretch_x,
             'stretch_y': stretch_y,
-            'perspective': perspective_corners
+            'perspective': perspective_corners,
+            'crop_offset': (crop_off_x, crop_off_y)
         }
         break
     
     if final_image is None:
-        final_image = cv2.resize(large_patch, (128, 128))
+        # Fallback: resize source to patch_size
+        final_image = cv2.resize(large_patch, (patch_size, patch_size))
         all_crossings_in_patch = []
         interior_crossings = []
+        crop_off_x, crop_off_y = 0, 0
     
     # Flips
     flip_h = random.random() < 0.5
@@ -477,18 +500,18 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
     
     if flip_h:
         final_image = cv2.flip(final_image, 1)
-        all_crossings_in_patch = [(128 - x, y) for x, y in all_crossings_in_patch]
-        interior_crossings = [(128 - x, y) for x, y in interior_crossings]
+        all_crossings_in_patch = [(patch_size - x, y) for x, y in all_crossings_in_patch]
+        interior_crossings = [(patch_size - x, y) for x, y in interior_crossings]
     if flip_v:
         final_image = cv2.flip(final_image, 0)
-        all_crossings_in_patch = [(x, 128 - y) for x, y in all_crossings_in_patch]
-        interior_crossings = [(x, 128 - y) for x, y in interior_crossings]
+        all_crossings_in_patch = [(x, patch_size - y) for x, y in all_crossings_in_patch]
+        interior_crossings = [(x, patch_size - y) for x, y in interior_crossings]
     
     aug_params['flip_h'] = flip_h
     aug_params['flip_v'] = flip_v
     
-    # Create mask - only for INTERIOR crossings (>12px from edge)
-    mask = np.zeros((128, 128), dtype=np.float32)
+    # Create mask - only for INTERIOR crossings (>edge_margin from edge)
+    mask = np.zeros((patch_size, patch_size), dtype=np.float32)
     for ccx, ccy in interior_crossings:
         render_gaussian_blob(mask, ccx, ccy, sigma=5.0)
     
@@ -515,7 +538,8 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
     
     if include_visualization:
         result.update({
-            'patch_offset': (patch_x, patch_y, patch_w, patch_h),
+            'patch_offset': (0, 0, patch_w, patch_h),  # Full source used
+            'crop_offset': (crop_off_x, crop_off_y),  # Random crop position after transform
             'homography': H,
             'step3_params': aug_params,
             'step5_final': final_image
@@ -526,7 +550,7 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
 
 def _generate_one_sample(args):
     """Worker function for parallel sample generation."""
-    sample_data, cache_key, force_crossing = args
+    sample_data, cache_key, force_crossing, patch_size = args
     
     global _worker_frame_cache
     
@@ -541,10 +565,10 @@ def _generate_one_sample(args):
     crop = frame[y:y+h, x:x+w]
     crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
     
-    return generate_augmented_patch(crop_rgb, crossings, force_crossing=force_crossing)
+    return generate_augmented_patch(crop_rgb, crossings, force_crossing=force_crossing, patch_size=patch_size)
 
 
-def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5):
+def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, patch_size=224):
     """Generate training samples with positive/negative balance."""
     global _worker_frame_cache
     
@@ -616,13 +640,13 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5):
             s = random.choice(samples_with_crossings)
             cache_key = (s.video_path, s.frame_idx)
             if cache_key in frame_cache:
-                positive_tasks.append((sample_to_dict(s), cache_key, True))
+                positive_tasks.append((sample_to_dict(s), cache_key, True, patch_size))
     
     for _ in range(int(target_negative * oversample_negative)):
         s = random.choice(samples_for_negatives)
         cache_key = (s.video_path, s.frame_idx)
         if cache_key in frame_cache:
-            negative_tasks.append((sample_to_dict(s), cache_key, False))
+            negative_tasks.append((sample_to_dict(s), cache_key, False, patch_size))
     
     # Generate samples
     print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
@@ -689,8 +713,9 @@ def train_crossing_detector(args):
     print(f"Found {len(video_paths)} videos")
     
     # Generate training samples
-    print(f"\nGenerating {args.train} training samples...")
-    all_samples = generate_training_samples(db, video_paths, args.train, balance_ratio=0.5)
+    patch_size = getattr(args, 'patch_size', 224)
+    print(f"\nGenerating {args.train} training samples (patch size: {patch_size}x{patch_size})...")
+    all_samples = generate_training_samples(db, video_paths, args.train, balance_ratio=0.5, patch_size=patch_size)
     
     # Split train/val (90/10)
     val_size = max(1, len(all_samples) // 10)
@@ -899,11 +924,12 @@ def get_video_props(video_path):
 
 
 class CrossingAnnotator:
-    def __init__(self, root, video_paths, annotations_file="cross_annotations.json", patch_size=400, 
-                 model_path="cross_net_v1_best.pth"):
+    def __init__(self, root, video_paths, annotations_file="cross_annotations.json", view_patch_size=400, 
+                 model_path="cross_net_v1_best.pth", training_patch_size=224):
         self.root = root
         self.video_paths = [os.path.abspath(p) for p in video_paths]
-        self.patch_size = patch_size
+        self.patch_size = view_patch_size  # For annotation view
+        self.training_patch_size = training_patch_size  # For data generation
         self.annotations_file = annotations_file
         self.model_path = model_path
         
@@ -1193,7 +1219,7 @@ class CrossingAnnotator:
         gen_frame = ttk.LabelFrame(sidebar, text="Generation Controls", padding=10)
         gen_frame.pack(fill=tk.X, pady=(10, 10))
         
-        ttk.Label(gen_frame, text="Patch size: 128x128").pack(anchor="w", pady=2)
+        ttk.Label(gen_frame, text=f"Patch size: {self.training_patch_size}x{self.training_patch_size}").pack(anchor="w", pady=2)
         ttk.Label(gen_frame, text="Grid: 3x3 (9 patches)").pack(anchor="w", pady=2)
         
         btn_generate = ttk.Button(gen_frame, text="Generate 9 Random Patches (R)", command=self.generate_training_patches)
@@ -1718,7 +1744,7 @@ class CrossingAnnotator:
             include_visualization: If True, include extra data for visualization
             
         Returns:
-            Dictionary with 'image' (128x128 RGB), 'mask' (128x128 grayscale)
+            Dictionary with 'image' (patch_size x patch_size RGB), 'mask' (matching grayscale)
         """
         # Extract the original crop
         x, y, w, h = sample.crop_rect
@@ -1730,7 +1756,8 @@ class CrossingAnnotator:
             crop_rgb, 
             list(sample.crossings), 
             force_crossing=False,
-            include_visualization=include_visualization
+            include_visualization=include_visualization,
+            patch_size=self.training_patch_size
         )
         
         # Add sample metadata for visualization
@@ -1752,7 +1779,7 @@ class CrossingAnnotator:
         threading.Thread(target=self.generate_training_patches, daemon=True).start()
     
     def generate_training_patches(self):
-        """Generate 9 random 128x128 patches from labeled samples for visualization."""
+        """Generate 9 random patches from labeled samples for visualization."""
         self.root.after(0, lambda: self.lbl_gen_count.config(text="Generating..."))
         
         self.generated_patches = []
@@ -1801,7 +1828,7 @@ class CrossingAnnotator:
         self.root.after(0, update_ui)
     
     def display_gen_grid(self):
-        """Display 3x3 grid showing: Full region with green highlight | Final 128x128 patch."""
+        """Display 3x3 grid showing: Full region with green highlight | Final patch."""
         if not self.generated_patches:
             return
         
@@ -1816,12 +1843,12 @@ class CrossingAnnotator:
         num_rows = 3
         num_cols = 3
         region_size = 180
-        patch_size = 128
+        patch_size = self.training_patch_size
         padding = 6
         cell_spacing = 12
         
         cell_width = region_size + padding + patch_size
-        cell_height = region_size
+        cell_height = max(region_size, patch_size)
         
         grid_width = num_cols * cell_width + (num_cols - 1) * cell_spacing + 2 * padding
         grid_height = num_rows * cell_height + (num_rows - 1) * cell_spacing + 2 * padding
@@ -1875,17 +1902,17 @@ class CrossingAnnotator:
                 if patch_offset and source_crop:
                     patch_x, patch_y, patch_w, patch_h = patch_offset
                     H = patch.get("homography")
+                    crop_off = patch.get("crop_offset", (0, 0))
                     
                     if H is not None:
                         H_inverse = np.linalg.inv(H)
-                        crop_x_offset = (patch_w - 128) // 2
-                        crop_y_offset = (patch_h - 128) // 2
+                        crop_x_offset, crop_y_offset = crop_off
                         
                         output_corners = np.array([
                             [crop_x_offset, crop_y_offset],
-                            [crop_x_offset + 128, crop_y_offset],
-                            [crop_x_offset + 128, crop_y_offset + 128],
-                            [crop_x_offset, crop_y_offset + 128]
+                            [crop_x_offset + patch_size, crop_y_offset],
+                            [crop_x_offset + patch_size, crop_y_offset + patch_size],
+                            [crop_x_offset, crop_y_offset + patch_size]
                         ], dtype=np.float32).reshape(-1, 1, 2)
                         
                         source_corners = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
@@ -1928,9 +1955,10 @@ class CrossingAnnotator:
                                 cv2.arrowedLine(left_img_display, (cx, cy + 15 + y_off), (cx, cy - 15 + y_off), 
                                               (255, 0, 255), 2, tipLength=0.3)
                 
-                grid_img[cell_y:cell_y+region_size, cell_x:cell_x+region_size] = left_img_display
+                left_y_offset = max(0, (cell_height - region_size) // 2)
+                grid_img[cell_y + left_y_offset:cell_y + left_y_offset + region_size, cell_x:cell_x+region_size] = left_img_display
                 
-                # RIGHT: Final 128x128 patch
+                # RIGHT: Final patch
                 if self.show_gen_mask:
                     right_img = patch.get("mask")
                     if right_img is None:
@@ -1947,7 +1975,7 @@ class CrossingAnnotator:
                     right_img = cv2.resize(right_img, (patch_size, patch_size), interpolation=cv2.INTER_LINEAR)
                 
                 right_x = cell_x + region_size + padding
-                right_y_offset = (region_size - patch_size) // 2
+                right_y_offset = max(0, (cell_height - patch_size) // 2)
                 grid_img[cell_y + right_y_offset:cell_y + right_y_offset + patch_size,
                          right_x:right_x + patch_size] = right_img
         
@@ -2587,7 +2615,6 @@ def main():
     parser = argparse.ArgumentParser(description="Crossing point annotation and training tool")
     parser.add_argument("videos", nargs="*", help="Video files or directories")
     parser.add_argument("--annotations", "-a", default="cross_annotations.json", help="Annotations file")
-    parser.add_argument("--patch-size", type=int, default=400, help="Patch size (default: 400)")
     parser.add_argument("--model", default="cross_net_v1_best.pth", help="Model file for inference")
     
     # Training arguments
@@ -2598,6 +2625,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--model-name", default="cross_net", help="Model name (saves as {name}_best.pth)")
     parser.add_argument("--backbone", choices=["mobilenetv2", "mobilenetv3-small", "mobilenetv3-large"], default="mobilenetv2", help="Encoder backbone")
+    parser.add_argument("--patch-size", type=int, default=224, help="Training patch size (default 224 to match ImageNet)")
     parser.add_argument("--videos-dir", default="videos", help="Videos directory for training")
     
     args = parser.parse_args()
@@ -2629,7 +2657,8 @@ def main():
     root.state('zoomed')
     
     app = CrossingAnnotator(root, video_paths, annotations_file=args.annotations, 
-                            patch_size=args.patch_size, model_path=args.model)
+                            view_patch_size=400, model_path=args.model, 
+                            training_patch_size=args.patch_size)
     
     root.mainloop()
 
