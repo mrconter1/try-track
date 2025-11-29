@@ -295,11 +295,11 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
     large_patch = crop_rgb[patch_y:patch_y+patch_h, patch_x:patch_x+patch_w]
     crossings_local = [(cx - patch_x, cy - patch_y) for cx, cy in crossings]
     
-    edge_margin = 12
+    edge_margin = 20
     max_attempts = 20 if center_on_crossing else 10
     
     all_crossings_in_patch = []  # All crossings anywhere in 128x128
-    interior_crossings = []       # Only crossings >12px from edge (get blobs)
+    interior_crossings = []       # Only crossings >20px from edge (get blobs)
     final_image = None
     H = None
     
