@@ -34,7 +34,7 @@ from scipy.ndimage import maximum_filter
 import multiprocessing
 
 # Global frame cache for worker processes
-_worker_frame_cache = {}
+_worker_crop_cache = {}
 _worker_video_paths = []
 
 
@@ -548,29 +548,161 @@ def generate_augmented_patch(crop_rgb, crossings, force_crossing=False, include_
     return result
 
 
+def generate_augmented_patch_from_cache(crop_rgb, mask_full, has_crossings, force_crossing=False, patch_size=224):
+    """
+    Generate augmented training patch from pre-cached (image, mask) pair.
+    Applies same geometric transforms to both, photometric only to image.
+    """
+    h, w = crop_rgb.shape[:2]
+    
+    min_zoom = 0.5
+    max_zoom = 3.0
+    max_attempts = 30
+    
+    final_image = None
+    final_mask = None
+    
+    for attempt in range(max_attempts):
+        zoom = random.uniform(min_zoom, max_zoom)
+        angle = random.uniform(-180, 180)
+        stretch_x, stretch_y = random.uniform(0.9, 1.1), random.uniform(0.9, 1.1)
+        
+        perspective_corners = [
+            (random.uniform(-0.15, 0.15), random.uniform(-0.15, 0.15))
+            for _ in range(4)
+        ]
+        
+        cx, cy = w / 2, h / 2
+        rad = np.deg2rad(angle)
+        cos_a, sin_a = np.cos(rad), np.sin(rad)
+        sx, sy = zoom * stretch_x, zoom * stretch_y
+        
+        src = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+        dst = []
+        for i, (px, py) in enumerate(src):
+            rx, ry = (px - cx) * cos_a - (py - cy) * sin_a, (px - cx) * sin_a + (py - cy) * cos_a
+            fx = rx * sx + cx + perspective_corners[i][0] * w
+            fy = ry * sy + cy + perspective_corners[i][1] * h
+            dst.append([fx, fy])
+        
+        dst = np.array(dst, dtype=np.float32)
+        H = cv2.getPerspectiveTransform(src, dst)
+        
+        # Apply transform to both image and mask
+        transformed_img = cv2.warpPerspective(crop_rgb, H, (w, h), borderMode=cv2.BORDER_CONSTANT)
+        transformed_mask = cv2.warpPerspective(mask_full, H, (w, h), borderMode=cv2.BORDER_CONSTANT)
+        
+        # Calculate available space for random crop
+        available_w = w - patch_size
+        available_h = h - patch_size
+        
+        if available_w < 0 or available_h < 0:
+            continue
+        
+        crop_off_x = random.randint(0, max(0, available_w))
+        crop_off_y = random.randint(0, max(0, available_h))
+        
+        # Verify crop region maps back to valid source area
+        H_inverse = np.linalg.inv(H)
+        output_corners = np.array([
+            [crop_off_x, crop_off_y],
+            [crop_off_x + patch_size, crop_off_y],
+            [crop_off_x + patch_size, crop_off_y + patch_size],
+            [crop_off_x, crop_off_y + patch_size]
+        ], dtype=np.float32).reshape(-1, 1, 2)
+        source_corners_check = cv2.perspectiveTransform(output_corners, H_inverse).reshape(-1, 2)
+        
+        margin = 2
+        valid_transform = True
+        for scx, scy in source_corners_check:
+            if scx < margin or scx > w - margin or scy < margin or scy > h - margin:
+                valid_transform = False
+                break
+        
+        if not valid_transform:
+            continue
+        
+        final_image = transformed_img[crop_off_y:crop_off_y+patch_size, crop_off_x:crop_off_x+patch_size]
+        final_mask = transformed_mask[crop_off_y:crop_off_y+patch_size, crop_off_x:crop_off_x+patch_size]
+        
+        if final_image.shape[0] != patch_size or final_image.shape[1] != patch_size:
+            continue
+        
+        # Check if patch has crossing content (for force_crossing mode)
+        patch_has_crossing = has_crossings and np.max(final_mask) > 10
+        
+        if force_crossing and not patch_has_crossing:
+            continue
+        
+        break
+    
+    if final_image is None:
+        final_image = cv2.resize(crop_rgb, (patch_size, patch_size))
+        final_mask = cv2.resize(mask_full, (patch_size, patch_size))
+        patch_has_crossing = has_crossings and np.max(final_mask) > 10
+    
+    # Flips (apply to both)
+    flip_h = random.random() < 0.5
+    flip_v = random.random() < 0.5
+    
+    if flip_h:
+        final_image = cv2.flip(final_image, 1)
+        final_mask = cv2.flip(final_mask, 1)
+    if flip_v:
+        final_image = cv2.flip(final_image, 0)
+        final_mask = cv2.flip(final_mask, 0)
+    
+    # Photometric augmentations (image only)
+    img = final_image.astype(np.float32)
+    img = img + random.uniform(-0.3, 0.3) * 255
+    img = (img - img.mean()) * random.uniform(0.7, 1.3) + img.mean()
+    img = np.clip(img, 0, 255)
+    img = 255.0 * np.power(img / 255.0, random.uniform(0.7, 1.5))
+    if random.random() < 0.5:
+        img = img + np.random.normal(0, random.uniform(0, 25), img.shape)
+    
+    final_image = np.clip(img, 0, 255).astype(np.uint8)
+    mask_uint8 = np.clip(final_mask, 0, 255).astype(np.uint8)
+    
+    # Add 30px black border on inside to avoid edge predictions
+    border = 30
+    final_image[:border, :] = 0
+    final_image[-border:, :] = 0
+    final_image[:, :border] = 0
+    final_image[:, -border:] = 0
+    mask_uint8[:border, :] = 0
+    mask_uint8[-border:, :] = 0
+    mask_uint8[:, :border] = 0
+    mask_uint8[:, -border:] = 0
+    
+    # Re-check crossing status after border applied
+    patch_has_crossing = np.max(mask_uint8) > 10
+    
+    return {
+        'image': final_image,
+        'mask': mask_uint8,
+        'has_crossing': patch_has_crossing,
+        'num_crossings': 1 if patch_has_crossing else 0,
+    }
+
+
 def _generate_one_sample(args):
     """Worker function for parallel sample generation."""
-    sample_data, cache_key, force_crossing, patch_size = args
+    sample_id, force_crossing, patch_size = args
     
-    global _worker_frame_cache
+    global _worker_crop_cache
     
-    frame = _worker_frame_cache.get(cache_key)
-    if frame is None:
+    cached = _worker_crop_cache.get(sample_id)
+    if cached is None:
         return None
     
-    crop_rect = sample_data['crop_rect']
-    crossings = sample_data['crossings']
-    
-    x, y, w, h = crop_rect
-    crop = frame[y:y+h, x:x+w]
-    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-    
-    return generate_augmented_patch(crop_rgb, crossings, force_crossing=force_crossing, patch_size=patch_size)
+    crop_rgb, mask_full, has_crossings = cached
+    return generate_augmented_patch_from_cache(crop_rgb, mask_full, has_crossings, force_crossing=force_crossing, patch_size=patch_size)
 
 
 def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, patch_size=224, balanced=True):
     """Generate training samples with optional positive/negative balance."""
-    global _worker_frame_cache
+    global _worker_crop_cache
     
     samples_with_crossings = [s for s in db.samples if len(s.crossings) >= 1]
     all_samples = list(db.samples)
@@ -580,52 +712,77 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, p
     
     print(f"Sample pool: {len(samples_with_crossings)} with crossings, {len(db.samples)} total")
     
-    # Pre-cache frames
-    print("Pre-caching frames...")
-    unique_frames = list(set((s.video_path, s.frame_idx) for s in db.samples))
+    # Build video path resolver
+    video_path_map = {}
+    for vp in video_paths:
+        video_path_map[os.path.basename(vp)] = vp
     
-    def load_frame(args):
-        video_path, frame_idx = args
-        original_path = video_path
-        # Resolve relative path
-        if not os.path.isabs(video_path):
-            for vp in video_paths:
-                if os.path.basename(vp) == os.path.basename(video_path):
-                    video_path = vp
-                    break
-        cap = cv2.VideoCapture(video_path)
+    def resolve_video_path(video_path):
+        if os.path.isabs(video_path):
+            return video_path
+        basename = os.path.basename(video_path)
+        return video_path_map.get(basename, video_path)
+    
+    # Pre-cache crop regions AND masks (grouped by video, frames in sorted order)
+    print("Pre-caching crop regions and masks...")
+    
+    # Group samples by video, then by frame
+    video_frame_samples = {}  # {video_path: {frame_idx: [(sample_idx, crop_rect, crossings)]}}
+    for idx, s in enumerate(db.samples):
+        video_path = s.video_path
+        if video_path not in video_frame_samples:
+            video_frame_samples[video_path] = {}
+        if s.frame_idx not in video_frame_samples[video_path]:
+            video_frame_samples[video_path][s.frame_idx] = []
+        video_frame_samples[video_path][s.frame_idx].append((idx, s.crop_rect, list(s.crossings)))
+    
+    crop_cache = {}  # {sample_idx: (crop_rgb, mask, has_crossings)}
+    total_crops = len(db.samples)
+    cached_count = 0
+    
+    # Process each video sequentially, frames in sorted order
+    for video_path, frame_samples in video_frame_samples.items():
+        resolved_path = resolve_video_path(video_path)
+        cap = cv2.VideoCapture(resolved_path)
         if not cap.isOpened():
             print(f"  Warning: Could not open video: {os.path.basename(video_path)}")
-            return None
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
+            continue
+        
+        # Process frames in sorted order for efficient sequential decoding
+        sorted_frames = sorted(frame_samples.keys())
+        for frame_idx in sorted_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                print(f"  Warning: Could not read frame {frame_idx} from: {os.path.basename(video_path)}")
+                continue
+            
+            # Extract all crop regions and generate masks for this frame
+            for sample_idx, crop_rect, crossings in frame_samples[frame_idx]:
+                x, y, w, h = crop_rect
+                crop = frame[y:y+h, x:x+w]
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                
+                # Generate mask with Gaussian blobs at crossing positions
+                mask = np.zeros((h, w), dtype=np.float32)
+                for cx, cy in crossings:
+                    render_gaussian_blob(mask, cx, cy, sigma=5.0)
+                mask = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
+                
+                has_crossings = len(crossings) > 0
+                crop_cache[sample_idx] = (crop_rgb, mask, has_crossings)
+                cached_count += 1
+        
         cap.release()
-        if ret and frame is not None:
-            return ((original_path, frame_idx), frame)
-        else:
-            print(f"  Warning: Could not read frame {frame_idx} from: {os.path.basename(video_path)}")
-            return None
+        print(f"  Cached {cached_count}/{total_crops} regions ({os.path.basename(video_path)} done)")
     
-    frame_cache = {}
+    print(f"  Cached {len(crop_cache)} crop regions total")
+    _worker_crop_cache = crop_cache
+    
+    # Build sample index lookup
+    sample_idx_map = {id(s): idx for idx, s in enumerate(db.samples)}
+    
     num_workers = min(multiprocessing.cpu_count(), 8)
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        for i, result in enumerate(executor.map(load_frame, unique_frames)):
-            if result:
-                frame_cache[result[0]] = result[1]
-            if (i + 1) % 50 == 0:
-                print(f"  Cached {i + 1}/{len(unique_frames)} frames")
-    
-    print(f"  Cached {len(frame_cache)} frames total")
-    _worker_frame_cache = frame_cache
-    
-    # Create tasks
-    def sample_to_dict(s):
-        return {
-            'video_path': s.video_path,
-            'frame_idx': s.frame_idx,
-            'crop_rect': s.crop_rect,
-            'crossings': list(s.crossings)
-        }
     
     # FAST MODE: No balancing, just generate N samples
     if not balanced:
@@ -633,9 +790,9 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, p
         tasks = []
         for _ in range(num_samples):
             s = random.choice(all_samples)
-            cache_key = (s.video_path, s.frame_idx)
-            if cache_key in frame_cache:
-                tasks.append((sample_to_dict(s), cache_key, False, patch_size))
+            sample_idx = sample_idx_map[id(s)]
+            if sample_idx in crop_cache:
+                tasks.append((sample_idx, False, patch_size))
         
         all_samples_out = []
         chunk_size = 500
@@ -667,15 +824,15 @@ def generate_training_samples(db, video_paths, num_samples, balance_ratio=0.5, p
     for _ in range(int(target_positive * oversample_positive)):
         if samples_with_crossings:
             s = random.choice(samples_with_crossings)
-            cache_key = (s.video_path, s.frame_idx)
-            if cache_key in frame_cache:
-                positive_tasks.append((sample_to_dict(s), cache_key, True, patch_size))
+            sample_idx = sample_idx_map[id(s)]
+            if sample_idx in crop_cache:
+                positive_tasks.append((sample_idx, True, patch_size))
     
     for _ in range(int(target_negative * oversample_negative)):
         s = random.choice(all_samples)
-        cache_key = (s.video_path, s.frame_idx)
-        if cache_key in frame_cache:
-            negative_tasks.append((sample_to_dict(s), cache_key, False, patch_size))
+        sample_idx = sample_idx_map[id(s)]
+        if sample_idx in crop_cache:
+            negative_tasks.append((sample_idx, False, patch_size))
     
     # Generate samples
     print(f"Generating {num_samples} samples: {target_positive} positive, {target_negative} negative...")
