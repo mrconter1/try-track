@@ -26,7 +26,7 @@ class CrossingOverlayClient:
         self.running = True
         
         # Settings
-        self.mode = "quads"  # "heatmap", "points", "quads"
+        self.mode = "quads"  # "heatmap", "points", "quads", "topdown"
         self.threshold = 0.1
         
         print(f"Server URL: {self.server_url}")
@@ -115,7 +115,7 @@ class CrossingOverlayClient:
         self._update_status()
         
     def _toggle_mode(self):
-        modes = ["heatmap", "points", "quads"]
+        modes = ["heatmap", "points", "quads", "topdown"]
         current_idx = modes.index(self.mode)
         self.mode = modes[(current_idx + 1) % len(modes)]
         self._update_status()
@@ -131,11 +131,10 @@ class CrossingOverlayClient:
         """Blend original image with overlay based on mode and server response."""
         result = img.copy()
         
-        # Auto-detect if response is image (starts with 0xFF 0xD8)
+        # Auto-detect if response is image
         is_image = response_data.startswith(b'\xff\xd8')
         
         if is_image:
-            # Treat as heatmap regardless of requested mode (fallback/race condition handle)
             heatmap_arr = np.frombuffer(response_data, np.uint8)
             heatmap = cv2.imdecode(heatmap_arr, cv2.IMREAD_GRAYSCALE)
             
@@ -151,31 +150,75 @@ class CrossingOverlayClient:
                 result = img * (1 - blend_factor) + overlay * blend_factor
                 result = np.clip(result, 0, 255).astype(np.uint8)
                 
-        elif request_mode in ["points", "quads"]:
-            # Expect JSON
+        elif request_mode in ["points", "quads", "topdown"]:
             try:
                 data = json.loads(response_data)
                 points = data.get("points", [])
                 
-                # Draw points
-                result = cv2.addWeighted(result, 0.7, np.zeros_like(result), 0.3, 0)
-                for p in points:
-                    cx, cy = p[0], p[1]
-                    cv2.circle(result, (cx, cy), 8, (0, 0, 255), 2)
-                    cv2.drawMarker(result, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 8, 2)
+                if request_mode != "topdown":
+                    # Draw points in overlay modes
+                    result = cv2.addWeighted(result, 0.7, np.zeros_like(result), 0.3, 0)
+                    for p in points:
+                        cx, cy = p[0], p[1]
+                        cv2.circle(result, (cx, cy), 8, (0, 0, 255), 2)
+                        cv2.drawMarker(result, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 8, 2)
                     
                 if request_mode == "quads":
                     quads = data.get("quads", [])
                     overlay = result.copy()
                     for q in quads:
                         pts = np.array(q, np.int32).reshape((-1, 1, 2))
-                        cv2.fillPoly(overlay, [pts], (255, 255, 0)) # Cyan
-                        cv2.polylines(result, [pts], True, (0, 255, 255), 2) # Yellow
+                        cv2.fillPoly(overlay, [pts], (255, 255, 0)) 
+                        cv2.polylines(result, [pts], True, (0, 255, 255), 2) 
                     
                     cv2.addWeighted(overlay, 0.3, result, 0.7, 0, result)
+                
+                elif request_mode == "topdown":
+                    quads = data.get("quads", [])
+                    if quads:
+                        # 1. Find best quad
+                        best_quad = None
+                        max_area = 0
+                        
+                        for q in quads:
+                            pts = np.array(q, np.float32)
+                            area = cv2.contourArea(pts)
+                            if area > max_area:
+                                max_area = area
+                                best_quad = pts
+                                
+                        if best_quad is not None:
+                            h, w = img.shape[:2]
+                            
+                            # 2. Compute Homography
+                            src_pts = best_quad
+                            # Map to a square 100x100 pixels
+                            tile_size = 100
+                            dst_pts = np.array([[0,0], [tile_size,0], [tile_size,tile_size], [0,tile_size]], dtype=np.float32)
+                            
+                            H, mask = cv2.findHomography(src_pts, dst_pts)
+                            
+                            if H is not None:
+                                # 3. Center the view
+                                # Find center of source quad
+                                quad_center = np.mean(src_pts, axis=0).reshape(1, 1, 2)
+                                center_transformed = cv2.perspectiveTransform(quad_center, H)
+                                cx, cy = center_transformed[0][0]
+                                
+                                # Shift center to image center
+                                tx = w/2 - cx
+                                ty = h/2 - cy
+                                T = np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]], dtype=np.float32)
+                                
+                                H_final = np.dot(T, H)
+                                
+                                # 4. Warp Image
+                                result = cv2.warpPerspective(img, H_final, (w, h))
+                                
+                                # Draw center reference
+                                cv2.circle(result, (w//2, h//2), 5, (0, 255, 0), -1)
                     
             except Exception as e:
-                # print(f"JSON Error: {e}") # Suppress to avoid spam
                 pass
 
         return result
@@ -204,10 +247,12 @@ class CrossingOverlayClient:
                 
                 t1 = time.time()
                 
-                # Capture the mode used for THIS request
                 request_mode = self.mode
+                # Map 'topdown' to 'quads' for server
+                server_mode = "quads" if request_mode == "topdown" else request_mode
+                
                 files = {'file': ('image.jpg', img_bytes, 'image/jpeg')}
-                data = {'mode': request_mode, 'threshold': self.threshold}
+                data = {'mode': server_mode, 'threshold': self.threshold}
                 
                 try:
                     response = self.session.post(self.server_url, files=files, data=data, timeout=2.0)
@@ -215,7 +260,6 @@ class CrossingOverlayClient:
                     if response.status_code == 200:
                         t2 = time.time()
                         
-                        # Pass request_mode to decoder
                         result = self._create_overlay_image(img_rgb, response.content, request_mode)
                         
                         t3 = time.time()
@@ -262,7 +306,7 @@ class CrossingOverlayClient:
         print("\nControls:")
         print("  Up/Down   - Adjust opacity")
         print("  Left/Right- Adjust threshold")
-        print("  M         - Toggle mode (Heatmap/Points/Quads)")
+        print("  M         - Toggle mode (Heatmap/Points/Quads/TopDown)")
         print("  Escape    - Quit")
         self.root.mainloop()
 
