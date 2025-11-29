@@ -11,6 +11,38 @@ import json
 import itertools
 import argparse
 import os
+import math
+import glob
+
+try:
+    from turbojpeg import TurboJPEG
+    # Try to find library automatically
+    try:
+        jpeg = TurboJPEG()
+        has_turbojpeg = True
+    except RuntimeError:
+        # Try common paths on Ubuntu/Debian
+        possible_paths = [
+            '/usr/lib/x86_64-linux-gnu/libturbojpeg.so.0',
+            '/usr/lib/libturbojpeg.so.0',
+            '/usr/lib64/libturbojpeg.so.0'
+        ]
+        has_turbojpeg = False
+        for path in possible_paths:
+            if os.path.exists(path):
+                try:
+                    jpeg = TurboJPEG(path)
+                    has_turbojpeg = True
+                    break
+                except: pass
+                
+    if has_turbojpeg:
+        print("Using TurboJPEG for fast decoding")
+    else:
+        print("TurboJPEG library not found, using OpenCV")
+except ImportError:
+    has_turbojpeg = False
+    print("TurboJPEG python package not found, using OpenCV")
 
 # Define the model class (must match your trained model)
 class MobileUNet(nn.Module):
@@ -105,59 +137,101 @@ def find_peaks(heatmap, threshold):
     return points
 
 def is_convex(pts):
-    center = np.mean(pts, axis=0)
-    sorted_pts = sorted(pts, key=lambda p: np.arctan2(p[1]-center[1], p[0]-center[0]))
+    # Pure python implementation for speed
+    # pts is list of (x,y)
+    cx = sum(p[0] for p in pts) / 4.0
+    cy = sum(p[1] for p in pts) / 4.0
+    
+    # Sort by angle
+    # math.atan2 is faster than np.arctan2 for single scalars
+    sorted_pts = sorted(pts, key=lambda p: math.atan2(p[1]-cy, p[0]-cx))
     
     def cross_product(o, a, b):
         return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 
-    cp_signs = []
-    for i in range(4):
-        p1 = sorted_pts[i]
-        p2 = sorted_pts[(i + 1) % 4]
-        p3 = sorted_pts[(i + 2) % 4]
-        cp = cross_product(p1, p2, p3)
-        cp_signs.append(np.sign(cp))
-        
-    return all(s > 0 for s in cp_signs) or all(s < 0 for s in cp_signs), sorted_pts
+    # Check cross product signs
+    p0, p1, p2, p3 = sorted_pts
+    cp1 = cross_product(p0, p1, p2)
+    cp2 = cross_product(p1, p2, p3)
+    cp3 = cross_product(p2, p3, p0)
+    cp4 = cross_product(p3, p0, p1)
+    
+    if (cp1 > 0 and cp2 > 0 and cp3 > 0 and cp4 > 0) or \
+       (cp1 < 0 and cp2 < 0 and cp3 < 0 and cp4 < 0):
+        return True, sorted_pts
+    return False, []
 
 def check_quad_constraints(quad_pts, all_points, margin=5):
+    # Pure Python implementation
     is_conv, ordered_pts = is_convex(quad_pts)
     if not is_conv:
         return False, []
         
-    # Check angles
-    for i in range(4):
-        p1 = np.array(ordered_pts[i-1])
-        p2 = np.array(ordered_pts[i])
-        p3 = np.array(ordered_pts[(i+1)%4])
-        v1 = p1 - p2
-        v2 = p3 - p2
-        l1 = np.linalg.norm(v1)
-        l2 = np.linalg.norm(v2)
-        if l1 == 0 or l2 == 0: return False, []
-        angle = np.degrees(np.arccos(np.clip(np.dot(v1, v2) / (l1 * l2), -1.0, 1.0)))
-        if angle < 60 or angle > 120:
-            return False, []
-            
-    # Check aspect ratio
-    side_lengths = []
-    for i in range(4):
-        p1 = np.array(ordered_pts[i])
-        p2 = np.array(ordered_pts[(i+1)%4])
-        side_lengths.append(np.linalg.norm(p1 - p2))
-        
-    max_side = max(side_lengths)
-    min_side = min(side_lengths)
-    ratio = max_side / (min_side + 1e-6)
+    p0, p1, p2, p3 = ordered_pts
     
-    if ratio > 1.75:
+    # Helper for dist and dot
+    def dist_sq(a, b): return (a[0]-b[0])**2 + (a[1]-b[1])**2
+    def dot(a, b, c): # Vector BA dot BC
+        vx1, vy1 = a[0]-b[0], a[1]-b[1]
+        vx2, vy2 = c[0]-b[0], c[1]-b[1]
+        return vx1*vx2 + vy1*vy2, (vx1**2 + vy1**2), (vx2**2 + vy2**2)
+
+    # Check aspect ratio first (fastest)
+    d01 = dist_sq(p0, p1)
+    d12 = dist_sq(p1, p2)
+    d23 = dist_sq(p2, p3)
+    d30 = dist_sq(p3, p0)
+    
+    sides = [d01, d12, d23, d30]
+    max_s = max(sides)
+    min_s = min(sides)
+    
+    # ratio check (squared)
+    # 1.75^2 = 3.0625
+    if max_s > 3.1 * min_s:
         return False, []
+        
+    # Check angles
+    # We need cos(angle). cos(theta) = dot / (mag1 * mag2)
+    # range 60-120 degrees -> cos(60)=0.5, cos(120)=-0.5
+    # So we need |cos(theta)| <= 0.5
+    
+    # Corner 0 (p3-p0-p1)
+    dp, l1_sq, l2_sq = dot(p3, p0, p1)
+    if l1_sq == 0 or l2_sq == 0: return False, []
+    cos_sq = (dp * dp) / (l1_sq * l2_sq)
+    # if cos_theta > 0.5 or cos_theta < -0.5 -> cos_sq > 0.25
+    # Wait, 60-120 deg means the angle is "not too sharp, not too flat"
+    # cos(60) = 0.5, cos(120) = -0.5.
+    # So we strictly want values between -0.5 and 0.5
+    # So cos^2 < 0.25
+    if cos_sq > 0.25: return False, []
+    
+    # Corner 1 (p0-p1-p2)
+    dp, l1_sq, l2_sq = dot(p0, p1, p2)
+    if l1_sq == 0 or l2_sq == 0: return False, []
+    cos_sq = (dp * dp) / (l1_sq * l2_sq)
+    if cos_sq > 0.25: return False, []
+    
+    # Corner 2 (p1-p2-p3)
+    dp, l1_sq, l2_sq = dot(p1, p2, p3)
+    if l1_sq == 0 or l2_sq == 0: return False, []
+    cos_sq = (dp * dp) / (l1_sq * l2_sq)
+    if cos_sq > 0.25: return False, []
+    
+    # Corner 3 (p2-p3-p0)
+    dp, l1_sq, l2_sq = dot(p2, p3, p0)
+    if l1_sq == 0 or l2_sq == 0: return False, []
+    cos_sq = (dp * dp) / (l1_sq * l2_sq)
+    if cos_sq > 0.25: return False, []
 
     # Check for points inside
+    # Use OpenCV for this part as it's optimized C++
     poly_contour = np.array(ordered_pts, dtype=np.int32)
     for p in all_points:
-        if any(np.array_equal(p, c) for c in quad_pts): continue
+        if p in quad_pts: continue
+        # Simple bounding box check first?
+        # Maybe not worth overhead
         dist = cv2.pointPolygonTest(poly_contour, (float(p[0]), float(p[1])), True)
         if dist > -margin:
             return False, []
@@ -165,13 +239,34 @@ def check_quad_constraints(quad_pts, all_points, margin=5):
     return True, ordered_pts
 
 def find_quads(points):
+    t_fq_start = time.time()
     if len(points) < 4: return []
+    
+    # Use top 25 points
     search_points = points[:25] 
+    
+    # Ensure points are tuples for faster access/hashing if needed
+    # (they usually come as tuples from find_peaks)
+    
     valid_quads = []
-    for quad_combo in itertools.combinations(search_points, 4):
+    
+    combos = list(itertools.combinations(search_points, 4))
+    t_combo_gen = time.time()
+    
+    count = 0
+    
+    for quad_combo in combos:
         is_valid, ordered_pts = check_quad_constraints(quad_combo, points)
+        count += 1
+        
         if is_valid:
             valid_quads.append(ordered_pts)
+            
+    t_fq_end = time.time()
+    # Debug print
+    if count > 1000:
+        print(f"FindQuads: {count} checks. Total: {(t_fq_end - t_combo_gen)*1000:.1f}ms")
+    
     return valid_quads
 
 # --- Homography Logic ---
@@ -276,11 +371,21 @@ def predict(
     threshold: float = Form(0.5)
 ):
     global request_count
-    t0 = time.time()
+    t_start = time.time()
     
     contents = file.file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    t_read = time.time()
+    
+    if has_turbojpeg:
+        try:
+            img = jpeg.decode(contents)
+        except Exception:
+            # Fallback if decode fails (e.g. not a jpeg)
+            nparr = np.frombuffer(contents, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    else:
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if img is None: return {"error": "Failed to decode"}
     
@@ -297,17 +402,24 @@ def predict(
     tensor = torch.from_numpy(img_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
     tensor = (tensor - mean) / std
     
+    t_preprocess = time.time()
+    
     with torch.no_grad():
         output = model(tensor)
         heatmap = output.squeeze().cpu().numpy()
+    
+    t_inference = time.time()
     
     if pad_h > 0 or pad_w > 0:
         heatmap = heatmap[:h, :w]
     
     if mode == "heatmap":
         heatmap_uint8 = (np.clip(heatmap, 0, 1) * 255).astype(np.uint8)
-        _, encoded = cv2.imencode('.jpg', heatmap_uint8, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        data = encoded.tobytes()
+        if has_turbojpeg:
+            data = jpeg.encode(heatmap_uint8, quality=80)
+        else:
+            _, encoded = cv2.imencode('.jpg', heatmap_uint8, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            data = encoded.tobytes()
         media_type = "image/jpeg"
     
     elif mode == "points":
@@ -343,10 +455,14 @@ def predict(
         return {"error": "Unknown mode"}
 
     t_end = time.time()
-    request_count += 1
-    if request_count % 30 == 0:
-        print(f"Server ({mode}): Total {(t_end - t0)*1000:.1f}ms")
-        
+    
+    # Print timing for every request to debug
+    print(f"[{mode}] Total: {(t_end - t_start)*1000:.1f}ms | "
+          f"Read: {(t_read - t_start)*1000:.1f}ms | "
+          f"Pre: {(t_preprocess - t_read)*1000:.1f}ms | "
+          f"Infer: {(t_inference - t_preprocess)*1000:.1f}ms | "
+          f"Post: {(t_end - t_inference)*1000:.1f}ms")
+          
     return Response(content=data, media_type=media_type)
 
 if __name__ == "__main__":

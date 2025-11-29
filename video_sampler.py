@@ -32,8 +32,12 @@ class FrameSampler:
         self.queue = queue.Queue()
         self.lock = threading.Lock()
         
+        # Use a session for connection pooling
+        self.session = requests.Session()
+        
     def close(self):
         self.cap.release()
+        self.session.close()
 
     def start_sampling(self):
         if self.loading: return
@@ -66,9 +70,9 @@ class FrameSampler:
         data = {'mode': 'quads', 'threshold': self.threshold}
         
         try:
-            print(f"Requesting frame {idx}...")
+            # print(f"Requesting frame {idx}...")
             t0 = time.time()
-            response = requests.post(self.server_url, files=files, data=data, timeout=60.0)
+            response = self.session.post(self.server_url, files=files, data=data, timeout=60.0)
             dt = (time.time() - t0) * 1000
             
             if response.status_code == 200:
