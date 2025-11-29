@@ -1,11 +1,11 @@
 """
 Screen region capture with crossing detection heatmap display.
 Drag the capture frame, see results in a separate window.
+Supports both PyTorch (.pth) and ONNX (.onnx) models.
 """
 
 import tkinter as tk
 import numpy as np
-import torch
 import cv2
 from PIL import Image, ImageTk
 import mss
@@ -14,7 +14,20 @@ import threading
 import queue
 import time
 
-from cross_annotator_gui import MobileUNet, MobileUNetV3Small, MobileUNetV3Large
+# Try to import onnxruntime
+try:
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
+
+# Try to import torch (only needed for .pth files)
+try:
+    import torch
+    from cross_annotator_gui import MobileUNet
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 
 class CrossingOverlay:
@@ -25,19 +38,28 @@ class CrossingOverlay:
         self.scale = scale  # Downscale factor for faster inference
         self.running = True
         self.paused = False
+        self.use_onnx = model_path.endswith('.onnx')
+        
+        print(f"Capture: {width}x{height}, Inference: {int(width*scale)}x{int(height*scale)}")
         
         # Load model
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {self.device}")
-        print(f"Capture: {width}x{height}, Inference: {int(width*scale)}x{int(height*scale)}")
-        self.model = self._load_model(model_path)
+        if self.use_onnx:
+            if not ONNX_AVAILABLE:
+                raise RuntimeError("onnxruntime not installed. Run: pip install onnxruntime")
+            self._load_onnx_model(model_path)
+        else:
+            if not TORCH_AVAILABLE:
+                raise RuntimeError("torch not installed")
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"Using device: {self.device}")
+            self._load_pytorch_model(model_path)
         
         # Screen capture (created per-thread)
         self.sct = None
         
-        # Normalization
-        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
-        self.std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
+        # Normalization constants
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         
         # Async processing
         self.result_queue = queue.Queue(maxsize=1)
@@ -52,17 +74,32 @@ class CrossingOverlay:
         self.process_thread = threading.Thread(target=self._process_loop, daemon=True)
         self.process_thread.start()
         
-    def _load_model(self, model_path):
-        """Load the trained model."""
+    def _load_onnx_model(self, model_path):
+        """Load ONNX model with onnxruntime."""
+        # Use all available providers
+        providers = ['CPUExecutionProvider']
+        if 'CUDAExecutionProvider' in ort.get_available_providers():
+            providers.insert(0, 'CUDAExecutionProvider')
+        
+        self.ort_session = ort.InferenceSession(model_path, providers=providers)
+        self.ort_input_name = self.ort_session.get_inputs()[0].name
+        print(f"ONNX model loaded from {model_path}")
+        print(f"ONNX providers: {self.ort_session.get_providers()}")
+    
+    def _load_pytorch_model(self, model_path):
+        """Load PyTorch model."""
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
         
-        model = MobileUNet(pretrained=False)
-        model.load_state_dict(state_dict)
-        model.to(self.device)
-        model.eval()
-        print(f"Model loaded successfully from {model_path}")
-        return model
+        self.model = MobileUNet(pretrained=False)
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
+        
+        # Normalization tensors for PyTorch
+        self.torch_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
+        self.torch_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
+        print(f"PyTorch model loaded from {model_path}")
     
     def _setup_gui(self):
         """Create capture frame and result window."""
@@ -146,7 +183,7 @@ class CrossingOverlay:
     
     
     def _run_inference(self, img):
-        """Run model inference."""
+        """Run model inference (ONNX or PyTorch)."""
         orig_h, orig_w = img.shape[:2]
         
         t0 = time.time()
@@ -168,19 +205,26 @@ class CrossingOverlay:
         
         t1 = time.time()
         
-        tensor = torch.from_numpy(img_padded.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0)
-        tensor = tensor.to(self.device)
-        tensor = (tensor - self.mean) / self.std
+        # Prepare input tensor (NCHW format, normalized)
+        input_data = img_padded.astype(np.float32) / 255.0
+        input_data = (input_data - self.mean) / self.std
+        input_data = input_data.transpose(2, 0, 1)  # HWC -> CHW
+        input_data = input_data[np.newaxis, ...]  # Add batch dim
         
         t2 = time.time()
         
-        with torch.no_grad():
-            output = self.model(tensor)
+        if self.use_onnx:
+            # ONNX Runtime inference
+            output = self.ort_session.run(None, {self.ort_input_name: input_data})[0]
+            heatmap = output.squeeze()
+        else:
+            # PyTorch inference
+            tensor = torch.from_numpy(input_data).to(self.device)
+            with torch.no_grad():
+                output = self.model(tensor)
+            heatmap = output.squeeze().cpu().numpy()
         
         t3 = time.time()
-        
-        # Model uses MSE loss, outputs 0-1 directly, no sigmoid needed
-        heatmap = output.squeeze().cpu().numpy()
         
         if pad_h > 0 or pad_w > 0:
             heatmap = heatmap[:h, :w]
