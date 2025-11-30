@@ -34,7 +34,7 @@ class VideoViewer:
         self.session = requests.Session()
         
         # Output size for unwarped view
-        self.unwarp_size = 400
+        self.unwarp_size = 600
         
     def close(self):
         self.cap.release()
@@ -62,20 +62,31 @@ class VideoViewer:
         return None
     
     def compute_homography(self, quads):
-        """Compute homography from quads to create top-down view."""
+        """Compute homography from quads to create top-down view of entire image."""
         if not quads:
             return None
             
-        # Use the largest quad
+        # Use the largest quad to define the perspective
         best_quad = max(quads, key=lambda q: cv2.contourArea(np.array(q, np.float32)))
         src_pts = np.array(best_quad, dtype=np.float32)
         
-        # Destination: square
+        # Compute the side lengths of the quad to estimate tile size
+        side1 = np.linalg.norm(src_pts[1] - src_pts[0])
+        side2 = np.linalg.norm(src_pts[2] - src_pts[1])
+        tile_size = (side1 + side2) / 2  # Average side length
+        
+        # Scale factor: how many pixels per tile in output
+        output_tile_size = 80
+        
+        # Destination: square tile centered in output
+        cx, cy = self.unwarp_size // 2, self.unwarp_size // 2
+        half = output_tile_size // 2
+        
         dst_pts = np.array([
-            [0, 0],
-            [self.unwarp_size, 0],
-            [self.unwarp_size, self.unwarp_size],
-            [0, self.unwarp_size]
+            [cx - half, cy - half],
+            [cx + half, cy - half],
+            [cx + half, cy + half],
+            [cx - half, cy + half]
         ], dtype=np.float32)
         
         H, _ = cv2.findHomography(src_pts, dst_pts)
@@ -102,7 +113,7 @@ class VideoViewer:
         return display
     
     def draw_unwarped(self, frame, result):
-        """Create top-down unwarped view with grid."""
+        """Create top-down unwarped view of entire image with transformed quads."""
         if not result or not result.get("quads"):
             # No quads - show placeholder
             placeholder = np.zeros((self.unwarp_size, self.unwarp_size, 3), dtype=np.uint8)
@@ -119,19 +130,15 @@ class VideoViewer:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 100), 2)
             return placeholder
         
-        # Warp the image
+        # Warp the ENTIRE image
         unwarped = cv2.warpPerspective(frame, H, (self.unwarp_size, self.unwarp_size))
         
-        # Draw grid overlay
-        grid_color = (0, 255, 255)
-        num_lines = 5
-        step = self.unwarp_size // num_lines
-        
-        for i in range(num_lines + 1):
-            # Vertical lines
-            cv2.line(unwarped, (i * step, 0), (i * step, self.unwarp_size), grid_color, 1)
-            # Horizontal lines
-            cv2.line(unwarped, (0, i * step), (self.unwarp_size, i * step), grid_color, 1)
+        # Transform and draw all quads on unwarped view
+        for q in quads:
+            src_pts = np.array(q, dtype=np.float32).reshape(-1, 1, 2)
+            dst_pts = cv2.perspectiveTransform(src_pts, H)
+            dst_pts = dst_pts.reshape(-1, 2).astype(np.int32)
+            cv2.polylines(unwarped, [dst_pts], True, (0, 255, 255), 2)
         
         return unwarped
     
@@ -143,11 +150,12 @@ class VideoViewer:
             self.loading = False
             return
         
+        # Get prediction BEFORE updating display
+        result = self.request_prediction(frame)
+        
+        # Update both together atomically
         self.current_frame = frame
         self.current_frame_idx = idx
-        
-        # Get prediction
-        result = self.request_prediction(frame)
         self.current_result = result
         
         if result:
