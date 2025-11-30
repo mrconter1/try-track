@@ -163,6 +163,102 @@ class VideoViewer:
             return cv2.merge([unwarped, alpha])
         return unwarped
     
+    def calc_alignment_score(self, prev_unwarped, curr_unwarped, offset_x, offset_y, rotation):
+        """Calculate diff and overlap for a given alignment. Returns (diff_per_px, overlap_pct) or (None, None) if invalid."""
+        h, w = prev_unwarped.shape[:2]
+        
+        # Separate BGR and Alpha
+        prev_bgr = prev_unwarped[:, :, :3]
+        prev_alpha = prev_unwarped[:, :, 3]
+        curr_bgr = curr_unwarped[:, :, :3]
+        curr_alpha = curr_unwarped[:, :, 3]
+        
+        # Apply rotation to current frame
+        if rotation != 0:
+            center = (w // 2, h // 2)
+            M_rot = cv2.getRotationMatrix2D(center, -rotation, 1.0)
+            curr_bgr = cv2.warpAffine(curr_bgr, M_rot, (w, h))
+            curr_alpha = cv2.warpAffine(curr_alpha, M_rot, (w, h))
+        
+        # Create canvases
+        pad = max(abs(offset_x), abs(offset_y)) + 50
+        canvas_h, canvas_w = h + 2 * pad, w + 2 * pad
+        
+        prev_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        prev_canvas[pad:pad+h, pad:pad+w] = prev_bgr
+        prev_alpha_canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+        prev_alpha_canvas[pad:pad+h, pad:pad+w] = prev_alpha
+        
+        curr_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        curr_alpha_canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+        y1, x1 = pad + offset_y, pad + offset_x
+        curr_canvas[y1:y1+h, x1:x1+w] = curr_bgr
+        curr_alpha_canvas[y1:y1+h, x1:x1+w] = curr_alpha
+        
+        # Calculate overlap region
+        prev_y1, prev_y2 = pad, pad + h
+        prev_x1, prev_x2 = pad, pad + w
+        curr_y1, curr_y2 = y1, y1 + h
+        curr_x1, curr_x2 = x1, x1 + w
+        ov_y1 = max(prev_y1, curr_y1)
+        ov_y2 = min(prev_y2, curr_y2)
+        ov_x1 = max(prev_x1, curr_x1)
+        ov_x2 = min(prev_x2, curr_x2)
+        
+        if ov_y2 <= ov_y1 or ov_x2 <= ov_x1:
+            return None, None
+        
+        prev_total_valid = np.sum(prev_alpha_canvas > 0)
+        curr_total_valid = np.sum(curr_alpha_canvas > 0)
+        
+        prev_alpha_region = prev_alpha_canvas[ov_y1:ov_y2, ov_x1:ov_x2]
+        curr_alpha_region = curr_alpha_canvas[ov_y1:ov_y2, ov_x1:ov_x2]
+        valid_mask = (prev_alpha_region > 0) & (curr_alpha_region > 0)
+        num_valid = np.sum(valid_mask)
+        
+        min_valid = min(prev_total_valid, curr_total_valid)
+        if min_valid == 0:
+            return None, None
+        
+        overlap_pct = (num_valid / min_valid) * 100
+        
+        if num_valid == 0:
+            return None, overlap_pct
+        
+        prev_region = prev_canvas[ov_y1:ov_y2, ov_x1:ov_x2].astype(np.int32)
+        curr_region = curr_canvas[ov_y1:ov_y2, ov_x1:ov_x2].astype(np.int32)
+        diff = np.abs(prev_region - curr_region)
+        masked_diff = diff[valid_mask]
+        diff_per_px = np.sum(masked_diff) / num_valid
+        
+        return diff_per_px, overlap_pct
+    
+    def find_best_alignment(self):
+        """Try different offsets and rotations, return best alignment."""
+        if self.previous_unwarped is None or self.current_unwarped is None:
+            return 0, 0, 0.0
+        
+        best_diff = float('inf')
+        best_params = (0, 0, 0.0)
+        tile_size = 80
+        
+        # Try offsets from -4 to +4 tiles, all rotations
+        for rot in [0, 90, 180, 270]:
+            for ox in range(-4, 5):
+                for oy in range(-4, 5):
+                    offset_x = ox * tile_size
+                    offset_y = oy * tile_size
+                    diff, overlap = self.calc_alignment_score(
+                        self.previous_unwarped, self.current_unwarped,
+                        offset_x, offset_y, rot
+                    )
+                    if diff is not None and overlap is not None and overlap >= 25.0:
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_params = (offset_x, offset_y, float(rot))
+        
+        return best_params
+    
     def process_frame(self, idx):
         """Load frame and get prediction."""
         self.loading = True
@@ -186,6 +282,10 @@ class VideoViewer:
         # Only update current_unwarped if we have valid quads (with alpha for comparison)
         if result and result.get("quads"):
             self.current_unwarped = self.draw_unwarped(frame, result, with_alpha=True)
+            # Auto-find best alignment
+            if self.compare_mode and self.previous_unwarped is not None:
+                self.offset_x, self.offset_y, self.rotation = self.find_best_alignment()
+                print(f"  Auto-align: offset ({self.offset_x}, {self.offset_y}), rot {self.rotation}deg")
         
         if result:
             quads = len(result.get('quads', []))
@@ -208,20 +308,26 @@ class VideoViewer:
         if self.compare_mode and self.previous_unwarped is not None and self.current_unwarped is not None:
             # Compare mode: blend previous and current with offset
             # Images are BGRA (4 channels)
-            pad = max(abs(self.offset_x), abs(self.offset_y)) + 50
+            # Use fixed large padding to avoid race conditions with offset changes
+            pad = 500
             h, w = self.previous_unwarped.shape[:2]
             canvas_h, canvas_w = h + 2 * pad, w + 2 * pad
+            
+            # Capture current offset/rotation values to avoid race conditions
+            offset_x = self.offset_x
+            offset_y = self.offset_y
+            rotation = self.rotation
             
             # Separate BGR and Alpha
             prev_bgr = self.previous_unwarped[:, :, :3]
             prev_alpha = self.previous_unwarped[:, :, 3]
-            curr_bgr = self.current_unwarped[:, :, :3]
-            curr_alpha = self.current_unwarped[:, :, 3]
+            curr_bgr = self.current_unwarped[:, :, :3].copy()
+            curr_alpha = self.current_unwarped[:, :, 3].copy()
             
             # Apply rotation to current frame if needed
-            if self.rotation != 0:
+            if rotation != 0:
                 center = (w // 2, h // 2)
-                M_rot = cv2.getRotationMatrix2D(center, -self.rotation, 1.0)
+                M_rot = cv2.getRotationMatrix2D(center, -rotation, 1.0)
                 curr_bgr = cv2.warpAffine(curr_bgr, M_rot, (w, h))
                 curr_alpha = cv2.warpAffine(curr_alpha, M_rot, (w, h))
             
@@ -231,18 +337,26 @@ class VideoViewer:
             prev_alpha_canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
             prev_alpha_canvas[pad:pad+h, pad:pad+w] = prev_alpha
             
-            # Place current frame with offset on canvas
+            # Place current frame with offset on canvas (clamp to valid range)
             curr_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
             curr_alpha_canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
-            y1, x1 = pad + self.offset_y, pad + self.offset_x
-            curr_canvas[y1:y1+h, x1:x1+w] = curr_bgr
-            curr_alpha_canvas[y1:y1+h, x1:x1+w] = curr_alpha
+            y1, x1 = pad + offset_y, pad + offset_x
+            y2, x2 = y1 + h, x1 + w
+            # Clamp to canvas bounds
+            cy1, cy2 = max(0, y1), min(canvas_h, y2)
+            cx1, cx2 = max(0, x1), min(canvas_w, x2)
+            # Source region offset if y1 or x1 was negative
+            sy1, sx1 = max(0, -y1), max(0, -x1)
+            sy2, sx2 = sy1 + (cy2 - cy1), sx1 + (cx2 - cx1)
+            if cy2 > cy1 and cx2 > cx1:
+                curr_canvas[cy1:cy2, cx1:cx2] = curr_bgr[sy1:sy2, sx1:sx2]
+                curr_alpha_canvas[cy1:cy2, cx1:cx2] = curr_alpha[sy1:sy2, sx1:sx2]
             
             # Calculate overlap region and pixel difference (only where both have valid alpha)
             prev_y1, prev_y2 = pad, pad + h
             prev_x1, prev_x2 = pad, pad + w
-            curr_y1, curr_y2 = y1, y1 + h
-            curr_x1, curr_x2 = x1, x1 + w
+            curr_y1, curr_y2 = cy1, cy2
+            curr_x1, curr_x2 = cx1, cx2
             ov_y1 = max(prev_y1, curr_y1)
             ov_y2 = min(prev_y2, curr_y2)
             ov_x1 = max(prev_x1, curr_x1)
