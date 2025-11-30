@@ -243,67 +243,74 @@ class VideoViewer:
         return diff_per_px, overlap_pct
     
     def find_best_alignment(self):
-        """Try different offsets and rotations, return best alignment."""
-        if self.previous_unwarped is None or self.current_unwarped is None:
+        """Try different offsets and rotations against the global map."""
+        if self.current_unwarped is None:
             return 0, 0, 0.0
         
-        # Downsample both images for faster search (also adds robustness to minor translations)
+        # If no stored frames yet, return origin
+        if not self.stored_frames:
+            return 0, 0, 0.0
+        
+        # Build global map for comparison
+        global_bgra, min_x, min_y = self.build_global_map_bgra()
+        if global_bgra is None:
+            return 0, 0, 0.0
+        
+        # Downsample for faster search
         scale = self.align_scale
-        h, w = self.previous_unwarped.shape[:2]
         
         if scale > 1:
-            small_h, small_w = h // scale, w // scale
-            prev_small = cv2.resize(self.previous_unwarped, (small_w, small_h), interpolation=cv2.INTER_AREA)
-            curr_small = cv2.resize(self.current_unwarped, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            gh, gw = global_bgra.shape[:2]
+            global_small = cv2.resize(global_bgra, (gw // scale, gh // scale), interpolation=cv2.INTER_AREA)
+            ch, cw = self.current_unwarped.shape[:2]
+            curr_small = cv2.resize(self.current_unwarped, (cw // scale, ch // scale), interpolation=cv2.INTER_AREA)
             tile_size = 80 // scale
+            min_x_scaled, min_y_scaled = min_x // scale, min_y // scale
         else:
-            prev_small = self.previous_unwarped
+            global_small = global_bgra
             curr_small = self.current_unwarped
             tile_size = 80
+            min_x_scaled, min_y_scaled = min_x, min_y
         
         best_diff = float('inf')
         best_params = (0, 0, 0.0)
         
-        # Try offsets from -4 to +4 tiles, all rotations
+        # Search around the edges of the current global map
+        # Try offsets from -4 to +4 tiles relative to global map bounds
         for rot in [0, 90, 180, 270]:
             for ox in range(-4, 5):
                 for oy in range(-4, 5):
-                    offset_x = ox * tile_size
-                    offset_y = oy * tile_size
+                    # Position in global map coordinates (scaled)
+                    offset_x = ox * tile_size - min_x_scaled
+                    offset_y = oy * tile_size - min_y_scaled
+                    
                     diff, overlap = self.calc_alignment_score(
-                        prev_small, curr_small,
+                        global_small, curr_small,
                         offset_x, offset_y, rot
                     )
                     if diff is not None and overlap is not None and overlap >= 25.0:
                         if diff < best_diff:
                             best_diff = diff
-                            best_params = (ox * 80, oy * 80, float(rot))  # Return full-scale offsets
+                            # Return full-scale global offsets
+                            best_params = (ox * 80, oy * 80, float(rot))
         
         return best_params
     
-    def store_frame_in_map(self, unwarped, rel_offset_x, rel_offset_y, rel_rotation):
-        """Store frame with accumulated global offset."""
-        # Accumulate offsets
-        self.global_offset_x += rel_offset_x
-        self.global_offset_y += rel_offset_y
-        self.global_rotation = (self.global_rotation + rel_rotation) % 360.0
-        
+    def store_frame_in_map(self, unwarped, global_x, global_y, rotation):
+        """Store frame with its absolute global position."""
         # Store frame with its global position
         self.stored_frames.append((
             unwarped.copy(),
-            self.global_offset_x,
-            self.global_offset_y,
-            self.global_rotation
+            global_x,
+            global_y,
+            rotation
         ))
-        print(f"  Stored frame {len(self.stored_frames)}: global ({self.global_offset_x}, {self.global_offset_y}), rot {self.global_rotation}deg")
+        print(f"  Stored frame {len(self.stored_frames)}: global ({global_x}, {global_y}), rot {rotation}deg")
     
-    def build_global_map(self):
-        """Build global map by averaging all stored frames at their positions."""
+    def build_global_map_bgra(self):
+        """Build global map as BGRA with alpha showing coverage. Returns (bgra, min_x, min_y) or None."""
         if not self.stored_frames:
-            placeholder = np.zeros((self.unwarp_size, self.unwarp_size, 3), dtype=np.uint8)
-            cv2.putText(placeholder, "No frames stored", (self.unwarp_size//2 - 80, self.unwarp_size//2),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
-            return placeholder
+            return None, 0, 0
         
         # Find bounds of all frames
         min_x, max_x = 0, 0
@@ -355,9 +362,29 @@ class VideoViewer:
                 count_canvas[dst_y1:dst_y2, dst_x1:dst_x2] += mask
         
         # Average
-        count_canvas = np.maximum(count_canvas, 1)  # Avoid division by zero
-        avg_canvas = sum_canvas / count_canvas[:, :, np.newaxis]
-        avg_canvas = np.clip(avg_canvas, 0, 255).astype(np.uint8)
+        valid_mask = count_canvas > 0
+        avg_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        for c in range(3):
+            avg_canvas[:, :, c] = np.where(valid_mask, sum_canvas[:, :, c] / np.maximum(count_canvas, 1), 0).astype(np.uint8)
+        
+        # Create alpha channel (255 where we have data)
+        alpha_canvas = np.where(valid_mask, 255, 0).astype(np.uint8)
+        
+        # Merge to BGRA
+        bgra = cv2.merge([avg_canvas, alpha_canvas])
+        return bgra, min_x, min_y
+    
+    def build_global_map(self):
+        """Build global map for display."""
+        bgra, _, _ = self.build_global_map_bgra()
+        if bgra is None:
+            placeholder = np.zeros((self.unwarp_size, self.unwarp_size, 3), dtype=np.uint8)
+            cv2.putText(placeholder, "No frames stored", (self.unwarp_size//2 - 80, self.unwarp_size//2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
+            return placeholder
+        
+        avg_canvas = bgra[:, :, :3]
+        canvas_h, canvas_w = avg_canvas.shape[:2]
         
         # Resize to fit display if too large
         display_size = self.unwarp_size + 200
@@ -390,21 +417,29 @@ class VideoViewer:
         # Only update current_unwarped if we have valid quads (with alpha for comparison, no quads drawn)
         if result and result.get("quads"):
             self.current_unwarped = self.draw_unwarped(frame, result, with_alpha=True, draw_quads=False)
-            # Auto-find best alignment
-            if self.compare_mode and self.previous_unwarped is not None:
-                self.offset_x, self.offset_y, self.rotation = self.find_best_alignment()
-                print(f"  Auto-align: offset ({self.offset_x}, {self.offset_y}), rot {self.rotation}deg")
-                
-                # Check overlap and store if valid
-                diff, overlap = self.calc_alignment_score(
-                    self.previous_unwarped, self.current_unwarped,
-                    self.offset_x, self.offset_y, self.rotation
-                )
-                if overlap is not None and overlap >= 25.0:
-                    self.store_frame_in_map(self.current_unwarped, self.offset_x, self.offset_y, self.rotation)
-            elif self.compare_mode and len(self.stored_frames) == 0:
-                # First frame - store at origin
-                self.store_frame_in_map(self.current_unwarped, 0, 0, 0.0)
+            # Auto-find best alignment against global map
+            if self.compare_mode:
+                if len(self.stored_frames) == 0:
+                    # First frame - store at origin
+                    self.store_frame_in_map(self.current_unwarped, 0, 0, 0.0)
+                    self.offset_x, self.offset_y, self.rotation = 0, 0, 0.0
+                else:
+                    # Find best alignment against global map
+                    self.offset_x, self.offset_y, self.rotation = self.find_best_alignment()
+                    print(f"  Auto-align: global ({self.offset_x}, {self.offset_y}), rot {self.rotation}deg")
+                    
+                    # Check overlap against global map and store if valid
+                    global_bgra, min_x, min_y = self.build_global_map_bgra()
+                    if global_bgra is not None:
+                        # Convert to global map coordinates for comparison
+                        compare_offset_x = self.offset_x - min_x
+                        compare_offset_y = self.offset_y - min_y
+                        diff, overlap = self.calc_alignment_score(
+                            global_bgra, self.current_unwarped,
+                            compare_offset_x, compare_offset_y, self.rotation
+                        )
+                        if overlap is not None and overlap >= 25.0:
+                            self.store_frame_in_map(self.current_unwarped, self.offset_x, self.offset_y, self.rotation)
         
         if result:
             quads = len(result.get('quads', []))
@@ -548,14 +583,14 @@ class VideoViewer:
                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             # Show pixel difference on top right of right canvas
             if pixel_diff is not None:
-                diff_text = f"Diff/px: {pixel_diff:.2f}"
+                diff_text = f"Diff/px: {pixel_diff:.4f}"
                 text_size = cv2.getTextSize(diff_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
                 text_x = combined.shape[1] - text_size[0] - 10
                 cv2.putText(combined, diff_text, (text_x, 25), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             # Show overlap percentage
             if overlap_pct is not None:
-                overlap_text = f"Overlap: {overlap_pct:.1f}%"
+                overlap_text = f"Overlap: {overlap_pct:.4f}%"
                 text_size = cv2.getTextSize(overlap_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
                 text_x = combined.shape[1] - text_size[0] - 10
                 cv2.putText(combined, overlap_text, (text_x, 50), 
