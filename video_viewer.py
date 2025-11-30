@@ -41,6 +41,7 @@ class VideoViewer:
         self.current_unwarped = None
         self.offset_x = 0
         self.offset_y = 0
+        self.rotation = 0.0  # degrees
         self.compare_mode = False
         
     def close(self):
@@ -217,6 +218,13 @@ class VideoViewer:
             curr_bgr = self.current_unwarped[:, :, :3]
             curr_alpha = self.current_unwarped[:, :, 3]
             
+            # Apply rotation to current frame if needed
+            if self.rotation != 0:
+                center = (w // 2, h // 2)
+                M_rot = cv2.getRotationMatrix2D(center, -self.rotation, 1.0)
+                curr_bgr = cv2.warpAffine(curr_bgr, M_rot, (w, h))
+                curr_alpha = cv2.warpAffine(curr_alpha, M_rot, (w, h))
+            
             # Place previous frame centered on canvas
             prev_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
             prev_canvas[pad:pad+h, pad:pad+w] = prev_bgr
@@ -299,7 +307,7 @@ class VideoViewer:
         
         # Show compare mode status
         if self.compare_mode:
-            cv2.putText(combined, f"COMPARE: offset ({self.offset_x}, {self.offset_y})", 
+            cv2.putText(combined, f"COMPARE: offset ({self.offset_x}, {self.offset_y}) rot {self.rotation:.1f}deg", 
                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             # Show pixel difference on top right of right canvas
             if pixel_diff is not None:
@@ -352,7 +360,8 @@ def main():
     print("  Space: Toggle auto-play")
     print("  C: Toggle compare mode (overlay prev/current)")
     print("  Arrow keys: Move current frame offset (in compare mode)")
-    print("  R: Reset offset to (0,0)")
+    print("  R/T: Rotate current frame clockwise/counter-clockwise")
+    print("  Z: Reset offset and rotation")
     print("  ESC: Quit")
     
     window_name = "Video Viewer"
@@ -433,10 +442,15 @@ def main():
         elif key == ord('c') or key == ord('C'):  # C - toggle compare mode
             viewer.compare_mode = not viewer.compare_mode
             print(f"Compare mode: {'ON' if viewer.compare_mode else 'OFF'}")
-        elif key == ord('r') or key == ord('R'):  # R - reset offset
+        elif key == ord('r') or key == ord('R'):  # R - rotate clockwise
+            viewer.rotation = (viewer.rotation + 90.0) % 360.0
+        elif key == ord('t') or key == ord('T'):  # T - rotate counter-clockwise
+            viewer.rotation = (viewer.rotation - 90.0) % 360.0
+        elif key == ord('z') or key == ord('Z'):  # Z - reset offset and rotation
             viewer.offset_x = 0
             viewer.offset_y = 0
-            print("Offset reset to (0, 0)")
+            viewer.rotation = 0.0
+            print("Reset: offset (0, 0), rotation 0.0")
         elif key == 2490368:  # Up arrow (Windows)
             viewer.offset_y -= 80  # Move one tile
         elif key == 2621440:  # Down arrow (Windows)
