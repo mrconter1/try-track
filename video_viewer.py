@@ -192,14 +192,10 @@ class VideoViewer:
         # Unwarped view
         if self.compare_mode and self.previous_unwarped is not None and self.current_unwarped is not None:
             # Compare mode: blend previous and current with offset
-            # Use fixed padding so canvas size stays constant
-            pad = 200
+            # Dynamic padding based on offset to allow unlimited movement
+            pad = max(abs(self.offset_x), abs(self.offset_y)) + 50
             h, w = self.previous_unwarped.shape[:2]
             canvas_h, canvas_w = h + 2 * pad, w + 2 * pad
-            
-            # Clamp offset to stay within padding bounds
-            ox = max(-pad + 10, min(pad - 10, self.offset_x))
-            oy = max(-pad + 10, min(pad - 10, self.offset_y))
             
             # Place previous frame centered on canvas
             prev_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
@@ -207,11 +203,15 @@ class VideoViewer:
             
             # Place current frame with offset on canvas
             curr_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-            y1, x1 = pad + oy, pad + ox
+            y1, x1 = pad + self.offset_y, pad + self.offset_x
             curr_canvas[y1:y1+h, x1:x1+w] = self.current_unwarped
             
             # Blend at 50% opacity
-            unwarped = cv2.addWeighted(prev_canvas, 0.5, curr_canvas, 0.5, 0)
+            blended = cv2.addWeighted(prev_canvas, 0.5, curr_canvas, 0.5, 0)
+            
+            # Crop back to fixed display size centered on the previous frame
+            crop_pad = 50
+            unwarped = blended[pad-crop_pad:pad+h+crop_pad, pad-crop_pad:pad+w+crop_pad]
         else:
             # Normal mode: show current frame's unwarped (with placeholder if no quads)
             unwarped = self.draw_unwarped(self.current_frame, self.current_result)
