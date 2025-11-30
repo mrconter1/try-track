@@ -160,8 +160,8 @@ class VideoViewer:
         # Get prediction BEFORE updating display
         result = self.request_prediction(frame)
         
-        # Save current unwarped as previous before updating
-        if self.current_unwarped is not None:
+        # Only save previous if current is a valid unwarped (not placeholder)
+        if self.current_unwarped is not None and self.current_result and self.current_result.get("quads"):
             self.previous_unwarped = self.current_unwarped.copy()
         
         # Update both together atomically
@@ -169,8 +169,10 @@ class VideoViewer:
         self.current_frame_idx = idx
         self.current_result = result
         
-        # Generate and store current unwarped
-        self.current_unwarped = self.draw_unwarped(frame, result)
+        # Only update current_unwarped if we have valid quads
+        new_unwarped = self.draw_unwarped(frame, result)
+        if result and result.get("quads"):
+            self.current_unwarped = new_unwarped
         
         if result:
             quads = len(result.get('quads', []))
@@ -187,19 +189,32 @@ class VideoViewer:
         # Original with annotations
         original = self.draw_original(self.current_frame, self.current_result)
         
-        # Unwarped view - use stored version
-        if self.current_unwarped is not None:
-            unwarped = self.current_unwarped.copy()
-        else:
-            unwarped = self.draw_unwarped(self.current_frame, self.current_result)
-        
-        # Compare mode: blend previous and current with offset
-        if self.compare_mode and self.previous_unwarped is not None:
-            # Shift current frame by offset
-            M = np.float32([[1, 0, self.offset_x], [0, 1, self.offset_y]])
-            shifted = cv2.warpAffine(unwarped, M, (unwarped.shape[1], unwarped.shape[0]))
+        # Unwarped view
+        if self.compare_mode and self.previous_unwarped is not None and self.current_unwarped is not None:
+            # Compare mode: blend previous and current with offset
+            # Use fixed padding so canvas size stays constant
+            pad = 200
+            h, w = self.previous_unwarped.shape[:2]
+            canvas_h, canvas_w = h + 2 * pad, w + 2 * pad
+            
+            # Clamp offset to stay within padding bounds
+            ox = max(-pad + 10, min(pad - 10, self.offset_x))
+            oy = max(-pad + 10, min(pad - 10, self.offset_y))
+            
+            # Place previous frame centered on canvas
+            prev_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+            prev_canvas[pad:pad+h, pad:pad+w] = self.previous_unwarped
+            
+            # Place current frame with offset on canvas
+            curr_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+            y1, x1 = pad + oy, pad + ox
+            curr_canvas[y1:y1+h, x1:x1+w] = self.current_unwarped
+            
             # Blend at 50% opacity
-            unwarped = cv2.addWeighted(self.previous_unwarped, 0.5, shifted, 0.5, 0)
+            unwarped = cv2.addWeighted(prev_canvas, 0.5, curr_canvas, 0.5, 0)
+        else:
+            # Normal mode: show current frame's unwarped (with placeholder if no quads)
+            unwarped = self.draw_unwarped(self.current_frame, self.current_result)
         
         # Resize original to match height with unwarped
         scale = self.unwarp_size / original.shape[0]
@@ -242,6 +257,8 @@ def main():
     parser.add_argument('video', help='Path to video file')
     parser.add_argument('--server', default='http://localhost:8000', help='Server URL')
     parser.add_argument('--threshold', type=float, default=0.1, help='Detection threshold')
+    parser.add_argument('--start', type=int, default=0, help='Start frame')
+    parser.add_argument('--compare', action='store_true', help='Start with compare mode on')
     args = parser.parse_args()
     
     server_url = args.server.rstrip('/') + "/predict"
@@ -270,10 +287,19 @@ def main():
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.createTrackbar("Frame", window_name, 0, viewer.total_frames - 1, on_trackbar)
     
-    # Initial frame
-    viewer.process_frame(0)
+    # Set compare mode if requested
+    if args.compare:
+        viewer.compare_mode = True
+        print("Compare mode: ON")
     
-    last_trackbar_pos = 0
+    # Initial frame - load start frame and previous for compare mode
+    start_frame = min(args.start, viewer.total_frames - 1)
+    if start_frame > 0:
+        viewer.process_frame(start_frame - 1)
+    viewer.process_frame(start_frame)
+    cv2.setTrackbarPos("Frame", window_name, start_frame)
+    
+    last_trackbar_pos = start_frame
     auto_play = False
     
     while True:
