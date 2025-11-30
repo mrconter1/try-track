@@ -45,6 +45,13 @@ class VideoViewer:
         self.rotation = 0.0  # degrees
         self.compare_mode = False
         
+        # Global map building
+        self.stored_frames = []  # List of (unwarped_bgra, global_x, global_y, rotation)
+        self.global_offset_x = 0
+        self.global_offset_y = 0
+        self.global_rotation = 0.0
+        self.show_global_map = True
+        
     def close(self):
         self.cap.release()
         self.session.close()
@@ -121,7 +128,7 @@ class VideoViewer:
         
         return display
     
-    def draw_unwarped(self, frame, result, with_alpha=False):
+    def draw_unwarped(self, frame, result, with_alpha=False, draw_quads=True):
         """Create top-down unwarped view of entire image with transformed quads."""
         if not result or not result.get("quads"):
             # No quads - show placeholder
@@ -153,12 +160,13 @@ class VideoViewer:
             mask_src = np.ones((frame.shape[0], frame.shape[1]), dtype=np.uint8) * 255
             alpha = cv2.warpPerspective(mask_src, H, (self.unwarp_size, self.unwarp_size))
         
-        # Transform and draw all quads on unwarped view
-        for q in quads:
-            src_pts = np.array(q, dtype=np.float32).reshape(-1, 1, 2)
-            dst_pts = cv2.perspectiveTransform(src_pts, H)
-            dst_pts = dst_pts.reshape(-1, 2).astype(np.int32)
-            cv2.polylines(unwarped, [dst_pts], True, (0, 255, 255), 2)
+        # Transform and draw all quads on unwarped view (only if requested)
+        if draw_quads:
+            for q in quads:
+                src_pts = np.array(q, dtype=np.float32).reshape(-1, 1, 2)
+                dst_pts = cv2.perspectiveTransform(src_pts, H)
+                dst_pts = dst_pts.reshape(-1, 2).astype(np.int32)
+                cv2.polylines(unwarped, [dst_pts], True, (0, 255, 255), 2)
         
         if with_alpha:
             return cv2.merge([unwarped, alpha])
@@ -273,6 +281,92 @@ class VideoViewer:
         
         return best_params
     
+    def store_frame_in_map(self, unwarped, rel_offset_x, rel_offset_y, rel_rotation):
+        """Store frame with accumulated global offset."""
+        # Accumulate offsets
+        self.global_offset_x += rel_offset_x
+        self.global_offset_y += rel_offset_y
+        self.global_rotation = (self.global_rotation + rel_rotation) % 360.0
+        
+        # Store frame with its global position
+        self.stored_frames.append((
+            unwarped.copy(),
+            self.global_offset_x,
+            self.global_offset_y,
+            self.global_rotation
+        ))
+        print(f"  Stored frame {len(self.stored_frames)}: global ({self.global_offset_x}, {self.global_offset_y}), rot {self.global_rotation}deg")
+    
+    def build_global_map(self):
+        """Build global map by averaging all stored frames at their positions."""
+        if not self.stored_frames:
+            placeholder = np.zeros((self.unwarp_size, self.unwarp_size, 3), dtype=np.uint8)
+            cv2.putText(placeholder, "No frames stored", (self.unwarp_size//2 - 80, self.unwarp_size//2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
+            return placeholder
+        
+        # Find bounds of all frames
+        min_x, max_x = 0, 0
+        min_y, max_y = 0, 0
+        h, w = self.stored_frames[0][0].shape[:2]
+        
+        for _, gx, gy, _ in self.stored_frames:
+            min_x = min(min_x, gx)
+            max_x = max(max_x, gx + w)
+            min_y = min(min_y, gy)
+            max_y = max(max_y, gy + h)
+        
+        # Create canvas for sum and count
+        canvas_w = max_x - min_x
+        canvas_h = max_y - min_y
+        sum_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.float64)
+        count_canvas = np.zeros((canvas_h, canvas_w), dtype=np.float64)
+        
+        # Add each frame to the canvas
+        for unwarped, gx, gy, rot in self.stored_frames:
+            frame_h, frame_w = unwarped.shape[:2]
+            bgr = unwarped[:, :, :3].astype(np.float64)
+            alpha = unwarped[:, :, 3]
+            
+            # Apply rotation if needed
+            if rot != 0:
+                center = (frame_w // 2, frame_h // 2)
+                M_rot = cv2.getRotationMatrix2D(center, -rot, 1.0)
+                bgr = cv2.warpAffine(bgr, M_rot, (frame_w, frame_h))
+                alpha = cv2.warpAffine(alpha, M_rot, (frame_w, frame_h))
+            
+            # Position on canvas
+            cx = gx - min_x
+            cy = gy - min_y
+            
+            # Clamp to canvas bounds
+            dst_x1, dst_x2 = max(0, cx), min(canvas_w, cx + frame_w)
+            dst_y1, dst_y2 = max(0, cy), min(canvas_h, cy + frame_h)
+            src_x1, src_x2 = max(0, -cx), frame_w - max(0, cx + frame_w - canvas_w)
+            src_y1, src_y2 = max(0, -cy), frame_h - max(0, cy + frame_h - canvas_h)
+            
+            if dst_x2 > dst_x1 and dst_y2 > dst_y1:
+                bgr_slice = bgr[src_y1:src_y2, src_x1:src_x2]
+                alpha_slice = alpha[src_y1:src_y2, src_x1:src_x2]
+                mask = alpha_slice > 0
+                
+                for c in range(3):
+                    sum_canvas[dst_y1:dst_y2, dst_x1:dst_x2, c] += bgr_slice[:, :, c] * mask
+                count_canvas[dst_y1:dst_y2, dst_x1:dst_x2] += mask
+        
+        # Average
+        count_canvas = np.maximum(count_canvas, 1)  # Avoid division by zero
+        avg_canvas = sum_canvas / count_canvas[:, :, np.newaxis]
+        avg_canvas = np.clip(avg_canvas, 0, 255).astype(np.uint8)
+        
+        # Resize to fit display if too large
+        display_size = self.unwarp_size + 200
+        if canvas_h > display_size or canvas_w > display_size:
+            scale = display_size / max(canvas_h, canvas_w)
+            avg_canvas = cv2.resize(avg_canvas, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        
+        return avg_canvas
+    
     def process_frame(self, idx):
         """Load frame and get prediction."""
         self.loading = True
@@ -293,13 +387,24 @@ class VideoViewer:
         self.current_frame_idx = idx
         self.current_result = result
         
-        # Only update current_unwarped if we have valid quads (with alpha for comparison)
+        # Only update current_unwarped if we have valid quads (with alpha for comparison, no quads drawn)
         if result and result.get("quads"):
-            self.current_unwarped = self.draw_unwarped(frame, result, with_alpha=True)
+            self.current_unwarped = self.draw_unwarped(frame, result, with_alpha=True, draw_quads=False)
             # Auto-find best alignment
             if self.compare_mode and self.previous_unwarped is not None:
                 self.offset_x, self.offset_y, self.rotation = self.find_best_alignment()
                 print(f"  Auto-align: offset ({self.offset_x}, {self.offset_y}), rot {self.rotation}deg")
+                
+                # Check overlap and store if valid
+                diff, overlap = self.calc_alignment_score(
+                    self.previous_unwarped, self.current_unwarped,
+                    self.offset_x, self.offset_y, self.rotation
+                )
+                if overlap is not None and overlap >= 25.0:
+                    self.store_frame_in_map(self.current_unwarped, self.offset_x, self.offset_y, self.rotation)
+            elif self.compare_mode and len(self.stored_frames) == 0:
+                # First frame - store at origin
+                self.store_frame_in_map(self.current_unwarped, 0, 0, 0.0)
         
         if result:
             quads = len(result.get('quads', []))
@@ -410,6 +515,10 @@ class VideoViewer:
             # Normal mode: show current frame's unwarped (with placeholder if no quads)
             unwarped = self.draw_unwarped(self.current_frame, self.current_result)
         
+        # Override with global map if toggled
+        if self.show_global_map:
+            unwarped = self.build_global_map()
+        
         # Resize original to match height with unwarped
         scale = self.unwarp_size / original.shape[0]
         original_resized = cv2.resize(original, None, fx=scale, fy=scale)
@@ -488,6 +597,7 @@ def main():
     print("  Q/E: First/Last frame")
     print("  Space: Toggle auto-play")
     print("  C: Toggle compare mode (overlay prev/current)")
+    print("  G: Toggle global map view")
     print("  Arrow keys: Move current frame offset (in compare mode)")
     print("  R/T: Rotate current frame clockwise/counter-clockwise")
     print("  Z: Reset offset and rotation")
@@ -571,6 +681,9 @@ def main():
         elif key == ord('c') or key == ord('C'):  # C - toggle compare mode
             viewer.compare_mode = not viewer.compare_mode
             print(f"Compare mode: {'ON' if viewer.compare_mode else 'OFF'}")
+        elif key == ord('g') or key == ord('G'):  # G - toggle global map
+            viewer.show_global_map = not viewer.show_global_map
+            print(f"Global map: {'ON' if viewer.show_global_map else 'OFF'} ({len(viewer.stored_frames)} frames)")
         elif key == ord('r') or key == ord('R'):  # R - rotate clockwise
             viewer.rotation = (viewer.rotation + 90.0) % 360.0
         elif key == ord('t') or key == ord('T'):  # T - rotate counter-clockwise
