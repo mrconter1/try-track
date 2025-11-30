@@ -203,6 +203,7 @@ class VideoViewer:
         
         # Unwarped view
         pixel_diff = None
+        overlap_pct = None
         if self.compare_mode and self.previous_unwarped is not None and self.current_unwarped is not None:
             # Compare mode: blend previous and current with offset
             # Images are BGRA (4 channels)
@@ -238,6 +239,11 @@ class VideoViewer:
             ov_y2 = min(prev_y2, curr_y2)
             ov_x1 = max(prev_x1, curr_x1)
             ov_x2 = min(prev_x2, curr_x2)
+            
+            # Count total valid pixels in each frame
+            prev_total_valid = np.sum(prev_alpha_canvas > 0)
+            curr_total_valid = np.sum(curr_alpha_canvas > 0)
+            
             if ov_y2 > ov_y1 and ov_x2 > ov_x1:
                 prev_region = prev_canvas[ov_y1:ov_y2, ov_x1:ov_x2].astype(np.int32)
                 curr_region = curr_canvas[ov_y1:ov_y2, ov_x1:ov_x2].astype(np.int32)
@@ -246,6 +252,12 @@ class VideoViewer:
                 # Mask: only pixels where BOTH have valid alpha (> 0)
                 valid_mask = (prev_alpha_region > 0) & (curr_alpha_region > 0)
                 num_valid = np.sum(valid_mask)
+                
+                # Calculate overlap percentage
+                min_valid = min(prev_total_valid, curr_total_valid)
+                if min_valid > 0:
+                    overlap_pct = (num_valid / min_valid) * 100
+                
                 if num_valid > 0:
                     diff = np.abs(prev_region - curr_region)
                     # Apply mask to each channel
@@ -295,6 +307,13 @@ class VideoViewer:
                 text_size = cv2.getTextSize(diff_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
                 text_x = combined.shape[1] - text_size[0] - 10
                 cv2.putText(combined, diff_text, (text_x, 25), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            # Show overlap percentage
+            if overlap_pct is not None:
+                overlap_text = f"Overlap: {overlap_pct:.1f}%"
+                text_size = cv2.getTextSize(overlap_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                text_x = combined.shape[1] - text_size[0] - 10
+                cv2.putText(combined, overlap_text, (text_x, 50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         return combined
