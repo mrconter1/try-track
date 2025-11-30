@@ -366,13 +366,13 @@ def main():
             viewer.offset_y = 0
             print("Offset reset to (0, 0)")
         elif key == 2490368:  # Up arrow (Windows)
-            viewer.offset_y -= 1
+            viewer.offset_y -= 80  # Move one tile
         elif key == 2621440:  # Down arrow (Windows)
-            viewer.offset_y += 1
+            viewer.offset_y += 80  # Move one tile
         elif key == 2424832:  # Left arrow (Windows)
-            viewer.offset_x -= 1
+            viewer.offset_x -= 80  # Move one tile
         elif key == 2555904:  # Right arrow (Windows)
-            viewer.offset_x += 1
+            viewer.offset_x += 80  # Move one tile
     
     viewer.close()
     cv2.destroyAllWindows()
