@@ -13,10 +13,11 @@ import json
 import threading
 
 class VideoViewer:
-    def __init__(self, video_path, server_url, threshold=0.1):
+    def __init__(self, video_path, server_url, threshold=0.1, align_scale=4):
         self.video_path = video_path
         self.server_url = server_url
         self.threshold = threshold
+        self.align_scale = align_scale  # Downsample factor for alignment search
         
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
@@ -238,9 +239,22 @@ class VideoViewer:
         if self.previous_unwarped is None or self.current_unwarped is None:
             return 0, 0, 0.0
         
+        # Downsample both images for faster search (also adds robustness to minor translations)
+        scale = self.align_scale
+        h, w = self.previous_unwarped.shape[:2]
+        
+        if scale > 1:
+            small_h, small_w = h // scale, w // scale
+            prev_small = cv2.resize(self.previous_unwarped, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            curr_small = cv2.resize(self.current_unwarped, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            tile_size = 80 // scale
+        else:
+            prev_small = self.previous_unwarped
+            curr_small = self.current_unwarped
+            tile_size = 80
+        
         best_diff = float('inf')
         best_params = (0, 0, 0.0)
-        tile_size = 80
         
         # Try offsets from -4 to +4 tiles, all rotations
         for rot in [0, 90, 180, 270]:
@@ -249,13 +263,13 @@ class VideoViewer:
                     offset_x = ox * tile_size
                     offset_y = oy * tile_size
                     diff, overlap = self.calc_alignment_score(
-                        self.previous_unwarped, self.current_unwarped,
+                        prev_small, curr_small,
                         offset_x, offset_y, rot
                     )
                     if diff is not None and overlap is not None and overlap >= 25.0:
                         if diff < best_diff:
                             best_diff = diff
-                            best_params = (offset_x, offset_y, float(rot))
+                            best_params = (ox * 80, oy * 80, float(rot))  # Return full-scale offsets
         
         return best_params
     
@@ -453,6 +467,7 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.1, help='Detection threshold')
     parser.add_argument('--start', type=int, default=0, help='Start frame')
     parser.add_argument('--compare', action='store_true', help='Start with compare mode on')
+    parser.add_argument('--align-scale', type=int, default=4, help='Downsample scale for alignment search (1=full res, 4=1/4 size)')
     args = parser.parse_args()
     
     server_url = args.server.rstrip('/') + "/predict"
@@ -460,7 +475,7 @@ def main():
     print(f"Video: {args.video}")
     
     try:
-        viewer = VideoViewer(args.video, server_url, args.threshold)
+        viewer = VideoViewer(args.video, server_url, args.threshold, args.align_scale)
     except Exception as e:
         print(f"Error: {e}")
         return
