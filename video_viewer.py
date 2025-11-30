@@ -36,6 +36,13 @@ class VideoViewer:
         # Output size for unwarped view
         self.unwarp_size = 600
         
+        # Alignment comparison mode
+        self.previous_unwarped = None
+        self.current_unwarped = None
+        self.offset_x = 0
+        self.offset_y = 0
+        self.compare_mode = False
+        
     def close(self):
         self.cap.release()
         self.session.close()
@@ -153,10 +160,17 @@ class VideoViewer:
         # Get prediction BEFORE updating display
         result = self.request_prediction(frame)
         
+        # Save current unwarped as previous before updating
+        if self.current_unwarped is not None:
+            self.previous_unwarped = self.current_unwarped.copy()
+        
         # Update both together atomically
         self.current_frame = frame
         self.current_frame_idx = idx
         self.current_result = result
+        
+        # Generate and store current unwarped
+        self.current_unwarped = self.draw_unwarped(frame, result)
         
         if result:
             quads = len(result.get('quads', []))
@@ -173,8 +187,19 @@ class VideoViewer:
         # Original with annotations
         original = self.draw_original(self.current_frame, self.current_result)
         
-        # Unwarped view
-        unwarped = self.draw_unwarped(self.current_frame, self.current_result)
+        # Unwarped view - use stored version
+        if self.current_unwarped is not None:
+            unwarped = self.current_unwarped.copy()
+        else:
+            unwarped = self.draw_unwarped(self.current_frame, self.current_result)
+        
+        # Compare mode: blend previous and current with offset
+        if self.compare_mode and self.previous_unwarped is not None:
+            # Shift current frame by offset
+            M = np.float32([[1, 0, self.offset_x], [0, 1, self.offset_y]])
+            shifted = cv2.warpAffine(unwarped, M, (unwarped.shape[1], unwarped.shape[0]))
+            # Blend at 50% opacity
+            unwarped = cv2.addWeighted(self.previous_unwarped, 0.5, shifted, 0.5, 0)
         
         # Resize original to match height with unwarped
         scale = self.unwarp_size / original.shape[0]
@@ -198,6 +223,11 @@ class VideoViewer:
         if self.loading:
             cv2.putText(combined, "Loading...", (combined.shape[1]//2, 25),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        
+        # Show compare mode status
+        if self.compare_mode:
+            cv2.putText(combined, f"COMPARE: offset ({self.offset_x}, {self.offset_y})", 
+                       (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
         return combined
 
@@ -231,6 +261,9 @@ def main():
     print("  W/S: Step -10/+10 frames")
     print("  Q/E: First/Last frame")
     print("  Space: Toggle auto-play")
+    print("  C: Toggle compare mode (overlay prev/current)")
+    print("  Arrow keys: Move current frame offset (in compare mode)")
+    print("  R: Reset offset to (0,0)")
     print("  ESC: Quit")
     
     window_name = "Video Viewer"
@@ -269,8 +302,8 @@ def main():
             next_idx = (viewer.current_frame_idx + 1) % viewer.total_frames
             threading.Thread(target=viewer.process_frame, args=(next_idx,), daemon=True).start()
         
-        # Handle keys
-        key = cv2.waitKey(50) & 0xFF
+        # Handle keys (use waitKeyEx for arrow key support)
+        key = cv2.waitKeyEx(50)
         
         if key == 27:  # ESC
             break
@@ -299,6 +332,21 @@ def main():
         elif key == ord('e') or key == ord('E'):  # E - last frame
             if not viewer.loading:
                 threading.Thread(target=viewer.process_frame, args=(viewer.total_frames - 1,), daemon=True).start()
+        elif key == ord('c') or key == ord('C'):  # C - toggle compare mode
+            viewer.compare_mode = not viewer.compare_mode
+            print(f"Compare mode: {'ON' if viewer.compare_mode else 'OFF'}")
+        elif key == ord('r') or key == ord('R'):  # R - reset offset
+            viewer.offset_x = 0
+            viewer.offset_y = 0
+            print("Offset reset to (0, 0)")
+        elif key == 2490368:  # Up arrow (Windows)
+            viewer.offset_y -= 1
+        elif key == 2621440:  # Down arrow (Windows)
+            viewer.offset_y += 1
+        elif key == 2424832:  # Left arrow (Windows)
+            viewer.offset_x -= 1
+        elif key == 2555904:  # Right arrow (Windows)
+            viewer.offset_x += 1
     
     viewer.close()
     cv2.destroyAllWindows()
