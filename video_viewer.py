@@ -119,13 +119,16 @@ class VideoViewer:
         
         return display
     
-    def draw_unwarped(self, frame, result):
+    def draw_unwarped(self, frame, result, with_alpha=False):
         """Create top-down unwarped view of entire image with transformed quads."""
         if not result or not result.get("quads"):
             # No quads - show placeholder
             placeholder = np.zeros((self.unwarp_size, self.unwarp_size, 3), dtype=np.uint8)
             cv2.putText(placeholder, "No quads", (self.unwarp_size//2 - 50, self.unwarp_size//2),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 100), 2)
+            if with_alpha:
+                alpha = np.zeros((self.unwarp_size, self.unwarp_size), dtype=np.uint8)
+                return cv2.merge([placeholder, alpha])
             return placeholder
         
         quads = result.get("quads", [])
@@ -135,10 +138,18 @@ class VideoViewer:
             placeholder = np.zeros((self.unwarp_size, self.unwarp_size, 3), dtype=np.uint8)
             cv2.putText(placeholder, "No H", (self.unwarp_size//2 - 30, self.unwarp_size//2),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 100), 2)
+            if with_alpha:
+                alpha = np.zeros((self.unwarp_size, self.unwarp_size), dtype=np.uint8)
+                return cv2.merge([placeholder, alpha])
             return placeholder
         
         # Warp the ENTIRE image
         unwarped = cv2.warpPerspective(frame, H, (self.unwarp_size, self.unwarp_size))
+        
+        # Create alpha mask by warping a white image
+        if with_alpha:
+            mask_src = np.ones((frame.shape[0], frame.shape[1]), dtype=np.uint8) * 255
+            alpha = cv2.warpPerspective(mask_src, H, (self.unwarp_size, self.unwarp_size))
         
         # Transform and draw all quads on unwarped view
         for q in quads:
@@ -147,6 +158,8 @@ class VideoViewer:
             dst_pts = dst_pts.reshape(-1, 2).astype(np.int32)
             cv2.polylines(unwarped, [dst_pts], True, (0, 255, 255), 2)
         
+        if with_alpha:
+            return cv2.merge([unwarped, alpha])
         return unwarped
     
     def process_frame(self, idx):
@@ -169,10 +182,9 @@ class VideoViewer:
         self.current_frame_idx = idx
         self.current_result = result
         
-        # Only update current_unwarped if we have valid quads
-        new_unwarped = self.draw_unwarped(frame, result)
+        # Only update current_unwarped if we have valid quads (with alpha for comparison)
         if result and result.get("quads"):
-            self.current_unwarped = new_unwarped
+            self.current_unwarped = self.draw_unwarped(frame, result, with_alpha=True)
         
         if result:
             quads = len(result.get('quads', []))
@@ -190,21 +202,55 @@ class VideoViewer:
         original = self.draw_original(self.current_frame, self.current_result)
         
         # Unwarped view
+        pixel_diff = None
         if self.compare_mode and self.previous_unwarped is not None and self.current_unwarped is not None:
             # Compare mode: blend previous and current with offset
-            # Dynamic padding based on offset to allow unlimited movement
+            # Images are BGRA (4 channels)
             pad = max(abs(self.offset_x), abs(self.offset_y)) + 50
             h, w = self.previous_unwarped.shape[:2]
             canvas_h, canvas_w = h + 2 * pad, w + 2 * pad
             
+            # Separate BGR and Alpha
+            prev_bgr = self.previous_unwarped[:, :, :3]
+            prev_alpha = self.previous_unwarped[:, :, 3]
+            curr_bgr = self.current_unwarped[:, :, :3]
+            curr_alpha = self.current_unwarped[:, :, 3]
+            
             # Place previous frame centered on canvas
             prev_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-            prev_canvas[pad:pad+h, pad:pad+w] = self.previous_unwarped
+            prev_canvas[pad:pad+h, pad:pad+w] = prev_bgr
+            prev_alpha_canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+            prev_alpha_canvas[pad:pad+h, pad:pad+w] = prev_alpha
             
             # Place current frame with offset on canvas
             curr_canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+            curr_alpha_canvas = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
             y1, x1 = pad + self.offset_y, pad + self.offset_x
-            curr_canvas[y1:y1+h, x1:x1+w] = self.current_unwarped
+            curr_canvas[y1:y1+h, x1:x1+w] = curr_bgr
+            curr_alpha_canvas[y1:y1+h, x1:x1+w] = curr_alpha
+            
+            # Calculate overlap region and pixel difference (only where both have valid alpha)
+            prev_y1, prev_y2 = pad, pad + h
+            prev_x1, prev_x2 = pad, pad + w
+            curr_y1, curr_y2 = y1, y1 + h
+            curr_x1, curr_x2 = x1, x1 + w
+            ov_y1 = max(prev_y1, curr_y1)
+            ov_y2 = min(prev_y2, curr_y2)
+            ov_x1 = max(prev_x1, curr_x1)
+            ov_x2 = min(prev_x2, curr_x2)
+            if ov_y2 > ov_y1 and ov_x2 > ov_x1:
+                prev_region = prev_canvas[ov_y1:ov_y2, ov_x1:ov_x2].astype(np.int32)
+                curr_region = curr_canvas[ov_y1:ov_y2, ov_x1:ov_x2].astype(np.int32)
+                prev_alpha_region = prev_alpha_canvas[ov_y1:ov_y2, ov_x1:ov_x2]
+                curr_alpha_region = curr_alpha_canvas[ov_y1:ov_y2, ov_x1:ov_x2]
+                # Mask: only pixels where BOTH have valid alpha (> 0)
+                valid_mask = (prev_alpha_region > 0) & (curr_alpha_region > 0)
+                num_valid = np.sum(valid_mask)
+                if num_valid > 0:
+                    diff = np.abs(prev_region - curr_region)
+                    # Apply mask to each channel
+                    masked_diff = diff[valid_mask]
+                    pixel_diff = np.sum(masked_diff) / num_valid
             
             # Blend at 50% opacity
             blended = cv2.addWeighted(prev_canvas, 0.5, curr_canvas, 0.5, 0)
@@ -243,6 +289,13 @@ class VideoViewer:
         if self.compare_mode:
             cv2.putText(combined, f"COMPARE: offset ({self.offset_x}, {self.offset_y})", 
                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            # Show pixel difference on top right of right canvas
+            if pixel_diff is not None:
+                diff_text = f"Diff/px: {pixel_diff:.2f}"
+                text_size = cv2.getTextSize(diff_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                text_x = combined.shape[1] - text_size[0] - 10
+                cv2.putText(combined, diff_text, (text_x, 25), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         return combined
 
