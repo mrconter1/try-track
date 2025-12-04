@@ -1111,6 +1111,19 @@ class TileDataset:
         self.tile_ids = tile_ids
         self.rng = np.random.default_rng()
         
+        # Build video path resolver (basename -> full path)
+        video_path_map = {}
+        if os.path.isdir(video_dir):
+            for f in os.listdir(video_dir):
+                if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
+                    video_path_map[f] = os.path.join(video_dir, f)
+        print(f"Found {len(video_path_map)} videos in {video_dir}: {list(video_path_map.keys())}")
+        
+        def resolve_video_path(original_path):
+            # Handle both Windows and Unix paths
+            basename = original_path.replace('\\', '/').split('/')[-1]
+            return video_path_map.get(basename)
+        
         # Load and parse tile data
         with open(data_path, 'r') as f:
             data = json.load(f)
@@ -1123,11 +1136,11 @@ class TileDataset:
         for sample_key, tiles in all_tiles_dict.items():
             # sample_key is "video_path:start_frame"
             original_path = sample_key.rsplit(':', 1)[0]
-            # Extract just the filename and combine with video_dir
-            video_filename = os.path.basename(original_path)
-            video_path = os.path.join(video_dir, video_filename)
+            video_path = resolve_video_path(original_path)
             
-            if not os.path.exists(video_path):
+            if video_path is None:
+                basename = original_path.replace('\\', '/').split('/')[-1]
+                print(f"Warning: Video not found: {basename}")
                 continue
             
             for tile in tiles:
@@ -1261,6 +1274,17 @@ def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128
     """Validate by checking nearest neighbor accuracy."""
     model.eval()
     
+    # Build video path resolver
+    video_path_map = {}
+    if os.path.isdir(video_dir):
+        for f in os.listdir(video_dir):
+            if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
+                video_path_map[f] = os.path.join(video_dir, f)
+    
+    def resolve_video_path(original_path):
+        basename = original_path.replace('\\', '/').split('/')[-1]
+        return video_path_map.get(basename)
+    
     with open(data_path, 'r') as f:
         data = json.load(f)
     
@@ -1271,10 +1295,9 @@ def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128
     
     for sample_key, tiles in all_tiles_dict.items():
         original_path = sample_key.rsplit(':', 1)[0]
-        video_filename = os.path.basename(original_path)
-        video_path = os.path.join(video_dir, video_filename)
+        video_path = resolve_video_path(original_path)
         
-        if not os.path.exists(video_path):
+        if video_path is None:
             continue
         
         for tile in tiles:
