@@ -1161,7 +1161,8 @@ def compute_detail_score(img):
 
 # Minimum detail score threshold (Laplacian variance)
 # Tiles below this are considered too smooth/uniform
-MIN_DETAIL_SCORE = 100
+# Note: This value works for ~224x224 images; adjust if target_size changes significantly
+MIN_DETAIL_SCORE = 20
 
 
 class TileDataset:
@@ -1635,7 +1636,10 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
             train_acc, _ = validate_cached(model, train_dataset, device)
             test_acc, test_stats = validate_cached(model, test_dataset, device)
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.2%} | Test Acc: {test_acc:.2%}")
-            print(f"  Test: {test_stats['correct']} correct, {test_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {test_stats['wrong_tile']} wrong_tile (of {test_stats['total']})")
+            if test_stats:
+                print(f"  Test: {test_stats['correct']} correct, {test_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {test_stats['wrong_tile']} wrong_tile (of {test_stats['total']})")
+            else:
+                print("  Test: No test tiles available (all filtered)")
         else:
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
     
@@ -1646,7 +1650,10 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     # Final validation
     final_acc, final_stats = validate_cached(model, test_dataset, device)
     print(f"Final validation accuracy: {final_acc:.2%}")
-    print(f"  {final_stats['correct']} correct, {final_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {final_stats['wrong_tile']} wrong_tile (of {final_stats['total']})")
+    if final_stats:
+        print(f"  {final_stats['correct']} correct, {final_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {final_stats['wrong_tile']} wrong_tile (of {final_stats['total']})")
+    else:
+        print("  No test tiles available (all filtered)")
 
 
 def main():
