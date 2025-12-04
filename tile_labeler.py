@@ -1415,6 +1415,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
         valid_batches = 0
         
         for step in range(steps_per_epoch):
+            print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Sampling batch...", end="", flush=True)
             anchors, positives, negatives = [], [], []
             
             for _ in range(batch_size):
@@ -1444,9 +1445,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
             epoch_loss += loss.item()
             valid_batches += 1
             
-            # Progress update every 10 steps
-            if (step + 1) % 10 == 0:
-                print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Loss: {loss.item():.4f}", end="", flush=True)
+            print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Loss: {loss.item():.4f} | Batch: {len(anchors)}  ", end="", flush=True)
         
         print()  # Newline after step progress
         avg_loss = epoch_loss / max(valid_batches, 1)
