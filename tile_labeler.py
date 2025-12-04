@@ -1067,8 +1067,8 @@ def load_training_imports():
     torchvision = _torchvision
 
 
-def warp_tile_instance(video_path, frame_num, corners, up_edge, target_size=128):
-    """Warp a tile instance to canonical 128x128 orientation."""
+def warp_tile_instance(video_path, frame_num, corners, up_edge, target_size=224):
+    """Warp a tile instance to canonical orientation."""
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
     ret, frame = cap.read()
@@ -1167,7 +1167,7 @@ MIN_DETAIL_SCORE = 100
 class TileDataset:
     """Dataset for tile triplet sampling with pre-cached warped tiles."""
     
-    def __init__(self, data_path, video_dir, tile_ids, target_size=128):
+    def __init__(self, data_path, video_dir, tile_ids, target_size=224):
         self.video_dir = video_dir
         self.target_size = target_size
         self.tile_ids = tile_ids
@@ -1390,7 +1390,7 @@ def img_to_tensor(img):
     return torch.from_numpy(img).float()
 
 
-def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128):
+def validate(model, data_path, video_dir, test_tile_ids, device, target_size=224):
     """Validate by checking nearest neighbor accuracy."""
     model.eval()
     
@@ -1539,7 +1539,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
                 if a is not None:
                     return img_to_tensor(a), img_to_tensor(p), img_to_tensor(n)
             # Should not happen with valid dataset
-            return torch.zeros(3, 128, 128), torch.zeros(3, 128, 128), torch.zeros(3, 128, 128)
+            return torch.zeros(3, 224, 224), torch.zeros(3, 224, 224), torch.zeros(3, 224, 224)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
