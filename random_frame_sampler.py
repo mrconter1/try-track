@@ -166,6 +166,10 @@ class RandomFrameSampler(QMainWindow):
         self.total_frames = 0
         self._scan_videos()
         
+        # Sample history: list of (path, start_frame, total_frames)
+        self.history = []
+        self.history_index = -1
+        
         # Current state
         self.current_video_path = None
         self.current_start_frame = None
@@ -236,7 +240,7 @@ class RandomFrameSampler(QMainWindow):
         control_layout.addSpacing(5)
         
         # Step size control
-        step_label = QLabel("Frame Step Size")
+        step_label = QLabel("Frame Step Size  [Q/E]")
         step_label.setObjectName("info")
         control_layout.addWidget(step_label)
         
@@ -245,9 +249,10 @@ class RandomFrameSampler(QMainWindow):
         
         self.step_spin = QSpinBox()
         self.step_spin.setRange(1, 100)
-        self.step_spin.setValue(3)
+        self.step_spin.setValue(1)
         self.step_spin.setFixedSize(80, 38)
         self.step_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.step_spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.step_spin.valueChanged.connect(self._on_step_changed)
         step_row.addWidget(self.step_spin)
         
@@ -282,28 +287,38 @@ class RandomFrameSampler(QMainWindow):
         current_label.setObjectName("info")
         control_layout.addWidget(current_label)
         
-        self.video_info = QLabel("Press Sample to begin")
+        self.video_info = QLabel("Press D or Sample to begin")
         self.video_info.setObjectName("videoInfo")
         self.video_info.setWordWrap(True)
         self.video_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(self.video_info)
         
+        self.history_label = QLabel("")
+        self.history_label.setObjectName("info")
+        self.history_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        control_layout.addWidget(self.history_label)
+        
         control_layout.addStretch()
         
-        btn = QPushButton("⟳  Sample  [Space]")
+        btn = QPushButton("⟳  Sample  [D]")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(self.sample)
+        btn.clicked.connect(self.sample_new)
         control_layout.addWidget(btn)
         
-        shortcuts_label = QLabel("Shortcuts: Space, R")
+        shortcuts_label = QLabel("A/D: prev/next  •  Q/E: step")
         shortcuts_label.setObjectName("info")
         shortcuts_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(shortcuts_label)
         
         main_layout.addWidget(control_panel)
         
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.sample)
-        QShortcut(QKeySequence(Qt.Key.Key_R), self, self.sample)
+        # Shortcuts
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.sample_new)
+        QShortcut(QKeySequence(Qt.Key.Key_R), self, self.sample_new)
+        QShortcut(QKeySequence(Qt.Key.Key_D), self, self.next_sample)
+        QShortcut(QKeySequence(Qt.Key.Key_A), self, self.prev_sample)
+        QShortcut(QKeySequence(Qt.Key.Key_Q), self, lambda: self.step_spin.setValue(self.step_spin.value() - 1))
+        QShortcut(QKeySequence(Qt.Key.Key_E), self, lambda: self.step_spin.setValue(self.step_spin.value() + 1))
     
     def _scan_videos(self):
         """Scan videos folder and get frame counts for weighted sampling."""
@@ -328,18 +343,21 @@ class RandomFrameSampler(QMainWindow):
         if not self.videos or self.total_frames == 0:
             return None, 0
         
-        # Pick a random frame index across all videos
         target = random.randint(0, self.total_frames - 1)
         
-        # Find which video contains this frame
         cumulative = 0
         for path, frame_count in self.videos:
             if cumulative + frame_count > target:
                 return path, frame_count
             cumulative += frame_count
         
-        # Fallback
         return self.videos[-1]
+    
+    def _update_history_label(self):
+        if self.history:
+            self.history_label.setText(f"Sample {self.history_index + 1} / {len(self.history)}")
+        else:
+            self.history_label.setText("")
     
     def _on_step_changed(self):
         """Update frames 2 and 3 when step size changes, keeping frame 1."""
@@ -352,7 +370,6 @@ class RandomFrameSampler(QMainWindow):
         step = self.step_spin.value()
         frame_indices = [start, start + step, start + 2 * step]
         
-        # Check if frames are valid
         if frame_indices[-1] >= total:
             self.video_info.setText(f"Step too large\n(frame {frame_indices[-1]} >= {total})")
             return
@@ -373,7 +390,16 @@ class RandomFrameSampler(QMainWindow):
         frames_str = ", ".join(str(f) for f in frame_indices)
         self.video_info.setText(f"{name}\n\nFrames: {frames_str}\n({total} total, step={step})")
     
-    def sample(self):
+    def _load_sample(self, path, start, total):
+        """Load a sample and update state."""
+        self.current_video_path = path
+        self.current_start_frame = start
+        self.current_total_frames = total
+        self._load_frames(path, start, total)
+        self._update_history_label()
+    
+    def sample_new(self):
+        """Generate a completely new random sample."""
         if not self.videos:
             self.video_info.setText("No videos found!")
             return
@@ -382,7 +408,12 @@ class RandomFrameSampler(QMainWindow):
         if path is None:
             return
         
-        step = self.step_spin.value()
+        # Reset step to 1 for new samples
+        self.step_spin.blockSignals(True)
+        self.step_spin.setValue(1)
+        self.step_spin.blockSignals(False)
+        
+        step = 1
         min_frames_needed = 1 + 2 * step
         
         if total < min_frames_needed:
@@ -391,12 +422,36 @@ class RandomFrameSampler(QMainWindow):
         
         start = random.randint(0, total - min_frames_needed)
         
-        # Store current state
-        self.current_video_path = path
-        self.current_start_frame = start
-        self.current_total_frames = total
+        # Add to history (truncate forward history if we're not at the end)
+        if self.history_index < len(self.history) - 1:
+            self.history = self.history[:self.history_index + 1]
         
-        self._load_frames(path, start, total)
+        self.history.append((path, start, total))
+        self.history_index = len(self.history) - 1
+        
+        self._load_sample(path, start, total)
+    
+    def next_sample(self):
+        """Go to next sample in history, or generate new if at end."""
+        if self.history_index < len(self.history) - 1:
+            self.history_index += 1
+            path, start, total = self.history[self.history_index]
+            self.step_spin.blockSignals(True)
+            self.step_spin.setValue(1)
+            self.step_spin.blockSignals(False)
+            self._load_sample(path, start, total)
+        else:
+            self.sample_new()
+    
+    def prev_sample(self):
+        """Go to previous sample in history."""
+        if self.history_index > 0:
+            self.history_index -= 1
+            path, start, total = self.history[self.history_index]
+            self.step_spin.blockSignals(True)
+            self.step_spin.setValue(1)
+            self.step_spin.blockSignals(False)
+            self._load_sample(path, start, total)
 
 
 def main():
