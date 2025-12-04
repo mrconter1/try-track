@@ -1392,10 +1392,68 @@ def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128
     return correct / total if total > 0 else 0.0
 
 
+def validate_cached(model, dataset, device):
+    """Validate using cached tiles in dataset."""
+    model.eval()
+    test_instances = []  # (tile_id, rotation, embedding)
+    
+    for tid in dataset.tile_ids:
+        # Get all cached instances for this tile
+        # dataset.tile_cache[tid] is a list of warped images
+        images = dataset.tile_cache.get(tid, [])
+        for img in images:
+            if img is None: continue
+            
+            # Embed at all 4 rotations
+            for rot in range(4):
+                rot_img = apply_90_rotation(img, rot)
+                tensor = img_to_tensor(rot_img).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    emb = model(tensor).cpu().numpy()[0]
+                test_instances.append((tid, rot, emb))
+
+    if len(test_instances) < 2:
+        return 0.0
+        
+    correct = 0
+    total = 0
+    embeddings = np.array([inst[2] for inst in test_instances])
+    
+    for i, (tid_i, rot_i, emb_i) in enumerate(test_instances):
+        dists = np.sum((embeddings - emb_i) ** 2, axis=1)
+        dists[i] = float('inf')
+        nearest_idx = np.argmin(dists)
+        tid_j, rot_j, _ = test_instances[nearest_idx]
+        
+        if tid_i == tid_j and rot_i == rot_j:
+            correct += 1
+        total += 1
+        
+    return correct / total if total > 0 else 0.0
+
+
 def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     """Train the tile embedder."""
     load_training_imports()
     
+    # Define dataset wrapper for DataLoader
+    class TripletDataset(torch.utils.data.Dataset):
+        def __init__(self, tile_dataset, length):
+            self.tile_dataset = tile_dataset
+            self.length = length
+            
+        def __len__(self):
+            return self.length
+            
+        def __getitem__(self, idx):
+            # Retry until valid sample found
+            for _ in range(10):
+                a, p, n, _ = self.tile_dataset.sample_triplet()
+                if a is not None:
+                    return img_to_tensor(a), img_to_tensor(p), img_to_tensor(n)
+            # Should not happen with valid dataset
+            return torch.zeros(3, 128, 128), torch.zeros(3, 128, 128), torch.zeros(3, 128, 128)
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -1420,12 +1478,15 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     
     print(f"Total tiles: {len(all_tile_ids)}, Train: {len(train_tile_ids)}, Test: {len(test_tile_ids)}")
     
-    # Create dataset
-    print("Loading dataset...")
-    dataset = TileDataset(data_path, video_dir, train_tile_ids)
+    # Create datasets (one for train, one for test to cache validation images)
+    print("Loading training dataset...")
+    train_dataset = TileDataset(data_path, video_dir, train_tile_ids)
     
-    if len(dataset.tile_ids) < 2:
-        print("Error: Need at least 2 tiles with 2+ instances each")
+    print("Loading test dataset (for validation)...")
+    test_dataset = TileDataset(data_path, video_dir, test_tile_ids)
+    
+    if len(train_dataset.tile_ids) < 2:
+        print("Error: Need at least 2 training tiles with 2+ instances each")
         return
     
     # Create model
@@ -1434,72 +1495,58 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     print("Model ready!")
     
-    # Test one triplet sampling
-    print("Testing triplet sampling...")
-    test_a, test_p, test_n, _ = dataset.sample_triplet()
-    if test_a is None:
-        print("Warning: Triplet sampling returned None - check video paths")
-    else:
-        print(f"Triplet sample OK: shapes {test_a.shape}, {test_p.shape}, {test_n.shape}")
+    # Setup DataLoader
+    steps_per_epoch = 100
+    dataset_wrapper = TripletDataset(train_dataset, length=steps_per_epoch * batch_size)
+    dataloader = torch.utils.data.DataLoader(
+        dataset_wrapper, 
+        batch_size=batch_size, 
+        num_workers=4, 
+        pin_memory=True,
+        persistent_workers=True
+    )
     
     # Training loop
     print("Starting training...")
-    steps_per_epoch = 100
     
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0
         valid_batches = 0
         
-        for step in range(steps_per_epoch):
-            print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Sampling...", end="", flush=True)
-            
-            # Parallel batch sampling
-            def sample_one(_):
-                a, p, n, _ = dataset.sample_triplet()
-                if a is not None:
-                    return img_to_tensor(a), img_to_tensor(p), img_to_tensor(n)
-                return None
-            
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                results = list(executor.map(sample_one, range(batch_size)))
-            
-            anchors, positives, negatives = [], [], []
-            for r in results:
-                if r is not None:
-                    anchors.append(r[0])
-                    positives.append(r[1])
-                    negatives.append(r[2])
-            
-            if len(anchors) < 2:
-                continue
-            
-            anchors = torch.stack(anchors).to(device)
-            positives = torch.stack(positives).to(device)
-            negatives = torch.stack(negatives).to(device)
+        # Use DataLoader iterator
+        pbar_prefix = f"\r  Epoch {epoch+1}/{epochs}"
+        
+        for i, (anchors, positives, negatives) in enumerate(dataloader):
+            if i >= steps_per_epoch:
+                break
+                
+            anchors = anchors.to(device)
+            positives = positives.to(device)
+            negatives = negatives.to(device)
             
             optimizer.zero_grad()
             
             a_emb = model(anchors)
             p_emb = model(positives)
             n_emb = model(negatives)
-            
             loss = triplet_loss(a_emb, p_emb, n_emb, margin)
+            
             loss.backward()
             optimizer.step()
             
             epoch_loss += loss.item()
             valid_batches += 1
             
-            print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Loss: {loss.item():.4f} | Batch: {len(anchors)}  ", end="", flush=True)
+            print(f"{pbar_prefix} | Step {i+1}/{steps_per_epoch} | Loss: {loss.item():.4f}  ", end="", flush=True)
         
-        print()  # Newline after step progress
+        print()
         avg_loss = epoch_loss / max(valid_batches, 1)
         
         # Validate every 3 epochs
         if (epoch + 1) % 3 == 0 or epoch == 0:
-            train_acc = validate(model, data_path, video_dir, train_tile_ids, device)
-            test_acc = validate(model, data_path, video_dir, test_tile_ids, device)
+            train_acc = validate_cached(model, train_dataset, device)
+            test_acc = validate_cached(model, test_dataset, device)
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.2%} | Test Acc: {test_acc:.2%}")
         else:
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
@@ -1509,7 +1556,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     print("Model saved to tile_embedder.pth")
     
     # Final validation
-    final_acc = validate(model, data_path, video_dir, test_tile_ids, device)
+    final_acc = validate_cached(model, test_dataset, device)
     print(f"Final validation accuracy: {final_acc:.2%}")
 
 
