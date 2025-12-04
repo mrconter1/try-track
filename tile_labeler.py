@@ -7,6 +7,7 @@ import argparse
 import json
 import cv2
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                               QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy, 
                               QSpinBox, QListWidget, QListWidgetItem)
@@ -1071,38 +1072,22 @@ def warp_tile_instance(video_path, frame_num, corners, up_edge, target_size=128)
 
 
 def apply_augmentation(img, rng):
-    """Apply augmentations: brightness, contrast, blur, noise, translation, rotation."""
+    """Apply fast augmentations: brightness, contrast, small affine."""
     h, w = img.shape[:2]
     img = img.astype(np.float32)
     
-    # Brightness
+    # Brightness + Contrast (combined for speed)
     brightness = rng.uniform(-30, 30)
-    img = np.clip(img + brightness, 0, 255)
-    
-    # Contrast
     contrast = rng.uniform(0.8, 1.2)
-    img = np.clip((img - 128) * contrast + 128, 0, 255)
+    img = np.clip((img - 128) * contrast + 128 + brightness, 0, 255)
     
-    # Blur (50% chance)
-    if rng.random() < 0.5:
-        ksize = rng.choice([3, 5])
-        img = cv2.GaussianBlur(img.astype(np.uint8), (ksize, ksize), 0).astype(np.float32)
-    
-    # Noise
-    if rng.random() < 0.5:
-        noise = rng.normal(0, 10, img.shape)
-        img = np.clip(img + noise, 0, 255)
-    
-    # Small translation (±5px)
-    tx = rng.uniform(-5, 5)
-    ty = rng.uniform(-5, 5)
-    M_translate = np.array([[1, 0, tx], [0, 1, ty]], dtype=np.float32)
-    img = cv2.warpAffine(img.astype(np.uint8), M_translate, (w, h), borderMode=cv2.BORDER_REFLECT)
-    
-    # Small rotation (±5°)
+    # Combined small translation + rotation in one warpAffine
+    tx, ty = rng.uniform(-5, 5), rng.uniform(-5, 5)
     angle = rng.uniform(-5, 5)
-    M_rotate = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
-    img = cv2.warpAffine(img, M_rotate, (w, h), borderMode=cv2.BORDER_REFLECT)
+    M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    M[0, 2] += tx
+    M[1, 2] += ty
+    img = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
     
     return img.astype(np.uint8)
 
@@ -1457,15 +1442,24 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
         valid_batches = 0
         
         for step in range(steps_per_epoch):
-            print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Sampling batch...", end="", flush=True)
-            anchors, positives, negatives = [], [], []
+            print(f"\r  Epoch {epoch+1}/{epochs} | Step {step+1}/{steps_per_epoch} | Sampling...", end="", flush=True)
             
-            for _ in range(batch_size):
+            # Parallel batch sampling
+            def sample_one(_):
                 a, p, n, _ = dataset.sample_triplet()
                 if a is not None:
-                    anchors.append(img_to_tensor(a))
-                    positives.append(img_to_tensor(p))
-                    negatives.append(img_to_tensor(n))
+                    return img_to_tensor(a), img_to_tensor(p), img_to_tensor(n)
+                return None
+            
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(sample_one, range(batch_size)))
+            
+            anchors, positives, negatives = [], [], []
+            for r in results:
+                if r is not None:
+                    anchors.append(r[0])
+                    positives.append(r[1])
+                    negatives.append(r[2])
             
             if len(anchors) < 2:
                 continue
