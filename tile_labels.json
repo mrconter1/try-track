@@ -1083,10 +1083,10 @@
       6
     ]
   ],
-  "history_index": 28,
+  "history_index": 21,
   "current": {
     "video_path": "videos\\video.mp4",
-    "start_frame": 4199,
+    "start_frame": 2136,
     "total_frames": 6115,
     "step_size": 6
   }

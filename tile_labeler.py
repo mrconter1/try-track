@@ -883,14 +883,13 @@ class TileLabeler(QMainWindow):
             self.all_tiles = data.get('tiles', {})
             self.tile_counter = data.get('tile_counter', 0)
             self.history = data.get('history', [])
-            self.history_index = data.get('history_index', -1)
             
-            current = data.get('current', {})
-            if current.get('video_path') and current.get('start_frame') is not None:
-                path = current['video_path']
-                start = current['start_frame']
-                total = current['total_frames']
-                step = current.get('step_size', 1)
+            # Always go to last sample in history
+            if self.history:
+                self.history_index = len(self.history) - 1
+                entry = self.history[self.history_index]
+                path, start, total = entry[0], entry[1], entry[2]
+                step = entry[3] if len(entry) > 3 else 1
                 
                 if os.path.exists(path):
                     self.current_video_path = path
@@ -904,6 +903,7 @@ class TileLabeler(QMainWindow):
                     self._load_tiles_for_sample()
                     self._load_frames(path, start, total)
                     self._update_history_label()
+                    self._update_stats()
                     return
             
             self.video_info.setText("Press D or Sample to begin")
