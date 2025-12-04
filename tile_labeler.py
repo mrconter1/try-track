@@ -731,13 +731,47 @@ class TileLabeler(QMainWindow):
             self.current_tiles = []
         self._update_tile_list()
     
+    def _compute_tile_detail(self, tile):
+        """Compute detail score for a tile from first display's frame."""
+        if self.displays[0].current_frame is None:
+            return None
+        if not tile.get('instances'):
+            return None
+        
+        inst = tile['instances'][0]
+        corners = inst['corners']
+        up_edge = inst.get('up_edge', 0)
+        frame = self.displays[0].current_frame
+        
+        # Warp tile to 64x64 for quick detail check
+        src_pts = np.array(corners, dtype=np.float32)
+        src_pts = np.roll(src_pts, -up_edge, axis=0)
+        dst_pts = np.array([[0, 0], [63, 0], [63, 63], [0, 63]], dtype=np.float32)
+        
+        H, _ = cv2.findHomography(src_pts, dst_pts)
+        if H is None:
+            return None
+        
+        warped = cv2.warpPerspective(frame, H, (64, 64))
+        gray = cv2.cvtColor(warped, cv2.COLOR_RGB2GRAY)
+        return cv2.Laplacian(gray, cv2.CV_64F).var()
+    
     def _update_tile_list(self):
         self.tile_list.clear()
         for tile in self.current_tiles:
             color_idx = tile.get('color_idx', 0) % len(TILE_COLORS)
             r, g, b = TILE_COLORS[color_idx]
-            item = QListWidgetItem(f"● {tile['id']}")
-            item.setForeground(QColor(r, g, b))
+            
+            # Check detail score
+            detail = self._compute_tile_detail(tile)
+            if detail is not None and detail < 100:
+                # Low detail warning
+                item = QListWidgetItem(f"⚠ {tile['id']} (detail:{detail:.0f})")
+                item.setForeground(QColor(255, 200, 100))
+            else:
+                item = QListWidgetItem(f"● {tile['id']}")
+                item.setForeground(QColor(r, g, b))
+            
             self.tile_list.addItem(item)
         self._update_stats()
     
@@ -1118,6 +1152,18 @@ def apply_90_rotation(img, k):
     return np.rot90(img, k=k).copy()
 
 
+def compute_detail_score(img):
+    """Compute detail score using Laplacian variance. Higher = more detail."""
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if len(img.shape) == 3 else img
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    return laplacian.var()
+
+
+# Minimum detail score threshold (Laplacian variance)
+# Tiles below this are considered too smooth/uniform
+MIN_DETAIL_SCORE = 100
+
+
 class TileDataset:
     """Dataset for tile triplet sampling with pre-cached warped tiles."""
     
@@ -1229,10 +1275,21 @@ class TileDataset:
         
         print()  # Newline
         
-        # Remove tiles with failed instances
+        # Check detail scores and filter low-detail tiles
+        low_detail_tiles = []
         for tid in list(self.tile_ids):
             valid = [img for img in self.tile_cache[tid] if img is not None]
             if len(valid) < 2:
+                self.tile_ids.remove(tid)
+                del self.tile_cache[tid]
+                continue
+            
+            # Compute average detail score across instances
+            detail_scores = [compute_detail_score(img) for img in valid]
+            avg_detail = np.mean(detail_scores)
+            
+            if avg_detail < MIN_DETAIL_SCORE:
+                low_detail_tiles.append((tid, avg_detail))
                 self.tile_ids.remove(tid)
                 del self.tile_cache[tid]
             else:
@@ -1240,6 +1297,11 @@ class TileDataset:
         
         cached_total = sum(len(self.tile_cache[tid]) for tid in self.tile_ids)
         print(f"Cached {cached_total} warped tiles for {len(self.tile_ids)} tiles")
+        
+        if low_detail_tiles:
+            print(f"  Filtered {len(low_detail_tiles)} low-detail tiles (detail < {MIN_DETAIL_SCORE}):")
+            for tid, score in low_detail_tiles:
+                print(f"    {tid}: detail={score:.1f}")
     
     def sample_triplet(self):
         """Sample anchor, positive, negative triplet from cache."""
