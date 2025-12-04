@@ -716,6 +716,16 @@ class TileLabeler(QMainWindow):
         key = self._get_sample_key()
         if key and key in self.all_tiles:
             self.current_tiles = [tile.copy() for tile in self.all_tiles[key]]
+            # Add default up_edge to instances that don't have it
+            modified = False
+            for tile in self.current_tiles:
+                for inst in tile.get('instances', []):
+                    if 'up_edge' not in inst:
+                        inst['up_edge'] = 0
+                        modified = True
+            if modified:
+                self._save_current_tiles()
+                self.auto_save()
         else:
             self.current_tiles = []
         self._update_tile_list()
