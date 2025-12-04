@@ -234,7 +234,8 @@ class InteractiveImageLabel(QLabel):
         self.setMouseTracking(True)
         self.dragging_corner = None  # (tile_id, corner_index, inst)
         self.dragging_tile = None    # (inst, start_pos, original_corners)
-        self.corner_radius = 4
+        self.corner_radius_normal = 4
+        self.corner_radius_dragging = 1
     
     def get_tiles_for_frame(self):
         """Get tiles that have data for this frame."""
@@ -280,8 +281,13 @@ class InteractiveImageLabel(QLabel):
             
             # Draw corners
             painter.setBrush(QBrush(QColor(r, g, b, 255)))
-            for wx, wy in widget_corners:
-                painter.drawEllipse(QPointF(wx, wy), self.corner_radius, self.corner_radius)
+            for i, (wx, wy) in enumerate(widget_corners):
+                # Check if this specific corner is being dragged
+                is_dragging_this = (self.dragging_corner and 
+                                    self.dragging_corner[0] == tile['id'] and 
+                                    self.dragging_corner[1] == i)
+                radius = self.corner_radius_dragging if is_dragging_this else self.corner_radius_normal
+                painter.drawEllipse(QPointF(wx, wy), radius, radius)
             
             # Draw tile ID
             painter.setPen(QPen(QColor(255, 255, 255, 200), 1))
@@ -300,7 +306,7 @@ class InteractiveImageLabel(QLabel):
             for i, corner in enumerate(corners):
                 wx, wy = self.frame_display.img_to_widget(corner[0], corner[1])
                 dist = ((pos.x() - wx) ** 2 + (pos.y() - wy) ** 2) ** 0.5
-                if dist <= self.corner_radius + 6:
+                if dist <= self.corner_radius_normal + 6:
                     return (tile['id'], i, inst)
         return None
     
@@ -389,6 +395,7 @@ class InteractiveImageLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging_corner = None
             self.dragging_tile = None
+            self.update()
 
 
 class RandomFrameSampler(QMainWindow):
