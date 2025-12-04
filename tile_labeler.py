@@ -1113,7 +1113,7 @@ def apply_90_rotation(img, k):
 
 
 class TileDataset:
-    """Dataset for tile triplet sampling."""
+    """Dataset for tile triplet sampling with pre-cached warped tiles."""
     
     def __init__(self, data_path, video_dir, tile_ids, target_size=128):
         self.video_dir = video_dir
@@ -1130,7 +1130,6 @@ class TileDataset:
         print(f"Found {len(video_path_map)} videos in {video_dir}: {list(video_path_map.keys())}")
         
         def resolve_video_path(original_path):
-            # Handle both Windows and Unix paths
             basename = original_path.replace('\\', '/').split('/')[-1]
             return video_path_map.get(basename)
         
@@ -1140,11 +1139,10 @@ class TileDataset:
         
         all_tiles_dict = data.get('tiles', {})
         
-        # Build index: tile_id -> list of (video_path, frame_num, corners, up_edge)
-        self.tile_instances = {}
+        # Build index: tile_id -> list of instance info
+        tile_instances_info = {}
         
         for sample_key, tiles in all_tiles_dict.items():
-            # sample_key is "video_path:start_frame"
             original_path = sample_key.rsplit(':', 1)[0]
             video_path = resolve_video_path(original_path)
             
@@ -1158,11 +1156,11 @@ class TileDataset:
                 if tid not in tile_ids:
                     continue
                 
-                if tid not in self.tile_instances:
-                    self.tile_instances[tid] = []
+                if tid not in tile_instances_info:
+                    tile_instances_info[tid] = []
                 
                 for inst in tile.get('instances', []):
-                    self.tile_instances[tid].append({
+                    tile_instances_info[tid].append({
                         'video_path': video_path,
                         'frame': inst['frame'],
                         'corners': inst['corners'],
@@ -1170,48 +1168,96 @@ class TileDataset:
                     })
         
         # Filter tiles with at least 2 instances
-        self.tile_ids = [tid for tid in self.tile_ids if len(self.tile_instances.get(tid, [])) >= 2]
-        total_instances = sum(len(self.tile_instances.get(tid, [])) for tid in self.tile_ids)
+        self.tile_ids = [tid for tid in tile_ids if len(tile_instances_info.get(tid, [])) >= 2]
+        total_instances = sum(len(tile_instances_info.get(tid, [])) for tid in self.tile_ids)
         print(f"Dataset: {len(self.tile_ids)} tiles with 2+ instances, {total_instances} total instances")
+        
+        # Pre-cache all warped tiles
+        print("Pre-caching warped tiles...")
+        self.tile_cache = {}  # tile_id -> list of warped images (numpy arrays)
+        
+        # Group by video to minimize video opens
+        video_frames = {}  # video_path -> [(tile_id, inst_idx, frame, corners, up_edge)]
+        for tid in self.tile_ids:
+            for inst_idx, inst in enumerate(tile_instances_info[tid]):
+                vp = inst['video_path']
+                if vp not in video_frames:
+                    video_frames[vp] = []
+                video_frames[vp].append((tid, inst_idx, inst['frame'], inst['corners'], inst['up_edge']))
+        
+        # Initialize cache structure
+        for tid in self.tile_ids:
+            self.tile_cache[tid] = [None] * len(tile_instances_info[tid])
+        
+        # Process each video once
+        for vid_idx, (video_path, frame_list) in enumerate(video_frames.items()):
+            print(f"\r  Loading video {vid_idx+1}/{len(video_frames)}: {os.path.basename(video_path)} ({len(frame_list)} frames)...", end="", flush=True)
+            
+            # Sort by frame number for sequential access
+            frame_list.sort(key=lambda x: x[2])
+            
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f" [FAILED]")
+                continue
+            
+            for tid, inst_idx, frame_num, corners, up_edge in frame_list:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    continue
+                
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Warp to canonical orientation
+                src_pts = np.array(corners, dtype=np.float32)
+                src_pts = np.roll(src_pts, -up_edge, axis=0)
+                dst_pts = np.array([[0, 0], [target_size-1, 0], [target_size-1, target_size-1], [0, target_size-1]], dtype=np.float32)
+                
+                H, _ = cv2.findHomography(src_pts, dst_pts)
+                if H is not None:
+                    warped = cv2.warpPerspective(frame, H, (target_size, target_size))
+                    self.tile_cache[tid][inst_idx] = warped
+            
+            cap.release()
+        
+        print()  # Newline
+        
+        # Remove tiles with failed instances
+        for tid in list(self.tile_ids):
+            valid = [img for img in self.tile_cache[tid] if img is not None]
+            if len(valid) < 2:
+                self.tile_ids.remove(tid)
+                del self.tile_cache[tid]
+            else:
+                self.tile_cache[tid] = valid
+        
+        cached_total = sum(len(self.tile_cache[tid]) for tid in self.tile_ids)
+        print(f"Cached {cached_total} warped tiles for {len(self.tile_ids)} tiles")
     
     def sample_triplet(self):
-        """Sample anchor, positive, negative triplet."""
+        """Sample anchor, positive, negative triplet from cache."""
         if len(self.tile_ids) < 2:
             return None, None, None, None
         
-        # Pick anchor tile and instance
+        # Pick anchor tile and instance from cache
         anchor_tid = self.rng.choice(self.tile_ids)
-        anchor_instances = self.tile_instances[anchor_tid]
-        anchor_idx = self.rng.integers(len(anchor_instances))
-        anchor_inst = anchor_instances[anchor_idx]
-        
-        # Pick rotation for anchor (0, 1, 2, 3 = 0°, 90°, 180°, 270°)
+        anchor_cache = self.tile_cache[anchor_tid]
+        anchor_idx = self.rng.integers(len(anchor_cache))
         anchor_rot = self.rng.integers(4)
         
-        # Get anchor image
-        anchor_img = warp_tile_instance(
-            anchor_inst['video_path'], anchor_inst['frame'],
-            anchor_inst['corners'], anchor_inst['up_edge'], self.target_size
-        )
-        if anchor_img is None:
-            return None, None, None, None
+        anchor_img = anchor_cache[anchor_idx].copy()
         anchor_img = apply_90_rotation(anchor_img, anchor_rot)
         anchor_img = apply_augmentation(anchor_img, self.rng)
         
         # Pick positive: same tile, different instance, same rotation
-        pos_indices = [i for i in range(len(anchor_instances)) if i != anchor_idx]
+        pos_indices = [i for i in range(len(anchor_cache)) if i != anchor_idx]
         if not pos_indices:
             return None, None, None, None
         pos_idx = self.rng.choice(pos_indices)
-        pos_inst = anchor_instances[pos_idx]
         
-        pos_img = warp_tile_instance(
-            pos_inst['video_path'], pos_inst['frame'],
-            pos_inst['corners'], pos_inst['up_edge'], self.target_size
-        )
-        if pos_img is None:
-            return None, None, None, None
-        pos_img = apply_90_rotation(pos_img, anchor_rot)  # Same rotation
+        pos_img = anchor_cache[pos_idx].copy()
+        pos_img = apply_90_rotation(pos_img, anchor_rot)
         pos_img = apply_augmentation(pos_img, self.rng)
         
         # Pick negative: either different tile OR same tile different rotation
@@ -1219,21 +1265,17 @@ class TileDataset:
             # Different tile
             neg_tids = [t for t in self.tile_ids if t != anchor_tid]
             neg_tid = self.rng.choice(neg_tids)
-            neg_instances = self.tile_instances[neg_tid]
-            neg_inst = neg_instances[self.rng.integers(len(neg_instances))]
+            neg_cache = self.tile_cache[neg_tid]
+            neg_idx = self.rng.integers(len(neg_cache))
             neg_rot = self.rng.integers(4)
         else:
             # Same tile, different rotation
-            neg_inst = anchor_instances[self.rng.integers(len(anchor_instances))]
+            neg_cache = anchor_cache
+            neg_idx = self.rng.integers(len(neg_cache))
             neg_rots = [r for r in range(4) if r != anchor_rot]
             neg_rot = self.rng.choice(neg_rots)
         
-        neg_img = warp_tile_instance(
-            neg_inst['video_path'], neg_inst['frame'],
-            neg_inst['corners'], neg_inst['up_edge'], self.target_size
-        )
-        if neg_img is None:
-            return None, None, None, None
+        neg_img = neg_cache[neg_idx].copy()
         neg_img = apply_90_rotation(neg_img, neg_rot)
         neg_img = apply_augmentation(neg_img, self.rng)
         
