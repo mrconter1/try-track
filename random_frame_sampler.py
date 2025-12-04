@@ -7,7 +7,7 @@ import argparse
 import cv2
 import numpy as np
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                              QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy)
+                              QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy, QSpinBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
 
@@ -47,9 +47,6 @@ QFrame#frameBox {
     border: 2px solid #2a2a3e;
     border-radius: 10px;
 }
-QFrame#frameBox:hover {
-    border-color: #00d4ff;
-}
 QFrame#controlPanel {
     background: #12121f;
     border-left: 1px solid #2a2a3e;
@@ -70,8 +67,27 @@ QPushButton:hover {
 QPushButton:pressed {
     background: #0088aa;
 }
+QPushButton#stepBtn {
+    padding: 0;
+    font-size: 18px;
+    font-weight: bold;
+}
 QFrame#separator {
     background: #2a2a3e;
+}
+QSpinBox {
+    background: #0a0a12;
+    color: #00d4ff;
+    border: 1px solid #2a2a3e;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 14px;
+    font-family: 'Consolas', monospace;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    width: 0;
+    height: 0;
+    border: none;
 }
 """
 
@@ -211,6 +227,48 @@ class RandomFrameSampler(QMainWindow):
         
         control_layout.addSpacing(5)
         
+        # Step size control
+        step_label = QLabel("Frame Step Size")
+        step_label.setObjectName("info")
+        control_layout.addWidget(step_label)
+        
+        step_row = QHBoxLayout()
+        step_row.setSpacing(8)
+        
+        self.step_spin = QSpinBox()
+        self.step_spin.setRange(1, 100)
+        self.step_spin.setValue(3)
+        self.step_spin.setFixedSize(80, 38)
+        self.step_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        step_row.addWidget(self.step_spin)
+        
+        minus_btn = QPushButton("−")
+        minus_btn.setObjectName("stepBtn")
+        minus_btn.setFixedSize(38, 38)
+        minus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        minus_btn.clicked.connect(lambda: self.step_spin.setValue(self.step_spin.value() - 1))
+        step_row.addWidget(minus_btn)
+        
+        plus_btn = QPushButton("+")
+        plus_btn.setObjectName("stepBtn")
+        plus_btn.setFixedSize(38, 38)
+        plus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        plus_btn.clicked.connect(lambda: self.step_spin.setValue(self.step_spin.value() + 1))
+        step_row.addWidget(plus_btn)
+        
+        step_row.addStretch()
+        
+        control_layout.addLayout(step_row)
+        
+        control_layout.addSpacing(10)
+        
+        sep3 = QFrame()
+        sep3.setObjectName("separator")
+        sep3.setFixedHeight(1)
+        control_layout.addWidget(sep3)
+        
+        control_layout.addSpacing(5)
+        
         current_label = QLabel("Current Sample")
         current_label.setObjectName("info")
         control_layout.addWidget(current_label)
@@ -246,25 +304,30 @@ class RandomFrameSampler(QMainWindow):
         path = random.choice(self.videos)
         cap = cv2.VideoCapture(path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        step = self.step_spin.value()
         
-        if total < 3:
+        # Need at least 3 frames with given step: start, start+step, start+2*step
+        min_frames_needed = 1 + 2 * step
+        if total < min_frames_needed:
             cap.release()
-            self.video_info.setText("Video too short")
+            self.video_info.setText(f"Video too short\n({total} frames, need {min_frames_needed})")
             return
         
-        start = random.randint(0, total - 3)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        start = random.randint(0, total - min_frames_needed)
+        frame_indices = [start, start + step, start + 2 * step]
         
-        for i in range(3):
+        for i, frame_idx in enumerate(frame_indices):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if not ret:
                 break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.displays[i].set_frame(frame, start + i)
+            self.displays[i].set_frame(frame, frame_idx)
         
         cap.release()
         name = os.path.basename(path)
-        self.video_info.setText(f"{name}\n\nFrames {start}–{start+2}\nof {total} total")
+        frames_str = ", ".join(str(f) for f in frame_indices)
+        self.video_info.setText(f"{name}\n\nFrames: {frames_str}\n({total} total, step={step})")
 
 
 def main():
