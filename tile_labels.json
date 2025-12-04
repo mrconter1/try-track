@@ -2982,11 +2982,11 @@
       11
     ]
   ],
-  "history_index": 68,
+  "history_index": 50,
   "current": {
-    "video_path": "videos\\20251117_171441.mp4",
-    "start_frame": 3132,
-    "total_frames": 8375,
-    "step_size": 11
+    "video_path": "videos\\20251117_171939.mp4",
+    "start_frame": 7100,
+    "total_frames": 8480,
+    "step_size": 4
   }
 }
