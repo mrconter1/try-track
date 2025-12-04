@@ -317,6 +317,37 @@ class InteractiveImageLabel(QLabel):
                 painter.drawPolygon(arrow_head)
                 painter.drawLine(QPointF(base_x, base_y), QPointF(tip_x - dx * head_size / 2, tip_y - dy * head_size / 2))
             
+            # Draw grid subdivision lines (perspective-correct using homography)
+            grid_x = tile.get('grid_x', 1)
+            grid_y = tile.get('grid_y', 1)
+            if grid_x > 1 or grid_y > 1:
+                painter.setPen(QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine))
+                
+                # Compute homography from unit square to widget quad
+                canonical = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+                quad = np.array(widget_corners, dtype=np.float32)
+                H, _ = cv2.findHomography(canonical, quad)
+                
+                if H is not None:
+                    def transform_point(cx, cy):
+                        pt = np.array([[cx, cy, 1.0]])
+                        result = (H @ pt.T).flatten()
+                        return result[0] / result[2], result[1] / result[2]
+                    
+                    # Vertical lines (X divisions) - draw multiple segments for curved appearance
+                    for i in range(1, grid_x):
+                        x = i / grid_x
+                        pts = [transform_point(x, t / 10.0) for t in range(11)]
+                        for j in range(len(pts) - 1):
+                            painter.drawLine(QPointF(pts[j][0], pts[j][1]), QPointF(pts[j+1][0], pts[j+1][1]))
+                    
+                    # Horizontal lines (Y divisions)
+                    for i in range(1, grid_y):
+                        y = i / grid_y
+                        pts = [transform_point(t / 10.0, y) for t in range(11)]
+                        for j in range(len(pts) - 1):
+                            painter.drawLine(QPointF(pts[j][0], pts[j][1]), QPointF(pts[j+1][0], pts[j+1][1]))
+            
             # Draw corners
             painter.setBrush(QBrush(QColor(r, g, b, 255)))
             painter.setPen(QPen(QColor(r, g, b, 200), 2))
@@ -652,7 +683,7 @@ class TileLabeler(QMainWindow):
         btn.clicked.connect(self.sample_new)
         control_layout.addWidget(btn)
         
-        shortcuts_label = QLabel("A/D: prev/next  •  Q/E: step")
+        shortcuts_label = QLabel("A/D: prev/next  •  Q/E: step  •  1/2/3/4: grid")
         shortcuts_label.setObjectName("info")
         shortcuts_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(shortcuts_label)
@@ -666,6 +697,10 @@ class TileLabeler(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Q), self, lambda: self.step_spin.setValue(self.step_spin.value() - 1))
         QShortcut(QKeySequence(Qt.Key.Key_E), self, lambda: self.step_spin.setValue(self.step_spin.value() + 1))
         QShortcut(QKeySequence(Qt.Key.Key_T), self, self.add_tile)
+        QShortcut(QKeySequence(Qt.Key.Key_1), self, lambda: self.adjust_grid('x', -1))
+        QShortcut(QKeySequence(Qt.Key.Key_2), self, lambda: self.adjust_grid('x', 1))
+        QShortcut(QKeySequence(Qt.Key.Key_3), self, lambda: self.adjust_grid('y', -1))
+        QShortcut(QKeySequence(Qt.Key.Key_4), self, lambda: self.adjust_grid('y', 1))
         
         self._load_from_file()
     
@@ -761,15 +796,20 @@ class TileLabeler(QMainWindow):
         for tile in self.current_tiles:
             color_idx = tile.get('color_idx', 0) % len(TILE_COLORS)
             r, g, b = TILE_COLORS[color_idx]
+            grid_x = tile.get('grid_x', 1)
+            grid_y = tile.get('grid_y', 1)
+            
+            # Build label with grid info if not 1x1
+            grid_str = f" [{grid_x}×{grid_y}]" if grid_x > 1 or grid_y > 1 else ""
             
             # Check detail score
             detail = self._compute_tile_detail(tile)
             if detail is not None and detail < 100:
                 # Low detail warning
-                item = QListWidgetItem(f"⚠ {tile['id']} (detail:{detail:.0f})")
+                item = QListWidgetItem(f"⚠ {tile['id']}{grid_str} (detail:{detail:.0f})")
                 item.setForeground(QColor(255, 200, 100))
             else:
-                item = QListWidgetItem(f"● {tile['id']}")
+                item = QListWidgetItem(f"● {tile['id']}{grid_str}")
                 item.setForeground(QColor(r, g, b))
             
             self.tile_list.addItem(item)
@@ -932,6 +972,8 @@ class TileLabeler(QMainWindow):
         tile = {
             'id': tile_id,
             'color_idx': len(self.current_tiles) % len(TILE_COLORS),
+            'grid_x': 1,
+            'grid_y': 1,
             'instances': [
                 {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners], 'up_edge': 0}
                 for i in range(3)
@@ -940,6 +982,7 @@ class TileLabeler(QMainWindow):
         
         self.current_tiles.append(tile)
         self._update_tile_list()
+        self.tile_list.setCurrentRow(len(self.current_tiles) - 1)
         
         for display in self.displays:
             display.image_label.update()
@@ -966,6 +1009,8 @@ class TileLabeler(QMainWindow):
         tile = {
             'id': tile_id,
             'color_idx': len(self.current_tiles) % len(TILE_COLORS),
+            'grid_x': 1,
+            'grid_y': 1,
             'instances': [
                 {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners], 'up_edge': 0}
                 for i in range(3)
@@ -974,6 +1019,27 @@ class TileLabeler(QMainWindow):
         
         self.current_tiles.append(tile)
         self._update_tile_list()
+        self.tile_list.setCurrentRow(len(self.current_tiles) - 1)
+        
+        for display in self.displays:
+            display.image_label.update()
+        
+        self.auto_save()
+    
+    def adjust_grid(self, axis, delta):
+        """Adjust grid subdivisions for selected tile. axis='x' or 'y', delta=-1 or 1."""
+        row = self.tile_list.currentRow()
+        if row < 0 or row >= len(self.current_tiles):
+            return
+        
+        tile = self.current_tiles[row]
+        if axis == 'x':
+            tile['grid_x'] = max(1, tile.get('grid_x', 1) + delta)
+        else:
+            tile['grid_y'] = max(1, tile.get('grid_y', 1) + delta)
+        
+        self._update_tile_list()
+        self.tile_list.setCurrentRow(row)
         
         for display in self.displays:
             display.image_label.update()
@@ -983,7 +1049,6 @@ class TileLabeler(QMainWindow):
     def delete_selected_tile(self):
         row = self.tile_list.currentRow()
         if row >= 0 and row < len(self.current_tiles):
-            del self.current_tiles[row]
             self._update_tile_list()
             for display in self.displays:
                 display.image_label.update()
@@ -1165,6 +1230,52 @@ def compute_detail_score(img):
 MIN_DETAIL_SCORE = 20
 
 
+def compute_grid_cell_corners(corners, grid_x, grid_y, cell_x, cell_y):
+    """Compute corners for a specific cell in a grid using homography (perspective-correct).
+    
+    corners: [TL, TR, BR, BL] of the parent quad
+    grid_x, grid_y: number of cells in x and y
+    cell_x, cell_y: which cell (0-indexed)
+    
+    Returns: [TL, TR, BR, BL] corners of the cell
+    """
+    # Define canonical unit square corners
+    canonical = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+    quad = np.array(corners, dtype=np.float32)
+    
+    # Compute homography from canonical square to image quad
+    H, _ = cv2.findHomography(canonical, quad)
+    if H is None:
+        # Fallback to bilinear if homography fails
+        c0, c1, c2, c3 = corners
+        x0, x1 = cell_x / grid_x, (cell_x + 1) / grid_x
+        y0, y1 = cell_y / grid_y, (cell_y + 1) / grid_y
+        def interp(tx, ty):
+            top = [c0[i] + tx * (c1[i] - c0[i]) for i in range(2)]
+            bot = [c3[i] + tx * (c2[i] - c3[i]) for i in range(2)]
+            return [top[i] + ty * (bot[i] - top[i]) for i in range(2)]
+        return [interp(x0, y0), interp(x1, y0), interp(x1, y1), interp(x0, y1)]
+    
+    # Cell boundaries in canonical space [0,1]
+    x0, x1 = cell_x / grid_x, (cell_x + 1) / grid_x
+    y0, y1 = cell_y / grid_y, (cell_y + 1) / grid_y
+    
+    # Cell corners in canonical space
+    cell_canonical = np.array([
+        [x0, y0],  # TL
+        [x1, y0],  # TR
+        [x1, y1],  # BR
+        [x0, y1],  # BL
+    ], dtype=np.float32)
+    
+    # Transform to image space using homography
+    cell_canonical_h = np.hstack([cell_canonical, np.ones((4, 1))]).T  # 3x4
+    cell_image_h = H @ cell_canonical_h  # 3x4
+    cell_image = (cell_image_h[:2] / cell_image_h[2:]).T  # 4x2
+    
+    return cell_image.tolist()
+
+
 class TileDataset:
     """Dataset for tile triplet sampling with pre-cached warped tiles."""
     
@@ -1205,23 +1316,44 @@ class TileDataset:
                 continue
             
             for tile in tiles:
-                tid = tile['id']
-                if tid not in tile_ids:
+                base_tid = tile['id']
+                if base_tid not in tile_ids:
                     continue
                 
-                if tid not in tile_instances_info:
-                    tile_instances_info[tid] = []
+                grid_x = tile.get('grid_x', 1)
+                grid_y = tile.get('grid_y', 1)
                 
-                for inst in tile.get('instances', []):
-                    tile_instances_info[tid].append({
-                        'video_path': video_path,
-                        'frame': inst['frame'],
-                        'corners': inst['corners'],
-                        'up_edge': inst.get('up_edge', 0)
-                    })
+                # Expand grid tiles into individual cells
+                for cell_y in range(grid_y):
+                    for cell_x in range(grid_x):
+                        # Generate cell tile ID
+                        if grid_x == 1 and grid_y == 1:
+                            tid = base_tid
+                        else:
+                            tid = f"{base_tid}_{cell_x}_{cell_y}"
+                        
+                        if tid not in tile_instances_info:
+                            tile_instances_info[tid] = []
+                        
+                        for inst in tile.get('instances', []):
+                            # Compute cell corners from parent corners
+                            parent_corners = inst['corners']
+                            if grid_x == 1 and grid_y == 1:
+                                cell_corners = parent_corners
+                            else:
+                                cell_corners = compute_grid_cell_corners(
+                                    parent_corners, grid_x, grid_y, cell_x, cell_y
+                                )
+                            
+                            tile_instances_info[tid].append({
+                                'video_path': video_path,
+                                'frame': inst['frame'],
+                                'corners': cell_corners,
+                                'up_edge': inst.get('up_edge', 0)
+                            })
         
-        # Filter tiles with at least 2 instances
-        self.tile_ids = [tid for tid in tile_ids if len(tile_instances_info.get(tid, [])) >= 2]
+        # Filter tiles with at least 2 instances (use expanded tile IDs from tile_instances_info)
+        self.tile_ids = [tid for tid in tile_instances_info.keys() if len(tile_instances_info.get(tid, [])) >= 2]
         total_instances = sum(len(tile_instances_info.get(tid, [])) for tid in self.tile_ids)
         print(f"Dataset: {len(self.tile_ids)} tiles with 2+ instances, {total_instances} total instances")
         
