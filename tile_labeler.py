@@ -1072,22 +1072,32 @@ def warp_tile_instance(video_path, frame_num, corners, up_edge, target_size=128)
 
 
 def apply_augmentation(img, rng):
-    """Apply fast augmentations: brightness, contrast, small affine."""
+    """Apply augmentations: brightness, contrast, affine, blur, noise."""
     h, w = img.shape[:2]
     img = img.astype(np.float32)
     
-    # Brightness + Contrast (combined for speed)
+    # Brightness + Contrast (combined)
     brightness = rng.uniform(-30, 30)
     contrast = rng.uniform(0.8, 1.2)
     img = np.clip((img - 128) * contrast + 128 + brightness, 0, 255)
     
-    # Combined small translation + rotation in one warpAffine
+    # Combined translation + rotation in one warpAffine (single interpolation)
     tx, ty = rng.uniform(-5, 5), rng.uniform(-5, 5)
     angle = rng.uniform(-5, 5)
     M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
     M[0, 2] += tx
     M[1, 2] += ty
     img = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    # Blur (30% chance, fast box blur)
+    if rng.random() < 0.3:
+        ksize = rng.choice([3, 5])
+        img = cv2.blur(img, (ksize, ksize))
+    
+    # Noise (30% chance)
+    if rng.random() < 0.3:
+        noise = rng.normal(0, 8, img.shape).astype(np.float32)
+        img = np.clip(img + noise, 0, 255)
     
     return img.astype(np.uint8)
 
