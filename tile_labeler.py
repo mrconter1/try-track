@@ -263,10 +263,12 @@ class InteractiveImageLabel(QLabel):
         for tile, inst in tiles:
             color_idx = tile.get('color_idx', 0) % len(TILE_COLORS)
             r, g, b = TILE_COLORS[color_idx]
+            up_edge = inst.get('up_edge', 0)
             
             corners = inst['corners']
             widget_corners = [self.frame_display.img_to_widget(c[0], c[1]) for c in corners]
             
+            # Draw filled quad
             painter.setBrush(QBrush(QColor(r, g, b, 50)))
             painter.setPen(QPen(QColor(r, g, b, 200), 2))
             
@@ -275,7 +277,42 @@ class InteractiveImageLabel(QLabel):
             polygon = QPolygonF([QPointF(c[0], c[1]) for c in widget_corners])
             painter.drawPolygon(polygon)
             
+            # Draw "up" edge in blue
+            up_c1 = widget_corners[up_edge]
+            up_c2 = widget_corners[(up_edge + 1) % 4]
+            painter.setPen(QPen(QColor(50, 150, 255), 3))
+            painter.drawLine(QPointF(up_c1[0], up_c1[1]), QPointF(up_c2[0], up_c2[1]))
+            
+            # Draw arrow along the up edge
+            mid_x = (up_c1[0] + up_c2[0]) / 2
+            mid_y = (up_c1[1] + up_c2[1]) / 2
+            dx = up_c2[0] - up_c1[0]
+            dy = up_c2[1] - up_c1[1]
+            length = (dx**2 + dy**2) ** 0.5
+            if length > 0:
+                dx, dy = dx / length, dy / length
+                arrow_len = min(20, length / 3)
+                # Arrow tip
+                tip_x = mid_x + dx * arrow_len / 2
+                tip_y = mid_y + dy * arrow_len / 2
+                # Arrow base
+                base_x = mid_x - dx * arrow_len / 2
+                base_y = mid_y - dy * arrow_len / 2
+                # Arrow head
+                head_size = 6
+                perp_x, perp_y = -dy, dx
+                painter.setBrush(QBrush(QColor(50, 150, 255)))
+                arrow_head = QPolygonF([
+                    QPointF(tip_x, tip_y),
+                    QPointF(tip_x - dx * head_size + perp_x * head_size / 2, tip_y - dy * head_size + perp_y * head_size / 2),
+                    QPointF(tip_x - dx * head_size - perp_x * head_size / 2, tip_y - dy * head_size - perp_y * head_size / 2)
+                ])
+                painter.drawPolygon(arrow_head)
+                painter.drawLine(QPointF(base_x, base_y), QPointF(tip_x - dx * head_size / 2, tip_y - dy * head_size / 2))
+            
+            # Draw corners
             painter.setBrush(QBrush(QColor(r, g, b, 255)))
+            painter.setPen(QPen(QColor(r, g, b, 200), 2))
             for i, (wx, wy) in enumerate(widget_corners):
                 is_dragging_this = (self.dragging_corner and 
                                     self.dragging_corner[0] == tile['id'] and 
@@ -283,6 +320,7 @@ class InteractiveImageLabel(QLabel):
                 radius = self.corner_radius_dragging if is_dragging_this else self.corner_radius_normal
                 painter.drawEllipse(QPointF(wx, wy), radius, radius)
             
+            # Draw tile ID
             painter.setPen(QPen(QColor(255, 255, 255, 200), 1))
             center_x = sum(c[0] for c in widget_corners) / 4
             center_y = sum(c[1] for c in widget_corners) / 4
@@ -324,12 +362,61 @@ class InteractiveImageLabel(QLabel):
                 return (tile, inst)
         return None
     
+    def find_edge_at(self, pos):
+        """Find if click is near an edge (but not a corner). Returns (tile, inst, edge_index) or None."""
+        tiles = self.get_tiles_for_frame()
+        
+        for tile, inst in tiles:
+            corners = inst['corners']
+            widget_corners = [self.frame_display.img_to_widget(c[0], c[1]) for c in corners]
+            
+            # First check we're not on a corner
+            for corner in corners:
+                wx, wy = self.frame_display.img_to_widget(corner[0], corner[1])
+                dist = ((pos.x() - wx) ** 2 + (pos.y() - wy) ** 2) ** 0.5
+                if dist <= self.corner_radius_normal + 6:
+                    return None  # On a corner, not an edge
+            
+            # Check distance to each edge
+            for i in range(4):
+                c1 = widget_corners[i]
+                c2 = widget_corners[(i + 1) % 4]
+                
+                # Point to line segment distance
+                x, y = pos.x(), pos.y()
+                x1, y1 = c1
+                x2, y2 = c2
+                
+                dx, dy = x2 - x1, y2 - y1
+                length_sq = dx * dx + dy * dy
+                if length_sq == 0:
+                    continue
+                
+                t = max(0, min(1, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+                proj_x = x1 + t * dx
+                proj_y = y1 + t * dy
+                dist = ((x - proj_x) ** 2 + (y - proj_y) ** 2) ** 0.5
+                
+                if dist <= 10 and t > 0.1 and t < 0.9:  # Near edge but not at corners
+                    return (tile, inst, i)
+        
+        return None
+    
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             corner_result = self.find_corner_at(event.pos())
             if corner_result:
                 tile_id, corner_idx, inst = corner_result
                 self.dragging_corner = (tile_id, corner_idx, inst)
+                return
+            
+            # Check if clicking on an edge to set up direction
+            edge_result = self.find_edge_at(event.pos())
+            if edge_result:
+                tile, inst, edge_idx = edge_result
+                inst['up_edge'] = edge_idx
+                self.update()
+                self.frame_display.parent_sampler.auto_save()
                 return
             
             tile_result = self.find_tile_at(event.pos())
@@ -795,7 +882,7 @@ class TileLabeler(QMainWindow):
             'id': tile_id,
             'color_idx': len(self.current_tiles) % len(TILE_COLORS),
             'instances': [
-                {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners]}
+                {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners], 'up_edge': 0}
                 for i in range(3)
             ]
         }
@@ -829,7 +916,7 @@ class TileLabeler(QMainWindow):
             'id': tile_id,
             'color_idx': len(self.current_tiles) % len(TILE_COLORS),
             'instances': [
-                {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners]}
+                {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners], 'up_edge': 0}
                 for i in range(3)
             ]
         }

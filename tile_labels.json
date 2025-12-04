@@ -398,7 +398,8 @@
                 206.75675675675677,
                 941.3513513513514
               ]
-            ]
+            ],
+            "up_edge": 0
           },
           {
             "frame": 2973,
@@ -1083,11 +1084,11 @@
       6
     ]
   ],
-  "history_index": 21,
+  "history_index": 0,
   "current": {
-    "video_path": "videos\\video.mp4",
-    "start_frame": 2136,
-    "total_frames": 6115,
-    "step_size": 6
+    "video_path": "videos\\20251117_145925.mp4",
+    "start_frame": 592,
+    "total_frames": 12319,
+    "step_size": 1
   }
 }
