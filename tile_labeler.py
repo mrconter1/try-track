@@ -1049,6 +1049,7 @@ class TileLabeler(QMainWindow):
     def delete_selected_tile(self):
         row = self.tile_list.currentRow()
         if row >= 0 and row < len(self.current_tiles):
+            del self.current_tiles[row]
             self._update_tile_list()
             for display in self.displays:
                 display.image_label.update()
