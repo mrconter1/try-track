@@ -160,8 +160,11 @@ class RandomFrameSampler(QMainWindow):
     def __init__(self, videos_dir="videos"):
         super().__init__()
         self.videos_dir = videos_dir
-        self.videos = [os.path.join(videos_dir, f) for f in os.listdir(videos_dir) 
-                       if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm'))] if os.path.isdir(videos_dir) else []
+        
+        # Video info: list of (path, frame_count)
+        self.videos = []
+        self.total_frames = 0
+        self._scan_videos()
         
         # Current state
         self.current_video_path = None
@@ -218,7 +221,7 @@ class RandomFrameSampler(QMainWindow):
         folder_label.setWordWrap(True)
         control_layout.addWidget(folder_label)
         
-        count_label = QLabel(f"{len(self.videos)} videos found")
+        count_label = QLabel(f"{len(self.videos)} videos, {self.total_frames:,} frames")
         count_label.setObjectName("info")
         count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(count_label)
@@ -302,6 +305,42 @@ class RandomFrameSampler(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.sample)
         QShortcut(QKeySequence(Qt.Key.Key_R), self, self.sample)
     
+    def _scan_videos(self):
+        """Scan videos folder and get frame counts for weighted sampling."""
+        if not os.path.isdir(self.videos_dir):
+            return
+        
+        for fname in os.listdir(self.videos_dir):
+            if fname.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+                path = os.path.join(self.videos_dir, fname)
+                cap = cv2.VideoCapture(path)
+                if cap.isOpened():
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    if frame_count > 0:
+                        self.videos.append((path, frame_count))
+                        self.total_frames += frame_count
+                cap.release()
+        
+        self.videos.sort(key=lambda x: x[0])
+    
+    def _sample_video_weighted(self):
+        """Sample a video weighted by frame count (more frames = higher chance)."""
+        if not self.videos or self.total_frames == 0:
+            return None, 0
+        
+        # Pick a random frame index across all videos
+        target = random.randint(0, self.total_frames - 1)
+        
+        # Find which video contains this frame
+        cumulative = 0
+        for path, frame_count in self.videos:
+            if cumulative + frame_count > target:
+                return path, frame_count
+            cumulative += frame_count
+        
+        # Fallback
+        return self.videos[-1]
+    
     def _on_step_changed(self):
         """Update frames 2 and 3 when step size changes, keeping frame 1."""
         if self.current_video_path is None:
@@ -339,10 +378,9 @@ class RandomFrameSampler(QMainWindow):
             self.video_info.setText("No videos found!")
             return
         
-        path = random.choice(self.videos)
-        cap = cv2.VideoCapture(path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
+        path, total = self._sample_video_weighted()
+        if path is None:
+            return
         
         step = self.step_spin.value()
         min_frames_needed = 1 + 2 * step
