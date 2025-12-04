@@ -524,6 +524,11 @@ class TileLabeler(QMainWindow):
         tiles_label.setObjectName("info")
         control_layout.addWidget(tiles_label)
         
+        self.stats_label = QLabel("0 labeled samples")
+        self.stats_label.setObjectName("info")
+        self.stats_label.setStyleSheet("color: #00d4ff; font-size: 10px;")
+        control_layout.addWidget(self.stats_label)
+        
         self.tile_list = QListWidget()
         self.tile_list.setFixedHeight(120)
         self.tile_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -630,6 +635,12 @@ class TileLabeler(QMainWindow):
             item = QListWidgetItem(f"● {tile['id']}")
             item.setForeground(QColor(r, g, b))
             self.tile_list.addItem(item)
+        self._update_stats()
+    
+    def _update_stats(self):
+        total_samples = len(self.all_tiles)
+        total_tiles = sum(len(tiles) for tiles in self.all_tiles.values())
+        self.stats_label.setText(f"{total_samples} samples, {total_tiles} tiles")
     
     def _update_history_label(self):
         if self.history:
@@ -842,6 +853,7 @@ class TileLabeler(QMainWindow):
     
     def auto_save(self):
         self._save_current_tiles()
+        self._update_stats()
         
         save_data = {
             'tiles': self.all_tiles,
