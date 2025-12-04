@@ -163,6 +163,11 @@ class RandomFrameSampler(QMainWindow):
         self.videos = [os.path.join(videos_dir, f) for f in os.listdir(videos_dir) 
                        if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm'))] if os.path.isdir(videos_dir) else []
         
+        # Current state
+        self.current_video_path = None
+        self.current_start_frame = None
+        self.current_total_frames = None
+        
         self.setWindowTitle("Random Frame Sampler")
         self.setStyleSheet(STYLE)
         
@@ -240,6 +245,7 @@ class RandomFrameSampler(QMainWindow):
         self.step_spin.setValue(3)
         self.step_spin.setFixedSize(80, 38)
         self.step_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.step_spin.valueChanged.connect(self._on_step_changed)
         step_row.addWidget(self.step_spin)
         
         minus_btn = QPushButton("−")
@@ -296,25 +302,23 @@ class RandomFrameSampler(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.sample)
         QShortcut(QKeySequence(Qt.Key.Key_R), self, self.sample)
     
-    def sample(self):
-        if not self.videos:
-            self.video_info.setText("No videos found!")
+    def _on_step_changed(self):
+        """Update frames 2 and 3 when step size changes, keeping frame 1."""
+        if self.current_video_path is None:
             return
-        
-        path = random.choice(self.videos)
-        cap = cv2.VideoCapture(path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._load_frames(self.current_video_path, self.current_start_frame, self.current_total_frames)
+    
+    def _load_frames(self, path, start, total):
+        """Load 3 frames from video starting at 'start' with current step."""
         step = self.step_spin.value()
+        frame_indices = [start, start + step, start + 2 * step]
         
-        # Need at least 3 frames with given step: start, start+step, start+2*step
-        min_frames_needed = 1 + 2 * step
-        if total < min_frames_needed:
-            cap.release()
-            self.video_info.setText(f"Video too short\n({total} frames, need {min_frames_needed})")
+        # Check if frames are valid
+        if frame_indices[-1] >= total:
+            self.video_info.setText(f"Step too large\n(frame {frame_indices[-1]} >= {total})")
             return
         
-        start = random.randint(0, total - min_frames_needed)
-        frame_indices = [start, start + step, start + 2 * step]
+        cap = cv2.VideoCapture(path)
         
         for i, frame_idx in enumerate(frame_indices):
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -325,9 +329,36 @@ class RandomFrameSampler(QMainWindow):
             self.displays[i].set_frame(frame, frame_idx)
         
         cap.release()
+        
         name = os.path.basename(path)
         frames_str = ", ".join(str(f) for f in frame_indices)
         self.video_info.setText(f"{name}\n\nFrames: {frames_str}\n({total} total, step={step})")
+    
+    def sample(self):
+        if not self.videos:
+            self.video_info.setText("No videos found!")
+            return
+        
+        path = random.choice(self.videos)
+        cap = cv2.VideoCapture(path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        
+        step = self.step_spin.value()
+        min_frames_needed = 1 + 2 * step
+        
+        if total < min_frames_needed:
+            self.video_info.setText(f"Video too short\n({total} frames, need {min_frames_needed})")
+            return
+        
+        start = random.randint(0, total - min_frames_needed)
+        
+        # Store current state
+        self.current_video_path = path
+        self.current_start_frame = start
+        self.current_total_frames = total
+        
+        self._load_frames(path, start, total)
 
 
 def main():
