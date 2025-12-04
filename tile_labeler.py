@@ -1314,12 +1314,15 @@ class TileDataset:
         anchor_cache = self.tile_cache[anchor_tid]
         anchor_idx = self.rng.integers(len(anchor_cache))
         anchor_rot = self.rng.integers(4)
+        anchor_flip = self.rng.integers(2)  # 0 = no flip, 1 = horizontal flip
         
         anchor_img = anchor_cache[anchor_idx].copy()
         anchor_img = apply_90_rotation(anchor_img, anchor_rot)
+        if anchor_flip:
+            anchor_img = np.fliplr(anchor_img).copy()
         anchor_img = apply_augmentation(anchor_img, self.rng)
         
-        # Pick positive: same tile, different instance, same rotation
+        # Pick positive: same tile, different instance, same rotation, same flip
         pos_indices = [i for i in range(len(anchor_cache)) if i != anchor_idx]
         if not pos_indices:
             return None, None, None, None
@@ -1327,28 +1330,41 @@ class TileDataset:
         
         pos_img = anchor_cache[pos_idx].copy()
         pos_img = apply_90_rotation(pos_img, anchor_rot)
+        if anchor_flip:
+            pos_img = np.fliplr(pos_img).copy()
         pos_img = apply_augmentation(pos_img, self.rng)
         
-        # Pick negative: either different tile OR same tile different rotation
-        if self.rng.random() < 0.5 and len(self.tile_ids) > 1:
-            # Different tile
+        # Pick negative: different tile, OR same tile different rotation, OR same tile different flip
+        neg_choice = self.rng.random()
+        if neg_choice < 0.4 and len(self.tile_ids) > 1:
+            # Different tile (40% chance)
             neg_tids = [t for t in self.tile_ids if t != anchor_tid]
             neg_tid = self.rng.choice(neg_tids)
             neg_cache = self.tile_cache[neg_tid]
             neg_idx = self.rng.integers(len(neg_cache))
             neg_rot = self.rng.integers(4)
-        else:
-            # Same tile, different rotation
+            neg_flip = self.rng.integers(2)
+        elif neg_choice < 0.7:
+            # Same tile, different rotation (30% chance)
             neg_cache = anchor_cache
             neg_idx = self.rng.integers(len(neg_cache))
             neg_rots = [r for r in range(4) if r != anchor_rot]
             neg_rot = self.rng.choice(neg_rots)
+            neg_flip = anchor_flip  # Keep same flip
+        else:
+            # Same tile, same rotation, different flip (30% chance)
+            neg_cache = anchor_cache
+            neg_idx = self.rng.integers(len(neg_cache))
+            neg_rot = anchor_rot
+            neg_flip = 1 - anchor_flip  # Opposite flip
         
         neg_img = neg_cache[neg_idx].copy()
         neg_img = apply_90_rotation(neg_img, neg_rot)
+        if neg_flip:
+            neg_img = np.fliplr(neg_img).copy()
         neg_img = apply_augmentation(neg_img, self.rng)
         
-        return anchor_img, pos_img, neg_img, (anchor_tid, anchor_rot)
+        return anchor_img, pos_img, neg_img, (anchor_tid, anchor_rot, anchor_flip)
 
 
 def create_tile_embedder(embed_dim=128):
@@ -1469,7 +1485,7 @@ def validate(model, data_path, video_dir, test_tile_ids, device, target_size=224
 def validate_cached(model, dataset, device, verbose=False):
     """Validate using cached tiles in dataset. Returns (accuracy, stats_dict)."""
     model.eval()
-    test_instances = []  # (tile_id, rotation, embedding)
+    test_instances = []  # (tile_id, rotation, flip, embedding)
     
     for tid in dataset.tile_ids:
         # Get all cached instances for this tile
@@ -1478,32 +1494,38 @@ def validate_cached(model, dataset, device, verbose=False):
         for img in images:
             if img is None: continue
             
-            # Embed at all 4 rotations
+            # Embed at all 4 rotations × 2 flips = 8 orientations
             for rot in range(4):
-                rot_img = apply_90_rotation(img, rot)
-                tensor = img_to_tensor(rot_img).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    emb = model(tensor).cpu().numpy()[0]
-                test_instances.append((tid, rot, emb))
+                for flip in range(2):
+                    rot_img = apply_90_rotation(img, rot)
+                    if flip:
+                        rot_img = np.fliplr(rot_img).copy()
+                    tensor = img_to_tensor(rot_img).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        emb = model(tensor).cpu().numpy()[0]
+                    test_instances.append((tid, rot, flip, emb))
 
     if len(test_instances) < 2:
         return 0.0, {}
         
-    # Stats: correct, same_tile_wrong_rot, wrong_tile
+    # Stats: correct, same_tile_wrong_orient, wrong_tile
     correct = 0
     same_tile_wrong_rot = 0
+    same_tile_wrong_flip = 0
     wrong_tile = 0
     total = 0
-    embeddings = np.array([inst[2] for inst in test_instances])
+    embeddings = np.array([inst[3] for inst in test_instances])
     
-    for i, (tid_i, rot_i, emb_i) in enumerate(test_instances):
+    for i, (tid_i, rot_i, flip_i, emb_i) in enumerate(test_instances):
         dists = np.sum((embeddings - emb_i) ** 2, axis=1)
         dists[i] = float('inf')
         nearest_idx = np.argmin(dists)
-        tid_j, rot_j, _ = test_instances[nearest_idx]
+        tid_j, rot_j, flip_j, _ = test_instances[nearest_idx]
         
-        if tid_i == tid_j and rot_i == rot_j:
+        if tid_i == tid_j and rot_i == rot_j and flip_i == flip_j:
             correct += 1
+        elif tid_i == tid_j and rot_i == rot_j:
+            same_tile_wrong_flip += 1
         elif tid_i == tid_j:
             same_tile_wrong_rot += 1
         else:
@@ -1514,6 +1536,7 @@ def validate_cached(model, dataset, device, verbose=False):
     stats = {
         'correct': correct,
         'same_tile_wrong_rot': same_tile_wrong_rot,
+        'same_tile_wrong_flip': same_tile_wrong_flip,
         'wrong_tile': wrong_tile,
         'total': total
     }
@@ -1637,7 +1660,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
             test_acc, test_stats = validate_cached(model, test_dataset, device)
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.2%} | Test Acc: {test_acc:.2%}")
             if test_stats:
-                print(f"  Test: {test_stats['correct']} correct, {test_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {test_stats['wrong_tile']} wrong_tile (of {test_stats['total']})")
+                print(f"  Test: {test_stats['correct']} correct, {test_stats['same_tile_wrong_rot']} wrong_rot, {test_stats['same_tile_wrong_flip']} wrong_flip, {test_stats['wrong_tile']} wrong_tile (of {test_stats['total']})")
             else:
                 print("  Test: No test tiles available (all filtered)")
         else:
@@ -1651,7 +1674,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     final_acc, final_stats = validate_cached(model, test_dataset, device)
     print(f"Final validation accuracy: {final_acc:.2%}")
     if final_stats:
-        print(f"  {final_stats['correct']} correct, {final_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {final_stats['wrong_tile']} wrong_tile (of {final_stats['total']})")
+        print(f"  {final_stats['correct']} correct, {final_stats['same_tile_wrong_rot']} wrong_rot, {final_stats['same_tile_wrong_flip']} wrong_flip, {final_stats['wrong_tile']} wrong_tile (of {final_stats['total']})")
     else:
         print("  No test tiles available (all filtered)")
 
