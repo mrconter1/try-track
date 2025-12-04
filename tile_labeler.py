@@ -1,4 +1,4 @@
-"""Random Video Frame Sampler - Shows 3 consecutive frames from a random video with tile labeling."""
+"""Tile Labeler - Label tiles across video frames."""
 
 import sys
 import os
@@ -123,17 +123,18 @@ QListWidget::item:hover {
 }
 """
 
-# Colors for different tiles
 TILE_COLORS = [
-    (255, 100, 100),  # Red
-    (100, 255, 100),  # Green
-    (100, 100, 255),  # Blue
-    (255, 255, 100),  # Yellow
-    (255, 100, 255),  # Magenta
-    (100, 255, 255),  # Cyan
-    (255, 180, 100),  # Orange
-    (180, 100, 255),  # Purple
+    (255, 100, 100),
+    (100, 255, 100),
+    (100, 100, 255),
+    (255, 255, 100),
+    (255, 100, 255),
+    (100, 255, 255),
+    (255, 180, 100),
+    (180, 100, 255),
 ]
+
+SAVE_FILE = 'tile_labels.json'
 
 
 class FrameDisplay(QFrame):
@@ -164,7 +165,6 @@ class FrameDisplay(QFrame):
         self.current_frame = None
         self.current_frame_num = None
         
-        # Image display transform info
         self.img_offset_x = 0
         self.img_offset_y = 0
         self.img_scale = 1.0
@@ -215,13 +215,11 @@ class FrameDisplay(QFrame):
         self.frame_label.setText("—")
     
     def img_to_widget(self, img_x, img_y):
-        """Convert image coordinates to widget coordinates."""
         wx = self.img_offset_x + img_x * self.img_scale
         wy = self.img_offset_y + img_y * self.img_scale
         return wx, wy
     
     def widget_to_img(self, wx, wy):
-        """Convert widget coordinates to image coordinates."""
         img_x = (wx - self.img_offset_x) / self.img_scale
         img_y = (wy - self.img_offset_y) / self.img_scale
         return img_x, img_y
@@ -232,13 +230,12 @@ class InteractiveImageLabel(QLabel):
         super().__init__()
         self.frame_display = frame_display
         self.setMouseTracking(True)
-        self.dragging_corner = None  # (tile_id, corner_index, inst)
-        self.dragging_tile = None    # (inst, start_pos, original_corners)
+        self.dragging_corner = None
+        self.dragging_tile = None
         self.corner_radius_normal = 4
         self.corner_radius_dragging = 1
     
     def get_tiles_for_frame(self):
-        """Get tiles that have data for this frame."""
         sampler = self.frame_display.parent_sampler
         frame_num = self.frame_display.current_frame_num
         if frame_num is None:
@@ -270,7 +267,6 @@ class InteractiveImageLabel(QLabel):
             corners = inst['corners']
             widget_corners = [self.frame_display.img_to_widget(c[0], c[1]) for c in corners]
             
-            # Draw filled quad
             painter.setBrush(QBrush(QColor(r, g, b, 50)))
             painter.setPen(QPen(QColor(r, g, b, 200), 2))
             
@@ -279,17 +275,14 @@ class InteractiveImageLabel(QLabel):
             polygon = QPolygonF([QPointF(c[0], c[1]) for c in widget_corners])
             painter.drawPolygon(polygon)
             
-            # Draw corners
             painter.setBrush(QBrush(QColor(r, g, b, 255)))
             for i, (wx, wy) in enumerate(widget_corners):
-                # Check if this specific corner is being dragged
                 is_dragging_this = (self.dragging_corner and 
                                     self.dragging_corner[0] == tile['id'] and 
                                     self.dragging_corner[1] == i)
                 radius = self.corner_radius_dragging if is_dragging_this else self.corner_radius_normal
                 painter.drawEllipse(QPointF(wx, wy), radius, radius)
             
-            # Draw tile ID
             painter.setPen(QPen(QColor(255, 255, 255, 200), 1))
             center_x = sum(c[0] for c in widget_corners) / 4
             center_y = sum(c[1] for c in widget_corners) / 4
@@ -298,7 +291,6 @@ class InteractiveImageLabel(QLabel):
         painter.end()
     
     def find_corner_at(self, pos):
-        """Find if there's a corner at the given position."""
         tiles = self.get_tiles_for_frame()
         
         for tile, inst in tiles:
@@ -311,14 +303,12 @@ class InteractiveImageLabel(QLabel):
         return None
     
     def find_tile_at(self, pos):
-        """Find if point is inside a tile polygon."""
         tiles = self.get_tiles_for_frame()
         
         for tile, inst in tiles:
             corners = inst['corners']
             widget_corners = [self.frame_display.img_to_widget(c[0], c[1]) for c in corners]
             
-            # Point in polygon test (ray casting)
             x, y = pos.x(), pos.y()
             n = len(widget_corners)
             inside = False
@@ -336,27 +326,22 @@ class InteractiveImageLabel(QLabel):
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # First check corners (priority)
             corner_result = self.find_corner_at(event.pos())
             if corner_result:
                 tile_id, corner_idx, inst = corner_result
                 self.dragging_corner = (tile_id, corner_idx, inst)
                 return
             
-            # Then check if inside a tile
             tile_result = self.find_tile_at(event.pos())
             if tile_result:
                 tile, inst = tile_result
-                # Store original corners for relative dragging
                 original_corners = [[c[0], c[1]] for c in inst['corners']]
                 img_x, img_y = self.frame_display.widget_to_img(event.pos().x(), event.pos().y())
                 self.dragging_tile = (inst, (img_x, img_y), original_corners)
                 return
             
-            # Click outside tiles - create new tile at click position
             img_x, img_y = self.frame_display.widget_to_img(event.pos().x(), event.pos().y())
             
-            # Check if click is within image bounds
             if 0 <= img_x <= self.frame_display.img_w and 0 <= img_y <= self.frame_display.img_h:
                 self.frame_display.parent_sampler.add_tile_at(img_x, img_y)
     
@@ -365,7 +350,6 @@ class InteractiveImageLabel(QLabel):
             tile_id, corner_idx, inst = self.dragging_corner
             img_x, img_y = self.frame_display.widget_to_img(event.pos().x(), event.pos().y())
             
-            # Clamp to image bounds
             img_x = max(0, min(self.frame_display.img_w, img_x))
             img_y = max(0, min(self.frame_display.img_h, img_y))
             
@@ -376,15 +360,12 @@ class InteractiveImageLabel(QLabel):
             inst, (start_x, start_y), original_corners = self.dragging_tile
             img_x, img_y = self.frame_display.widget_to_img(event.pos().x(), event.pos().y())
             
-            # Calculate delta
             dx = img_x - start_x
             dy = img_y - start_y
             
-            # Move all corners
             for i, orig in enumerate(original_corners):
                 new_x = orig[0] + dx
                 new_y = orig[1] + dy
-                # Clamp
                 new_x = max(0, min(self.frame_display.img_w, new_x))
                 new_y = max(0, min(self.frame_display.img_h, new_y))
                 inst['corners'][i] = [new_x, new_y]
@@ -393,38 +374,37 @@ class InteractiveImageLabel(QLabel):
     
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self.dragging_corner or self.dragging_tile
             self.dragging_corner = None
             self.dragging_tile = None
             self.update()
+            
+            if was_dragging:
+                self.frame_display.parent_sampler.auto_save()
 
 
-class RandomFrameSampler(QMainWindow):
+class TileLabeler(QMainWindow):
     def __init__(self, videos_dir="videos"):
         super().__init__()
         self.videos_dir = videos_dir
         
-        # Video info: list of (path, frame_count)
         self.videos = []
         self.total_frames = 0
         self._scan_videos()
         
-        # Sample history: list of (path, start_frame, total_frames)
         self.history = []
         self.history_index = -1
         
-        # Current state
         self.current_video_path = None
         self.current_start_frame = None
         self.current_total_frames = None
         
-        # Tile labels for current sample
-        self.current_tiles = []  # List of tile dicts
+        self.current_tiles = []
         self.tile_counter = 0
         
-        # All saved tiles (keyed by sample identifier)
-        self.all_tiles = {}  # { "video_path:start_frame": [tiles] }
+        self.all_tiles = {}
         
-        self.setWindowTitle("Random Frame Sampler")
+        self.setWindowTitle("Tile Labeler")
         self.setStyleSheet(STYLE)
         
         central = QWidget()
@@ -433,7 +413,6 @@ class RandomFrameSampler(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # Left: Frames area
         frames_widget = QWidget()
         frames_layout = QHBoxLayout(frames_widget)
         frames_layout.setContentsMargins(15, 15, 15, 15)
@@ -447,7 +426,6 @@ class RandomFrameSampler(QMainWindow):
         
         main_layout.addWidget(frames_widget, stretch=1)
         
-        # Right: Control panel
         control_panel = QFrame()
         control_panel.setObjectName("controlPanel")
         control_panel.setFixedWidth(280)
@@ -455,7 +433,7 @@ class RandomFrameSampler(QMainWindow):
         control_layout.setContentsMargins(20, 25, 20, 25)
         control_layout.setSpacing(10)
         
-        title = QLabel("Frame Sampler")
+        title = QLabel("Tile Labeler")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(title)
@@ -484,7 +462,6 @@ class RandomFrameSampler(QMainWindow):
         sep2.setFixedHeight(1)
         control_layout.addWidget(sep2)
         
-        # Step size control
         step_label = QLabel("Frame Step Size  [Q/E]")
         step_label.setObjectName("info")
         control_layout.addWidget(step_label)
@@ -527,7 +504,7 @@ class RandomFrameSampler(QMainWindow):
         current_label.setObjectName("info")
         control_layout.addWidget(current_label)
         
-        self.video_info = QLabel("Press D or Sample to begin")
+        self.video_info = QLabel("Loading...")
         self.video_info.setObjectName("videoInfo")
         self.video_info.setWordWrap(True)
         self.video_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -543,7 +520,6 @@ class RandomFrameSampler(QMainWindow):
         sep4.setFixedHeight(1)
         control_layout.addWidget(sep4)
         
-        # Tile labeling section
         tiles_label = QLabel("Tile Labels")
         tiles_label.setObjectName("info")
         control_layout.addWidget(tiles_label)
@@ -570,12 +546,6 @@ class RandomFrameSampler(QMainWindow):
         
         control_layout.addLayout(tile_btn_row)
         
-        save_btn = QPushButton("💾 Save Tiles")
-        save_btn.setObjectName("smallBtn")
-        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        save_btn.clicked.connect(self.save_tiles)
-        control_layout.addWidget(save_btn)
-        
         control_layout.addStretch()
         
         btn = QPushButton("⟳  Sample  [D]")
@@ -590,7 +560,6 @@ class RandomFrameSampler(QMainWindow):
         
         main_layout.addWidget(control_panel)
         
-        # Shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.sample_new)
         QShortcut(QKeySequence(Qt.Key.Key_R), self, self.sample_new)
         QShortcut(QKeySequence(Qt.Key.Key_D), self, self.next_sample)
@@ -599,11 +568,9 @@ class RandomFrameSampler(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_E), self, lambda: self.step_spin.setValue(self.step_spin.value() + 1))
         QShortcut(QKeySequence(Qt.Key.Key_T), self, self.add_tile)
         
-        # Load existing tiles
-        self._load_tiles_from_file()
+        self._load_from_file()
     
     def _scan_videos(self):
-        """Scan videos folder and get frame counts for weighted sampling."""
         if not os.path.isdir(self.videos_dir):
             return
         
@@ -621,7 +588,6 @@ class RandomFrameSampler(QMainWindow):
         self.videos.sort(key=lambda x: x[0])
     
     def _sample_video_weighted(self):
-        """Sample a video weighted by frame count."""
         if not self.videos or self.total_frames == 0:
             return None, 0
         
@@ -636,28 +602,27 @@ class RandomFrameSampler(QMainWindow):
         return self.videos[-1]
     
     def _get_sample_key(self):
-        """Get unique key for current sample."""
         if self.current_video_path and self.current_start_frame is not None:
             return f"{self.current_video_path}:{self.current_start_frame}"
         return None
     
     def _save_current_tiles(self):
-        """Save current tiles to the all_tiles dict."""
         key = self._get_sample_key()
-        if key and self.current_tiles:
-            self.all_tiles[key] = self.current_tiles.copy()
+        if key:
+            if self.current_tiles:
+                self.all_tiles[key] = [tile.copy() for tile in self.current_tiles]
+            elif key in self.all_tiles:
+                del self.all_tiles[key]
     
     def _load_tiles_for_sample(self):
-        """Load tiles for current sample from all_tiles dict."""
         key = self._get_sample_key()
         if key and key in self.all_tiles:
-            self.current_tiles = self.all_tiles[key].copy()
+            self.current_tiles = [tile.copy() for tile in self.all_tiles[key]]
         else:
             self.current_tiles = []
         self._update_tile_list()
     
     def _update_tile_list(self):
-        """Update the tile list widget."""
         self.tile_list.clear()
         for tile in self.current_tiles:
             color_idx = tile.get('color_idx', 0) % len(TILE_COLORS)
@@ -673,14 +638,13 @@ class RandomFrameSampler(QMainWindow):
             self.history_label.setText("")
     
     def _on_step_changed(self):
-        """Update frames 2 and 3 when step size changes."""
         if self.current_video_path is None:
             return
         self._save_current_tiles()
         self._load_frames(self.current_video_path, self.current_start_frame, self.current_total_frames)
+        self.auto_save()
     
     def _load_frames(self, path, start, total):
-        """Load 3 frames from video."""
         step = self.step_spin.value()
         frame_indices = [start, start + step, start + 2 * step]
         
@@ -704,31 +668,24 @@ class RandomFrameSampler(QMainWindow):
         frames_str = ", ".join(str(f) for f in frame_indices)
         self.video_info.setText(f"{name}\n\nFrames: {frames_str}\n({total} total, step={step})")
         
-        # Update tile instances for new frame numbers
         self._update_tile_frame_numbers(frame_indices)
     
     def _update_tile_frame_numbers(self, frame_indices):
-        """Update tile instances to match current frame numbers."""
         for tile in self.current_tiles:
-            # Ensure we have 3 instances
             while len(tile['instances']) < 3:
-                # Copy from last instance or create default
                 if tile['instances']:
                     new_inst = {'frame': 0, 'corners': [c.copy() for c in tile['instances'][-1]['corners']]}
                 else:
                     new_inst = {'frame': 0, 'corners': [[100, 100], [200, 100], [200, 200], [100, 200]]}
                 tile['instances'].append(new_inst)
             
-            # Update frame numbers
             for i, frame_num in enumerate(frame_indices):
                 tile['instances'][i]['frame'] = frame_num
         
-        # Refresh displays
         for display in self.displays:
             display.image_label.update()
     
     def _load_sample(self, path, start, total):
-        """Load a sample and update state."""
         self._save_current_tiles()
         
         self.current_video_path = path
@@ -740,7 +697,6 @@ class RandomFrameSampler(QMainWindow):
         self._update_history_label()
     
     def sample_new(self):
-        """Generate a new random sample."""
         if not self.videos:
             self.video_info.setText("No videos found!")
             return
@@ -771,9 +727,9 @@ class RandomFrameSampler(QMainWindow):
         self.history_index = len(self.history) - 1
         
         self._load_sample(path, start, total)
+        self.auto_save()
     
     def next_sample(self):
-        """Go to next sample or generate new."""
         if self.history_index < len(self.history) - 1:
             self._save_current_tiles()
             self.history_index += 1
@@ -782,11 +738,11 @@ class RandomFrameSampler(QMainWindow):
             self.step_spin.setValue(1)
             self.step_spin.blockSignals(False)
             self._load_sample(path, start, total)
+            self.auto_save()
         else:
             self.sample_new()
     
     def prev_sample(self):
-        """Go to previous sample."""
         if self.history_index > 0:
             self._save_current_tiles()
             self.history_index -= 1
@@ -795,19 +751,17 @@ class RandomFrameSampler(QMainWindow):
             self.step_spin.setValue(1)
             self.step_spin.blockSignals(False)
             self._load_sample(path, start, total)
+            self.auto_save()
     
     def add_tile(self):
-        """Add a new tile label."""
         if self.current_video_path is None:
             return
         
         self.tile_counter += 1
         tile_id = f"T{self.tile_counter:03d}"
         
-        # Get current frame numbers
         frame_nums = [d.current_frame_num for d in self.displays]
         
-        # Default quad in center of image
         cx, cy = 200, 200
         size = 80
         default_corners = [
@@ -829,22 +783,20 @@ class RandomFrameSampler(QMainWindow):
         self.current_tiles.append(tile)
         self._update_tile_list()
         
-        # Refresh displays
         for display in self.displays:
             display.image_label.update()
+        
+        self.auto_save()
     
     def add_tile_at(self, cx, cy):
-        """Add a new tile label centered at given image coordinates."""
         if self.current_video_path is None:
             return
         
         self.tile_counter += 1
         tile_id = f"T{self.tile_counter:03d}"
         
-        # Get current frame numbers
         frame_nums = [d.current_frame_num for d in self.displays]
         
-        # Quad centered at click position
         size = 60
         default_corners = [
             [cx - size, cy - size],
@@ -865,49 +817,77 @@ class RandomFrameSampler(QMainWindow):
         self.current_tiles.append(tile)
         self._update_tile_list()
         
-        # Refresh displays
         for display in self.displays:
             display.image_label.update()
+        
+        self.auto_save()
     
     def delete_selected_tile(self):
-        """Delete the selected tile."""
         row = self.tile_list.currentRow()
         if row >= 0 and row < len(self.current_tiles):
             del self.current_tiles[row]
             self._update_tile_list()
             for display in self.displays:
                 display.image_label.update()
+            self.auto_save()
     
-    def save_tiles(self):
-        """Save all tiles to JSON file."""
+    def auto_save(self):
         self._save_current_tiles()
         
-        # Convert to serializable format
-        save_data = {}
-        for key, tiles in self.all_tiles.items():
-            save_data[key] = tiles
+        save_data = {
+            'tiles': self.all_tiles,
+            'tile_counter': self.tile_counter,
+            'history': self.history,
+            'history_index': self.history_index,
+            'step_size': self.step_spin.value(),
+            'current': {
+                'video_path': self.current_video_path,
+                'start_frame': self.current_start_frame,
+                'total_frames': self.current_total_frames
+            }
+        }
         
-        with open('tile_labels.json', 'w') as f:
+        with open(SAVE_FILE, 'w') as f:
             json.dump(save_data, f, indent=2)
-        
-        self.video_info.setText("Tiles saved to\ntile_labels.json")
     
-    def _load_tiles_from_file(self):
-        """Load tiles from JSON file."""
-        if os.path.exists('tile_labels.json'):
-            try:
-                with open('tile_labels.json', 'r') as f:
-                    self.all_tiles = json.load(f)
-                # Find max tile counter
-                for tiles in self.all_tiles.values():
-                    for tile in tiles:
-                        try:
-                            num = int(tile['id'][1:])
-                            self.tile_counter = max(self.tile_counter, num)
-                        except:
-                            pass
-            except:
-                pass
+    def _load_from_file(self):
+        if not os.path.exists(SAVE_FILE):
+            self.video_info.setText("Press D or Sample to begin")
+            return
+        
+        try:
+            with open(SAVE_FILE, 'r') as f:
+                data = json.load(f)
+            
+            self.all_tiles = data.get('tiles', {})
+            self.tile_counter = data.get('tile_counter', 0)
+            self.history = data.get('history', [])
+            self.history_index = data.get('history_index', -1)
+            
+            step_size = data.get('step_size', 1)
+            self.step_spin.blockSignals(True)
+            self.step_spin.setValue(step_size)
+            self.step_spin.blockSignals(False)
+            
+            current = data.get('current', {})
+            if current.get('video_path') and current.get('start_frame') is not None:
+                path = current['video_path']
+                start = current['start_frame']
+                total = current['total_frames']
+                
+                if os.path.exists(path):
+                    self.current_video_path = path
+                    self.current_start_frame = start
+                    self.current_total_frames = total
+                    self._load_tiles_for_sample()
+                    self._load_frames(path, start, total)
+                    self._update_history_label()
+                    return
+            
+            self.video_info.setText("Press D or Sample to begin")
+        except Exception as e:
+            print(f"Error loading: {e}")
+            self.video_info.setText("Press D or Sample to begin")
 
 
 def main():
@@ -916,7 +896,7 @@ def main():
     args = parser.parse_args()
     
     app = QApplication(sys.argv)
-    window = RandomFrameSampler(args.videos)
+    window = TileLabeler(args.videos)
     window.showMaximized()
     sys.exit(app.exec())
 
