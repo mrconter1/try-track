@@ -1498,8 +1498,9 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
         
         # Validate every 3 epochs
         if (epoch + 1) % 3 == 0 or epoch == 0:
-            acc = validate(model, data_path, video_dir, test_tile_ids, device)
-            print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Val Acc: {acc:.2%}")
+            train_acc = validate(model, data_path, video_dir, train_tile_ids, device)
+            test_acc = validate(model, data_path, video_dir, test_tile_ids, device)
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.2%} | Test Acc: {test_acc:.2%}")
         else:
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
     
