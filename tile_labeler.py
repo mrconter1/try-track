@@ -1384,6 +1384,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     print(f"Total tiles: {len(all_tile_ids)}, Train: {len(train_tile_ids)}, Test: {len(test_tile_ids)}")
     
     # Create dataset
+    print("Loading dataset...")
     dataset = TileDataset(data_path, video_dir, train_tile_ids)
     
     if len(dataset.tile_ids) < 2:
@@ -1391,10 +1392,21 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
         return
     
     # Create model
+    print("Creating model (downloading weights if needed)...")
     model = create_tile_embedder(embed_dim=128).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    print("Model ready!")
+    
+    # Test one triplet sampling
+    print("Testing triplet sampling...")
+    test_a, test_p, test_n, _ = dataset.sample_triplet()
+    if test_a is None:
+        print("Warning: Triplet sampling returned None - check video paths")
+    else:
+        print(f"Triplet sample OK: shapes {test_a.shape}, {test_p.shape}, {test_n.shape}")
     
     # Training loop
+    print("Starting training...")
     steps_per_epoch = 100
     
     for epoch in range(epochs):
