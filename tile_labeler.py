@@ -1498,6 +1498,76 @@ class TileDataset:
         neg_img = apply_augmentation(neg_img, self.rng)
         
         return anchor_img, pos_img, neg_img, (anchor_tid, anchor_rot, anchor_flip)
+    
+    def sample_pair(self):
+        """Sample a pair of tiles with label (1=match, 0=no match)."""
+        if len(self.tile_ids) < 2:
+            return None, None, None
+        
+        # 50% positive pairs, 50% negative pairs
+        is_positive = self.rng.random() < 0.5
+        
+        # Pick first tile
+        tid1 = self.rng.choice(self.tile_ids)
+        cache1 = self.tile_cache[tid1]
+        idx1 = self.rng.integers(len(cache1))
+        rot1 = self.rng.integers(4)
+        flip1 = self.rng.integers(2)
+        
+        img1 = cache1[idx1].copy()
+        img1 = apply_90_rotation(img1, rot1)
+        if flip1:
+            img1 = np.fliplr(img1).copy()
+        img1 = apply_augmentation(img1, self.rng)
+        
+        if is_positive:
+            # Positive pair: same tile, same rotation, same flip, different instance
+            other_indices = [i for i in range(len(cache1)) if i != idx1]
+            if not other_indices:
+                # Not enough instances, fall back to negative
+                is_positive = False
+            else:
+                idx2 = self.rng.choice(other_indices)
+                img2 = cache1[idx2].copy()
+                img2 = apply_90_rotation(img2, rot1)
+                if flip1:
+                    img2 = np.fliplr(img2).copy()
+                img2 = apply_augmentation(img2, self.rng)
+                return img1, img2, 1.0  # Match
+        
+        if not is_positive:
+            # Negative pair: different tile OR different rotation OR different flip
+            neg_type = self.rng.random()
+            if neg_type < 0.4 and len(self.tile_ids) > 1:
+                # Different tile
+                other_tids = [t for t in self.tile_ids if t != tid1]
+                tid2 = self.rng.choice(other_tids)
+                cache2 = self.tile_cache[tid2]
+                idx2 = self.rng.integers(len(cache2))
+                rot2 = self.rng.integers(4)
+                flip2 = self.rng.integers(2)
+            elif neg_type < 0.7:
+                # Same tile, different rotation
+                cache2 = cache1
+                idx2 = self.rng.integers(len(cache2))
+                other_rots = [r for r in range(4) if r != rot1]
+                rot2 = self.rng.choice(other_rots)
+                flip2 = flip1
+            else:
+                # Same tile, same rotation, different flip
+                cache2 = cache1
+                idx2 = self.rng.integers(len(cache2))
+                rot2 = rot1
+                flip2 = 1 - flip1
+            
+            img2 = cache2[idx2].copy()
+            img2 = apply_90_rotation(img2, rot2)
+            if flip2:
+                img2 = np.fliplr(img2).copy()
+            img2 = apply_augmentation(img2, self.rng)
+            return img1, img2, 0.0  # No match
+        
+        return None, None, None
 
 
 def create_tile_embedder(embed_dim=128):
@@ -1538,6 +1608,181 @@ def img_to_tensor(img):
     img = (img - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
     img = img.transpose(2, 0, 1)
     return torch.from_numpy(img).float()
+
+
+def create_pair_classifier():
+    """Factory function to create Siamese pair classifier."""
+    class PairClassifier(nn.Module):
+        """Siamese network that predicts if two tiles match."""
+        
+        def __init__(self):
+            super().__init__()
+            weights = torchvision.models.MobileNet_V2_Weights.IMAGENET1K_V1
+            mobilenet = torchvision.models.mobilenet_v2(weights=weights)
+            self.features = mobilenet.features
+            self.pool = nn.AdaptiveAvgPool2d(1)
+            # Comparison head: concat two 1280-dim features + their difference + element-wise product
+            # Input: 1280*4 = 5120 -> 256 -> 1
+            self.classifier = nn.Sequential(
+                nn.Linear(1280 * 4, 256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, 1),
+                nn.Sigmoid()
+            )
+        
+        def encode(self, x):
+            x = self.features(x)
+            x = self.pool(x)
+            x = x.view(x.size(0), -1)
+            return x
+        
+        def forward(self, x1, x2):
+            f1 = self.encode(x1)
+            f2 = self.encode(x2)
+            # Combine features: concat, diff, product
+            combined = torch.cat([f1, f2, f1 - f2, f1 * f2], dim=1)
+            return self.classifier(combined)
+    
+    return PairClassifier()
+
+
+def validate_pairwise(model, dataset, device, num_pairs=1000):
+    """Validate pairwise classifier on random pairs."""
+    model.eval()
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for _ in range(num_pairs):
+            img1, img2, label = dataset.sample_pair()
+            if img1 is None:
+                continue
+            
+            t1 = img_to_tensor(img1).unsqueeze(0).to(device)
+            t2 = img_to_tensor(img2).unsqueeze(0).to(device)
+            
+            pred = model(t1, t2).item()
+            pred_label = 1 if pred > 0.5 else 0
+            
+            if pred_label == label:
+                correct += 1
+            total += 1
+    
+    return correct / total if total > 0 else 0.0
+
+
+def train_pair_classifier(data_path, video_dir, epochs, batch_size, lr=1e-4):
+    """Train the pairwise tile classifier."""
+    load_training_imports()
+    
+    class PairDataset(torch.utils.data.Dataset):
+        def __init__(self, tile_dataset, length):
+            self.tile_dataset = tile_dataset
+            self.length = length
+            
+        def __len__(self):
+            return self.length
+            
+        def __getitem__(self, idx):
+            for _ in range(10):
+                img1, img2, label = self.tile_dataset.sample_pair()
+                if img1 is not None:
+                    return img_to_tensor(img1), img_to_tensor(img2), torch.tensor([label], dtype=torch.float32)
+            return torch.zeros(3, 224, 224), torch.zeros(3, 224, 224), torch.tensor([0.0])
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Load tile IDs and split
+    with open(data_path, 'r') as f:
+        data = json.load(f)
+    
+    all_tiles_dict = data.get('tiles', {})
+    
+    all_tile_ids = set()
+    for tiles in all_tiles_dict.values():
+        for tile in tiles:
+            all_tile_ids.add(tile['id'])
+    
+    all_tile_ids = sorted(list(all_tile_ids))
+    random.shuffle(all_tile_ids)
+    
+    split_idx = int(len(all_tile_ids) * 0.8)
+    train_tile_ids = all_tile_ids[:split_idx]
+    test_tile_ids = all_tile_ids[split_idx:]
+    
+    print(f"Total tiles: {len(all_tile_ids)}, Train: {len(train_tile_ids)}, Test: {len(test_tile_ids)}")
+    
+    print("Loading training dataset...")
+    train_dataset = TileDataset(data_path, video_dir, train_tile_ids)
+    
+    print("Loading test dataset...")
+    test_dataset = TileDataset(data_path, video_dir, test_tile_ids)
+    
+    if len(train_dataset.tile_ids) < 2:
+        print("Error: Need at least 2 training tiles")
+        return
+    
+    print("Creating pairwise model...")
+    model = create_pair_classifier().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.BCELoss()
+    print("Model ready!")
+    
+    steps_per_epoch = 100
+    dataset_wrapper = PairDataset(train_dataset, length=steps_per_epoch * batch_size)
+    dataloader = torch.utils.data.DataLoader(
+        dataset_wrapper,
+        batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    
+    print("Starting training...")
+    
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0
+        valid_batches = 0
+        
+        pbar_prefix = f"\r  Epoch {epoch+1}/{epochs}"
+        
+        for i, (img1, img2, labels) in enumerate(dataloader):
+            if i >= steps_per_epoch:
+                break
+            
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            labels = labels.to(device)
+            
+            optimizer.zero_grad()
+            preds = model(img1, img2)
+            loss = criterion(preds, labels)
+            loss.backward()
+            optimizer.step()
+            
+            epoch_loss += loss.item()
+            valid_batches += 1
+            
+            print(f"{pbar_prefix} | Step {i+1}/{steps_per_epoch} | Loss: {loss.item():.4f}  ", end="", flush=True)
+        
+        print()
+        avg_loss = epoch_loss / max(valid_batches, 1)
+        
+        if (epoch + 1) % 3 == 0 or epoch == 0:
+            train_acc = validate_pairwise(model, train_dataset, device, num_pairs=500)
+            test_acc = validate_pairwise(model, test_dataset, device, num_pairs=500)
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Pair Acc: {train_acc:.2%} | Test Pair Acc: {test_acc:.2%}")
+        else:
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
+    
+    torch.save(model.state_dict(), 'tile_pair_classifier.pth')
+    print("Model saved to tile_pair_classifier.pth")
+    
+    final_acc = validate_pairwise(model, test_dataset, device, num_pairs=1000)
+    print(f"Final test pair accuracy: {final_acc:.2%}")
 
 
 def validate(model, data_path, video_dir, test_tile_ids, device, target_size=224):
@@ -1845,7 +2090,8 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--videos", default="videos", help="Videos directory")
-    parser.add_argument("--train", action="store_true", help="Run training mode")
+    parser.add_argument("--train", action="store_true", help="Run embedding training mode (triplet loss)")
+    parser.add_argument("--pairwise", action="store_true", help="Run pairwise training mode (siamese classifier)")
     parser.add_argument("--data", default="tile_labels.json", help="Tile labels JSON file")
     parser.add_argument("--epochs", type=int, default=100, help="Training epochs")
     parser.add_argument("--batch", type=int, default=32, help="Batch size")
@@ -1854,6 +2100,8 @@ def main():
     
     if args.train:
         train_embedder(args.data, args.videos, args.epochs, args.batch, args.margin)
+    elif args.pairwise:
+        train_pair_classifier(args.data, args.videos, args.epochs, args.batch)
     else:
         app = QApplication(sys.argv)
         window = TileLabeler(args.videos)
