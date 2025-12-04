@@ -13,6 +13,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QPoint, QRectF
 from PyQt6.QtGui import QPixmap, QImage, QShortcut, QKeySequence, QPainter, QPen, QColor, QBrush
 
+# Training imports (lazy loaded)
+torch = None
+nn = None
+F = None
+torchvision = None
+
 
 STYLE = """
 QMainWindow {
@@ -999,15 +1005,423 @@ class TileLabeler(QMainWindow):
             self.video_info.setText("Press D or Sample to begin")
 
 
+###############################################################################
+# Training Code
+###############################################################################
+
+def load_training_imports():
+    """Lazy load PyTorch and related imports."""
+    global torch, nn, F, torchvision
+    import torch as _torch
+    import torch.nn as _nn
+    import torch.nn.functional as _F
+    import torchvision as _torchvision
+    torch = _torch
+    nn = _nn
+    F = _F
+    torchvision = _torchvision
+
+
+def warp_tile_instance(video_path, frame_num, corners, up_edge, target_size=128):
+    """Warp a tile instance to canonical 128x128 orientation."""
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if not ret or frame is None:
+        return None
+    
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Source corners (as float32)
+    src_pts = np.array(corners, dtype=np.float32)
+    
+    # Rotate corners based on up_edge so up_edge becomes the top
+    # up_edge 0 means edge 0->1 is top (no rotation needed)
+    # up_edge 1 means edge 1->2 is top (rotate corners by 1)
+    # etc.
+    src_pts = np.roll(src_pts, -up_edge, axis=0)
+    
+    # Destination: canonical square
+    dst_pts = np.array([
+        [0, 0],
+        [target_size - 1, 0],
+        [target_size - 1, target_size - 1],
+        [0, target_size - 1]
+    ], dtype=np.float32)
+    
+    # Compute homography and warp
+    H, _ = cv2.findHomography(src_pts, dst_pts)
+    if H is None:
+        return None
+    
+    warped = cv2.warpPerspective(frame, H, (target_size, target_size))
+    return warped
+
+
+def apply_augmentation(img, rng):
+    """Apply augmentations: brightness, contrast, blur, noise, translation, rotation."""
+    h, w = img.shape[:2]
+    img = img.astype(np.float32)
+    
+    # Brightness
+    brightness = rng.uniform(-30, 30)
+    img = np.clip(img + brightness, 0, 255)
+    
+    # Contrast
+    contrast = rng.uniform(0.8, 1.2)
+    img = np.clip((img - 128) * contrast + 128, 0, 255)
+    
+    # Blur (50% chance)
+    if rng.random() < 0.5:
+        ksize = rng.choice([3, 5])
+        img = cv2.GaussianBlur(img.astype(np.uint8), (ksize, ksize), 0).astype(np.float32)
+    
+    # Noise
+    if rng.random() < 0.5:
+        noise = rng.normal(0, 10, img.shape)
+        img = np.clip(img + noise, 0, 255)
+    
+    # Small translation (±5px)
+    tx = rng.uniform(-5, 5)
+    ty = rng.uniform(-5, 5)
+    M_translate = np.array([[1, 0, tx], [0, 1, ty]], dtype=np.float32)
+    img = cv2.warpAffine(img.astype(np.uint8), M_translate, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    # Small rotation (±5°)
+    angle = rng.uniform(-5, 5)
+    M_rotate = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    img = cv2.warpAffine(img, M_rotate, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    return img.astype(np.uint8)
+
+
+def apply_90_rotation(img, k):
+    """Apply k*90 degree rotation (k=0,1,2,3)."""
+    return np.rot90(img, k=k).copy()
+
+
+class TileDataset:
+    """Dataset for tile triplet sampling."""
+    
+    def __init__(self, data_path, video_dir, tile_ids, target_size=128):
+        self.video_dir = video_dir
+        self.target_size = target_size
+        self.tile_ids = tile_ids
+        self.rng = np.random.default_rng()
+        
+        # Load and parse tile data
+        with open(data_path, 'r') as f:
+            data = json.load(f)
+        
+        all_tiles_dict = data.get('tiles', {})
+        
+        # Build index: tile_id -> list of (video_path, frame_num, corners, up_edge)
+        self.tile_instances = {}
+        
+        for sample_key, tiles in all_tiles_dict.items():
+            # sample_key is "video_path:start_frame"
+            video_path = sample_key.rsplit(':', 1)[0]
+            
+            for tile in tiles:
+                tid = tile['id']
+                if tid not in tile_ids:
+                    continue
+                
+                if tid not in self.tile_instances:
+                    self.tile_instances[tid] = []
+                
+                for inst in tile.get('instances', []):
+                    self.tile_instances[tid].append({
+                        'video_path': video_path,
+                        'frame': inst['frame'],
+                        'corners': inst['corners'],
+                        'up_edge': inst.get('up_edge', 0)
+                    })
+        
+        # Filter tiles with at least 2 instances
+        self.tile_ids = [tid for tid in self.tile_ids if len(self.tile_instances.get(tid, [])) >= 2]
+        print(f"Dataset: {len(self.tile_ids)} tiles with 2+ instances")
+    
+    def sample_triplet(self):
+        """Sample anchor, positive, negative triplet."""
+        if len(self.tile_ids) < 2:
+            return None, None, None, None
+        
+        # Pick anchor tile and instance
+        anchor_tid = self.rng.choice(self.tile_ids)
+        anchor_instances = self.tile_instances[anchor_tid]
+        anchor_idx = self.rng.integers(len(anchor_instances))
+        anchor_inst = anchor_instances[anchor_idx]
+        
+        # Pick rotation for anchor (0, 1, 2, 3 = 0°, 90°, 180°, 270°)
+        anchor_rot = self.rng.integers(4)
+        
+        # Get anchor image
+        anchor_img = warp_tile_instance(
+            anchor_inst['video_path'], anchor_inst['frame'],
+            anchor_inst['corners'], anchor_inst['up_edge'], self.target_size
+        )
+        if anchor_img is None:
+            return None, None, None, None
+        anchor_img = apply_90_rotation(anchor_img, anchor_rot)
+        anchor_img = apply_augmentation(anchor_img, self.rng)
+        
+        # Pick positive: same tile, different instance, same rotation
+        pos_indices = [i for i in range(len(anchor_instances)) if i != anchor_idx]
+        if not pos_indices:
+            return None, None, None, None
+        pos_idx = self.rng.choice(pos_indices)
+        pos_inst = anchor_instances[pos_idx]
+        
+        pos_img = warp_tile_instance(
+            pos_inst['video_path'], pos_inst['frame'],
+            pos_inst['corners'], pos_inst['up_edge'], self.target_size
+        )
+        if pos_img is None:
+            return None, None, None, None
+        pos_img = apply_90_rotation(pos_img, anchor_rot)  # Same rotation
+        pos_img = apply_augmentation(pos_img, self.rng)
+        
+        # Pick negative: either different tile OR same tile different rotation
+        if self.rng.random() < 0.5 and len(self.tile_ids) > 1:
+            # Different tile
+            neg_tids = [t for t in self.tile_ids if t != anchor_tid]
+            neg_tid = self.rng.choice(neg_tids)
+            neg_instances = self.tile_instances[neg_tid]
+            neg_inst = neg_instances[self.rng.integers(len(neg_instances))]
+            neg_rot = self.rng.integers(4)
+        else:
+            # Same tile, different rotation
+            neg_inst = anchor_instances[self.rng.integers(len(anchor_instances))]
+            neg_rots = [r for r in range(4) if r != anchor_rot]
+            neg_rot = self.rng.choice(neg_rots)
+        
+        neg_img = warp_tile_instance(
+            neg_inst['video_path'], neg_inst['frame'],
+            neg_inst['corners'], neg_inst['up_edge'], self.target_size
+        )
+        if neg_img is None:
+            return None, None, None, None
+        neg_img = apply_90_rotation(neg_img, neg_rot)
+        neg_img = apply_augmentation(neg_img, self.rng)
+        
+        return anchor_img, pos_img, neg_img, (anchor_tid, anchor_rot)
+
+
+def create_tile_embedder(embed_dim=128):
+    """Factory function to create TileEmbedder after imports are loaded."""
+    class TileEmbedder(nn.Module):
+        """MobileNetV2 backbone with embedding head."""
+        
+        def __init__(self):
+            super().__init__()
+            weights = torchvision.models.MobileNet_V2_Weights.IMAGENET1K_V1
+            mobilenet = torchvision.models.mobilenet_v2(weights=weights)
+            self.features = mobilenet.features
+            self.pool = nn.AdaptiveAvgPool2d(1)
+            self.embed = nn.Linear(1280, embed_dim)
+        
+        def forward(self, x):
+            x = self.features(x)
+            x = self.pool(x)
+            x = x.view(x.size(0), -1)
+            x = self.embed(x)
+            x = F.normalize(x, p=2, dim=1)
+            return x
+    
+    return TileEmbedder()
+
+
+def triplet_loss(anchor, positive, negative, margin=0.3):
+    """Triplet loss with margin."""
+    d_pos = (anchor - positive).pow(2).sum(dim=1)
+    d_neg = (anchor - negative).pow(2).sum(dim=1)
+    loss = F.relu(d_pos - d_neg + margin)
+    return loss.mean()
+
+
+def img_to_tensor(img):
+    """Convert numpy image to normalized tensor."""
+    img = img.astype(np.float32) / 255.0
+    img = (img - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
+    img = img.transpose(2, 0, 1)
+    return torch.from_numpy(img).float()
+
+
+def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128):
+    """Validate by checking nearest neighbor accuracy."""
+    model.eval()
+    
+    with open(data_path, 'r') as f:
+        data = json.load(f)
+    
+    all_tiles_dict = data.get('tiles', {})
+    
+    # Build test instances
+    test_instances = []  # (tile_id, rotation, embedding)
+    
+    for sample_key, tiles in all_tiles_dict.items():
+        video_path = sample_key.rsplit(':', 1)[0]
+        
+        for tile in tiles:
+            tid = tile['id']
+            if tid not in test_tile_ids:
+                continue
+            
+            for inst in tile.get('instances', []):
+                img = warp_tile_instance(
+                    video_path, inst['frame'],
+                    inst['corners'], inst.get('up_edge', 0), target_size
+                )
+                if img is None:
+                    continue
+                
+                # Embed at all 4 rotations
+                for rot in range(4):
+                    rot_img = apply_90_rotation(img, rot)
+                    tensor = img_to_tensor(rot_img).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        emb = model(tensor).cpu().numpy()[0]
+                    test_instances.append((tid, rot, emb))
+    
+    if len(test_instances) < 2:
+        return 0.0
+    
+    # For each instance, find nearest neighbor (excluding self)
+    correct = 0
+    total = 0
+    
+    embeddings = np.array([inst[2] for inst in test_instances])
+    
+    for i, (tid_i, rot_i, emb_i) in enumerate(test_instances):
+        # Compute distances to all others
+        dists = np.sum((embeddings - emb_i) ** 2, axis=1)
+        dists[i] = float('inf')  # Exclude self
+        
+        nearest_idx = np.argmin(dists)
+        tid_j, rot_j, _ = test_instances[nearest_idx]
+        
+        if tid_i == tid_j and rot_i == rot_j:
+            correct += 1
+        total += 1
+    
+    return correct / total if total > 0 else 0.0
+
+
+def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
+    """Train the tile embedder."""
+    load_training_imports()
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Load tile IDs and split
+    with open(data_path, 'r') as f:
+        data = json.load(f)
+    
+    all_tiles_dict = data.get('tiles', {})
+    
+    # Collect all unique tile IDs
+    all_tile_ids = set()
+    for tiles in all_tiles_dict.values():
+        for tile in tiles:
+            all_tile_ids.add(tile['id'])
+    
+    all_tile_ids = sorted(list(all_tile_ids))
+    random.shuffle(all_tile_ids)
+    
+    split_idx = int(len(all_tile_ids) * 0.8)
+    train_tile_ids = all_tile_ids[:split_idx]
+    test_tile_ids = all_tile_ids[split_idx:]
+    
+    print(f"Total tiles: {len(all_tile_ids)}, Train: {len(train_tile_ids)}, Test: {len(test_tile_ids)}")
+    
+    # Create dataset
+    dataset = TileDataset(data_path, video_dir, train_tile_ids)
+    
+    if len(dataset.tile_ids) < 2:
+        print("Error: Need at least 2 tiles with 2+ instances each")
+        return
+    
+    # Create model
+    model = create_tile_embedder(embed_dim=128).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    # Training loop
+    steps_per_epoch = 100
+    
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0
+        valid_batches = 0
+        
+        for step in range(steps_per_epoch):
+            anchors, positives, negatives = [], [], []
+            
+            for _ in range(batch_size):
+                a, p, n, _ = dataset.sample_triplet()
+                if a is not None:
+                    anchors.append(img_to_tensor(a))
+                    positives.append(img_to_tensor(p))
+                    negatives.append(img_to_tensor(n))
+            
+            if len(anchors) < 2:
+                continue
+            
+            anchors = torch.stack(anchors).to(device)
+            positives = torch.stack(positives).to(device)
+            negatives = torch.stack(negatives).to(device)
+            
+            optimizer.zero_grad()
+            
+            a_emb = model(anchors)
+            p_emb = model(positives)
+            n_emb = model(negatives)
+            
+            loss = triplet_loss(a_emb, p_emb, n_emb, margin)
+            loss.backward()
+            optimizer.step()
+            
+            epoch_loss += loss.item()
+            valid_batches += 1
+        
+        avg_loss = epoch_loss / max(valid_batches, 1)
+        
+        # Validate every 10 epochs
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            acc = validate(model, data_path, video_dir, test_tile_ids, device)
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Val Acc: {acc:.2%}")
+        else:
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
+    
+    # Save model
+    torch.save(model.state_dict(), 'tile_embedder.pth')
+    print("Model saved to tile_embedder.pth")
+    
+    # Final validation
+    final_acc = validate(model, data_path, video_dir, test_tile_ids, device)
+    print(f"Final validation accuracy: {final_acc:.2%}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--videos", default="videos", help="Videos directory")
+    parser.add_argument("--train", action="store_true", help="Run training mode")
+    parser.add_argument("--data", default="tile_labels.json", help="Tile labels JSON file")
+    parser.add_argument("--epochs", type=int, default=100, help="Training epochs")
+    parser.add_argument("--batch", type=int, default=32, help="Batch size")
+    parser.add_argument("--margin", type=float, default=0.3, help="Triplet loss margin")
     args = parser.parse_args()
     
-    app = QApplication(sys.argv)
-    window = TileLabeler(args.videos)
-    window.showMaximized()
-    sys.exit(app.exec())
+    if args.train:
+        train_embedder(args.data, args.videos, args.epochs, args.batch, args.margin)
+    else:
+        app = QApplication(sys.argv)
+        window = TileLabeler(args.videos)
+        window.showMaximized()
+        sys.exit(app.exec())
 
 
 if __name__ == "__main__":
