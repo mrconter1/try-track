@@ -1647,15 +1647,37 @@ def validate_cached(model, dataset, device, verbose=False):
     same_tile_wrong_flip = 0
     wrong_tile = 0
     total = 0
+    
+    # Confident predictions (Lowe's ratio test)
+    RATIO_THRESHOLD = 0.8
+    confident_correct = 0
+    confident_wrong = 0
+    
     embeddings = np.array([inst[3] for inst in test_instances])
     
     for i, (tid_i, rot_i, flip_i, emb_i) in enumerate(test_instances):
         dists = np.sum((embeddings - emb_i) ** 2, axis=1)
         dists[i] = float('inf')
-        nearest_idx = np.argmin(dists)
-        tid_j, rot_j, flip_j, _ = test_instances[nearest_idx]
         
-        if tid_i == tid_j and rot_i == rot_j and flip_i == flip_j:
+        # Find two nearest neighbors for ratio test
+        sorted_indices = np.argsort(dists)
+        nearest_idx = sorted_indices[0]
+        second_nearest_idx = sorted_indices[1]
+        d1, d2 = dists[nearest_idx], dists[second_nearest_idx]
+        
+        tid_j, rot_j, flip_j, _ = test_instances[nearest_idx]
+        is_correct = (tid_i == tid_j and rot_i == rot_j and flip_i == flip_j)
+        
+        # Lowe's ratio test: confident if d1/d2 < threshold
+        is_confident = (d2 > 0) and (np.sqrt(d1) / np.sqrt(d2) < RATIO_THRESHOLD)
+        
+        if is_confident:
+            if is_correct:
+                confident_correct += 1
+            else:
+                confident_wrong += 1
+        
+        if is_correct:
             correct += 1
         elif tid_i == tid_j and rot_i == rot_j:
             same_tile_wrong_flip += 1
@@ -1666,12 +1688,18 @@ def validate_cached(model, dataset, device, verbose=False):
         total += 1
     
     acc = correct / total if total > 0 else 0.0
+    confident_total = confident_correct + confident_wrong
+    confident_acc = confident_correct / confident_total if confident_total > 0 else 0.0
     stats = {
         'correct': correct,
         'same_tile_wrong_rot': same_tile_wrong_rot,
         'same_tile_wrong_flip': same_tile_wrong_flip,
         'wrong_tile': wrong_tile,
-        'total': total
+        'total': total,
+        'confident_correct': confident_correct,
+        'confident_wrong': confident_wrong,
+        'confident_total': confident_total,
+        'confident_acc': confident_acc
     }
     return acc, stats
 
@@ -1794,6 +1822,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.2%} | Test Acc: {test_acc:.2%}")
             if test_stats:
                 print(f"  Test: {test_stats['correct']} correct, {test_stats['same_tile_wrong_rot']} wrong_rot, {test_stats['same_tile_wrong_flip']} wrong_flip, {test_stats['wrong_tile']} wrong_tile (of {test_stats['total']})")
+                print(f"  Confident: {test_stats['confident_correct']}/{test_stats['confident_total']} ({test_stats['confident_acc']:.1%} acc, {test_stats['confident_total']}/{test_stats['total']} answered)")
             else:
                 print("  Test: No test tiles available (all filtered)")
         else:
@@ -1808,6 +1837,7 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     print(f"Final validation accuracy: {final_acc:.2%}")
     if final_stats:
         print(f"  {final_stats['correct']} correct, {final_stats['same_tile_wrong_rot']} wrong_rot, {final_stats['same_tile_wrong_flip']} wrong_flip, {final_stats['wrong_tile']} wrong_tile (of {final_stats['total']})")
+        print(f"  Confident: {final_stats['confident_correct']}/{final_stats['confident_total']} ({final_stats['confident_acc']:.1%} acc, {final_stats['confident_total']}/{final_stats['total']} answered)")
     else:
         print("  No test tiles available (all filtered)")
 
