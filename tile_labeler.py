@@ -1496,8 +1496,8 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
         print()  # Newline after step progress
         avg_loss = epoch_loss / max(valid_batches, 1)
         
-        # Validate every 10 epochs
-        if (epoch + 1) % 10 == 0 or epoch == 0:
+        # Validate every 3 epochs
+        if (epoch + 1) % 3 == 0 or epoch == 0:
             acc = validate(model, data_path, video_dir, test_tile_ids, device)
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Val Acc: {acc:.2%}")
         else:
