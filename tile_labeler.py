@@ -642,6 +642,13 @@ class TileLabeler(QMainWindow):
             return
         self._save_current_tiles()
         self._load_frames(self.current_video_path, self.current_start_frame, self.current_total_frames)
+        
+        # Update history entry with new step size
+        if self.history_index >= 0 and self.history_index < len(self.history):
+            step = self.step_spin.value()
+            entry = self.history[self.history_index]
+            self.history[self.history_index] = (entry[0], entry[1], entry[2], step)
+        
         self.auto_save()
     
     def _load_frames(self, path, start, total):
@@ -685,12 +692,16 @@ class TileLabeler(QMainWindow):
         for display in self.displays:
             display.image_label.update()
     
-    def _load_sample(self, path, start, total):
+    def _load_sample(self, path, start, total, step=1):
         self._save_current_tiles()
         
         self.current_video_path = path
         self.current_start_frame = start
         self.current_total_frames = total
+        
+        self.step_spin.blockSignals(True)
+        self.step_spin.setValue(step)
+        self.step_spin.blockSignals(False)
         
         self._load_tiles_for_sample()
         self._load_frames(path, start, total)
@@ -723,21 +734,20 @@ class TileLabeler(QMainWindow):
         if self.history_index < len(self.history) - 1:
             self.history = self.history[:self.history_index + 1]
         
-        self.history.append((path, start, total))
+        self.history.append((path, start, total, step))
         self.history_index = len(self.history) - 1
         
-        self._load_sample(path, start, total)
+        self._load_sample(path, start, total, step)
         self.auto_save()
     
     def next_sample(self):
         if self.history_index < len(self.history) - 1:
             self._save_current_tiles()
             self.history_index += 1
-            path, start, total = self.history[self.history_index]
-            self.step_spin.blockSignals(True)
-            self.step_spin.setValue(1)
-            self.step_spin.blockSignals(False)
-            self._load_sample(path, start, total)
+            entry = self.history[self.history_index]
+            path, start, total = entry[0], entry[1], entry[2]
+            step = entry[3] if len(entry) > 3 else 1
+            self._load_sample(path, start, total, step)
             self.auto_save()
         else:
             self.sample_new()
@@ -746,11 +756,10 @@ class TileLabeler(QMainWindow):
         if self.history_index > 0:
             self._save_current_tiles()
             self.history_index -= 1
-            path, start, total = self.history[self.history_index]
-            self.step_spin.blockSignals(True)
-            self.step_spin.setValue(1)
-            self.step_spin.blockSignals(False)
-            self._load_sample(path, start, total)
+            entry = self.history[self.history_index]
+            path, start, total = entry[0], entry[1], entry[2]
+            step = entry[3] if len(entry) > 3 else 1
+            self._load_sample(path, start, total, step)
             self.auto_save()
     
     def add_tile(self):
@@ -839,11 +848,11 @@ class TileLabeler(QMainWindow):
             'tile_counter': self.tile_counter,
             'history': self.history,
             'history_index': self.history_index,
-            'step_size': self.step_spin.value(),
             'current': {
                 'video_path': self.current_video_path,
                 'start_frame': self.current_start_frame,
-                'total_frames': self.current_total_frames
+                'total_frames': self.current_total_frames,
+                'step_size': self.step_spin.value()
             }
         }
         
@@ -864,21 +873,22 @@ class TileLabeler(QMainWindow):
             self.history = data.get('history', [])
             self.history_index = data.get('history_index', -1)
             
-            step_size = data.get('step_size', 1)
-            self.step_spin.blockSignals(True)
-            self.step_spin.setValue(step_size)
-            self.step_spin.blockSignals(False)
-            
             current = data.get('current', {})
             if current.get('video_path') and current.get('start_frame') is not None:
                 path = current['video_path']
                 start = current['start_frame']
                 total = current['total_frames']
+                step = current.get('step_size', 1)
                 
                 if os.path.exists(path):
                     self.current_video_path = path
                     self.current_start_frame = start
                     self.current_total_frames = total
+                    
+                    self.step_spin.blockSignals(True)
+                    self.step_spin.setValue(step)
+                    self.step_spin.blockSignals(False)
+                    
                     self._load_tiles_for_sample()
                     self._load_frames(path, start, total)
                     self._update_history_label()
