@@ -1072,8 +1072,18 @@ def warp_tile_instance(video_path, frame_num, corners, up_edge, target_size=128)
 
 
 def apply_augmentation(img, rng):
-    """Apply augmentations: brightness, contrast, affine, blur, noise."""
+    """Apply augmentations: corner jitter, brightness, contrast, affine+zoom, blur, noise."""
     h, w = img.shape[:2]
+    
+    # Corner jitter - perspective distortion (±15px per corner)
+    src = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype=np.float32)
+    jitter_x = rng.uniform(-15, 15, 4)
+    jitter_y = rng.uniform(-15, 15, 4)
+    dst = src + np.stack([jitter_x, jitter_y], axis=1).astype(np.float32)
+    H, _ = cv2.findHomography(src, dst)
+    if H is not None:
+        img = cv2.warpPerspective(img, H, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
     img = img.astype(np.float32)
     
     # Brightness + Contrast (combined)
@@ -1081,10 +1091,11 @@ def apply_augmentation(img, rng):
     contrast = rng.uniform(0.8, 1.2)
     img = np.clip((img - 128) * contrast + 128 + brightness, 0, 255)
     
-    # Combined translation + rotation in one warpAffine (single interpolation)
+    # Combined translation + rotation + zoom in one warpAffine
     tx, ty = rng.uniform(-5, 5), rng.uniform(-5, 5)
     angle = rng.uniform(-5, 5)
-    M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    zoom = rng.uniform(0.95, 1.05)
+    M = cv2.getRotationMatrix2D((w/2, h/2), angle, zoom)
     M[0, 2] += tx
     M[1, 2] += ty
     img = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
