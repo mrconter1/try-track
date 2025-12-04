@@ -345,6 +345,14 @@ class InteractiveImageLabel(QLabel):
                 original_corners = [[c[0], c[1]] for c in inst['corners']]
                 img_x, img_y = self.frame_display.widget_to_img(event.pos().x(), event.pos().y())
                 self.dragging_tile = (inst, (img_x, img_y), original_corners)
+                return
+            
+            # Click outside tiles - create new tile at click position
+            img_x, img_y = self.frame_display.widget_to_img(event.pos().x(), event.pos().y())
+            
+            # Check if click is within image bounds
+            if 0 <= img_x <= self.frame_display.img_w and 0 <= img_y <= self.frame_display.img_h:
+                self.frame_display.parent_sampler.add_tile_at(img_x, img_y)
     
     def mouseMoveEvent(self, event):
         if self.dragging_corner:
@@ -795,6 +803,42 @@ class RandomFrameSampler(QMainWindow):
         # Default quad in center of image
         cx, cy = 200, 200
         size = 80
+        default_corners = [
+            [cx - size, cy - size],
+            [cx + size, cy - size],
+            [cx + size, cy + size],
+            [cx - size, cy + size]
+        ]
+        
+        tile = {
+            'id': tile_id,
+            'color_idx': len(self.current_tiles) % len(TILE_COLORS),
+            'instances': [
+                {'frame': frame_nums[i], 'corners': [c.copy() for c in default_corners]}
+                for i in range(3)
+            ]
+        }
+        
+        self.current_tiles.append(tile)
+        self._update_tile_list()
+        
+        # Refresh displays
+        for display in self.displays:
+            display.image_label.update()
+    
+    def add_tile_at(self, cx, cy):
+        """Add a new tile label centered at given image coordinates."""
+        if self.current_video_path is None:
+            return
+        
+        self.tile_counter += 1
+        tile_id = f"T{self.tile_counter:03d}"
+        
+        # Get current frame numbers
+        frame_nums = [d.current_frame_num for d in self.displays]
+        
+        # Quad centered at click position
+        size = 60
         default_corners = [
             [cx - size, cy - size],
             [cx + size, cy - size],
