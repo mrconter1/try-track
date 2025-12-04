@@ -1403,8 +1403,8 @@ def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128
     return correct / total if total > 0 else 0.0
 
 
-def validate_cached(model, dataset, device):
-    """Validate using cached tiles in dataset."""
+def validate_cached(model, dataset, device, verbose=False):
+    """Validate using cached tiles in dataset. Returns (accuracy, stats_dict)."""
     model.eval()
     test_instances = []  # (tile_id, rotation, embedding)
     
@@ -1424,9 +1424,12 @@ def validate_cached(model, dataset, device):
                 test_instances.append((tid, rot, emb))
 
     if len(test_instances) < 2:
-        return 0.0
+        return 0.0, {}
         
+    # Stats: correct, same_tile_wrong_rot, wrong_tile
     correct = 0
+    same_tile_wrong_rot = 0
+    wrong_tile = 0
     total = 0
     embeddings = np.array([inst[2] for inst in test_instances])
     
@@ -1438,9 +1441,20 @@ def validate_cached(model, dataset, device):
         
         if tid_i == tid_j and rot_i == rot_j:
             correct += 1
+        elif tid_i == tid_j:
+            same_tile_wrong_rot += 1
+        else:
+            wrong_tile += 1
         total += 1
-        
-    return correct / total if total > 0 else 0.0
+    
+    acc = correct / total if total > 0 else 0.0
+    stats = {
+        'correct': correct,
+        'same_tile_wrong_rot': same_tile_wrong_rot,
+        'wrong_tile': wrong_tile,
+        'total': total
+    }
+    return acc, stats
 
 
 def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
@@ -1556,9 +1570,10 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
         
         # Validate every 3 epochs
         if (epoch + 1) % 3 == 0 or epoch == 0:
-            train_acc = validate_cached(model, train_dataset, device)
-            test_acc = validate_cached(model, test_dataset, device)
+            train_acc, _ = validate_cached(model, train_dataset, device)
+            test_acc, test_stats = validate_cached(model, test_dataset, device)
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.2%} | Test Acc: {test_acc:.2%}")
+            print(f"  Test: {test_stats['correct']} correct, {test_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {test_stats['wrong_tile']} wrong_tile (of {test_stats['total']})")
         else:
             print(f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
     
@@ -1567,8 +1582,9 @@ def train_embedder(data_path, video_dir, epochs, batch_size, margin, lr=1e-4):
     print("Model saved to tile_embedder.pth")
     
     # Final validation
-    final_acc = validate_cached(model, test_dataset, device)
+    final_acc, final_stats = validate_cached(model, test_dataset, device)
     print(f"Final validation accuracy: {final_acc:.2%}")
+    print(f"  {final_stats['correct']} correct, {final_stats['same_tile_wrong_rot']} same_tile_wrong_rot, {final_stats['wrong_tile']} wrong_tile (of {final_stats['total']})")
 
 
 def main():
