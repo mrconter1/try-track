@@ -1122,7 +1122,13 @@ class TileDataset:
         
         for sample_key, tiles in all_tiles_dict.items():
             # sample_key is "video_path:start_frame"
-            video_path = sample_key.rsplit(':', 1)[0]
+            original_path = sample_key.rsplit(':', 1)[0]
+            # Extract just the filename and combine with video_dir
+            video_filename = os.path.basename(original_path)
+            video_path = os.path.join(video_dir, video_filename)
+            
+            if not os.path.exists(video_path):
+                continue
             
             for tile in tiles:
                 tid = tile['id']
@@ -1142,7 +1148,8 @@ class TileDataset:
         
         # Filter tiles with at least 2 instances
         self.tile_ids = [tid for tid in self.tile_ids if len(self.tile_instances.get(tid, [])) >= 2]
-        print(f"Dataset: {len(self.tile_ids)} tiles with 2+ instances")
+        total_instances = sum(len(self.tile_instances.get(tid, [])) for tid in self.tile_ids)
+        print(f"Dataset: {len(self.tile_ids)} tiles with 2+ instances, {total_instances} total instances")
     
     def sample_triplet(self):
         """Sample anchor, positive, negative triplet."""
@@ -1263,7 +1270,12 @@ def validate(model, data_path, video_dir, test_tile_ids, device, target_size=128
     test_instances = []  # (tile_id, rotation, embedding)
     
     for sample_key, tiles in all_tiles_dict.items():
-        video_path = sample_key.rsplit(':', 1)[0]
+        original_path = sample_key.rsplit(':', 1)[0]
+        video_filename = os.path.basename(original_path)
+        video_path = os.path.join(video_dir, video_filename)
+        
+        if not os.path.exists(video_path):
+            continue
         
         for tile in tiles:
             tid = tile['id']
